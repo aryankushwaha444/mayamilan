@@ -1,0 +1,60 @@
+:root {
+    --primary-color: #e85d75;
+    --primary-dark: #d94a63;
+    --secondary-color: #8e6cef;
+  
+    --dark-color: #202124;
+    --text-color: #5f6368;
+    --muted-color: #888;
+  
+    --background-color: #fff;
+    --light-background: #fff7f9;
+  
+    --border-color: #eeeeee;
+  
+    --shadow-sm: 0 4px 15px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.1);
+  }
+  
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    min-width: 320px;
+    font-family:
+      Inter,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+  
+    background: var(--background-color);
+    color: var(--dark-color);
+  }
+  
+  a {
+    text-decoration: none;
+  }
+  
+  button,
+  input,
+  textarea,
+  select {
+    font-family: inherit;
+  }
+  
+  img {
+    max-width: 100%;
+    display: block;
+  }
+  
+  .page-container {
+    min-height: 100vh;
+  }
