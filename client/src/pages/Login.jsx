@@ -28,11 +28,12 @@ function Login() {
       });
 
       if (response.success) {
-        const destination = location.state?.from?.pathname || "/profile";
+        // const destination = location.state?.from?.pathname || "/profile";
 
-        navigate(destination, { replace: true });
+        // navigate(destination, { replace: true });
+        window.location.href = "/";
       } else {
-        setError(response.message);
+        setError(response.message || "Login failed");
       }
     } catch (error) {
       setError(error.response?.data?.message || "Unable to login");

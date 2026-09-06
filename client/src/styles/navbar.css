@@ -301,21 +301,41 @@
   background-color: #fdf2f8;
 }
 
+/* ==========================================
+   DROPDOWN AVATAR FIX (Chats & Notifications)
+   Must be at the END of navbar.css
+========================================== */
+
 .item-avatar {
   position: relative;
-  flex-shrink: 0;
-}
-
-.item-avatar img,
-.item-avatar span {
   width: 52px;
   height: 52px;
+  flex-shrink: 0;
   border-radius: 50%;
-  object-fit: cover;
+  overflow: hidden; /* clip photo to the circle */
+  background: #ffffff; /* clean base for light/transparent photos */
+  border: 1px solid #f1f5f9;
+}
+
+.item-avatar img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  object-fit: cover !important; /* fill circle, crop edges */
+  object-position: center !important;
+  display: block !important;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+.item-avatar span {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fce7f3;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #fce7f3, #ede9fe);
   color: #db2777;
   font-weight: 700;
   font-size: 18px;
@@ -330,6 +350,7 @@
   background: #22c55e;
   border: 2px solid white;
   border-radius: 50%;
+  z-index: 1;
 }
 
 .item-content {

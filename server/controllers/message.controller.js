@@ -4,7 +4,7 @@ import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import Match from "../models/Match.js";
 import User from "../models/User.js";
-
+import { getIO } from "../sockets/socket.js";
 /*
  * ==========================================
  * CREATE / GET CONVERSATION FROM MATCH
@@ -305,6 +305,40 @@ export const sendMessage = async (req, res, next) => {
     const populatedMessage = await Message.findById(message._id)
       .populate("sender", "_id name photos")
       .populate("receiver", "_id name photos");
+
+    /*
+     * 👇 BROADCAST EVEN FOR REST SENDS
+     * So the receiver sees it in real-time even if the
+     * sender's socket was disconnected (HTTP fallback).
+     */
+    const io = getIO();
+    if (io) {
+      io.to(`conversation:${conversationId}`).emit(
+        "new_message",
+        populatedMessage
+      );
+
+      io.to(`user:${receiverId.toString()}`).emit("conversation_updated", {
+        conversationId,
+        message: populatedMessage,
+      });
+
+      // Auto-delivery if receiver is online
+      const receiverSockets = await io
+        .in(`user:${receiverId.toString()}`)
+        .fetchSockets();
+
+      if (receiverSockets.length > 0) {
+        message.isDelivered = true;
+        message.deliveredAt = new Date();
+        await message.save();
+
+        io.to(`user:${currentUserId.toString()}`).emit("message_delivered", {
+          messageId: message._id,
+          conversationId,
+        });
+      }
+    }
 
     return res.status(201).json({
       success: true,

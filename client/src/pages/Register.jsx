@@ -102,7 +102,7 @@ function Register() {
         relationshipGoal: formData.relationshipGoal,
       });
 
-      navigate("/dashboard");
+      window.location.href = "/";
     } catch (err) {
       setError(
         err.response?.data?.message ||

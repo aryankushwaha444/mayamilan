@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSocket } from "../hooks/useSocket.js";
 import { NavLink, useNavigate } from "react-router-dom";
 import { getMatches } from "../services/matchService.js";
-import { getNotifications } from "../services/notificationService.js";
+import {
+  getNotifications,
+  markAllAsRead,
+} from "../services/notificationService.js";
 import {
   getUnreadMessageCount,
   getRecentConversations,
@@ -16,8 +19,8 @@ function Navbar() {
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false); // Facebook chat dropdown
-  const [notificationsOpen, setNotificationsOpen] = useState(false); // Facebook notifications dropdown
+  const [chatOpen, setChatOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   const [matchCount, setMatchCount] = useState(0);
   const [notificationCount, setNotificationCount] = useState(0);
@@ -31,9 +34,15 @@ function Navbar() {
 
   /*
    * ==========================================
-   * CLOSE DROPDOWNS ON OUTSIDE CLICK
+   * GET USER'S BEST PHOTO (primary first)
    * ==========================================
    */
+  const getAvatarUrl = (photos) => {
+    if (!Array.isArray(photos) || photos.length === 0) return null;
+    const primary = photos.find((p) => p?.isPrimary) || photos[0];
+    return primary?.url || primary?.secure_url || null;
+  };
+
   useEffect(() => {
     const handleOutsideClick = (event) => {
       if (profileRef.current && !profileRef.current.contains(event.target)) {
@@ -53,11 +62,6 @@ function Navbar() {
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
 
-  /*
-   * ==========================================
-   * CLOSE MOBILE MENU ON RESIZE
-   * ==========================================
-   */
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth > 991) {
@@ -68,11 +72,6 @@ function Navbar() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  /*
-   * ==========================================
-   * LOAD DATA FUNCTIONS
-   * ==========================================
-   */
   const loadMatchCount = useCallback(async () => {
     if (!user) {
       setMatchCount(0);
@@ -96,7 +95,7 @@ function Navbar() {
     try {
       const data = await getNotifications();
       setNotificationCount(data.unreadCount || 0);
-      setNotifications(data.notifications?.slice(0, 5) || []); // Show last 5
+      setNotifications(data.notifications?.slice(0, 5) || []);
     } catch (error) {
       console.error("Load notification data error:", error);
       setNotificationCount(0);
@@ -115,7 +114,7 @@ function Navbar() {
         getRecentConversations(),
       ]);
       setMessageCount(countData.count || 0);
-      setRecentChats(recentData.conversations?.slice(0, 5) || []); // Show last 5 chats
+      setRecentChats(recentData.conversations?.slice(0, 5) || []);
     } catch (error) {
       console.error("Load chat data error:", error);
       setMessageCount(0);
@@ -128,11 +127,6 @@ function Navbar() {
     loadChatData();
   }, [loadMatchCount, loadNotificationData, loadChatData]);
 
-  /*
-   * ==========================================
-   * SOCKET EVENT LISTENERS
-   * ==========================================
-   */
   useEffect(() => {
     if (!socket || !user) return;
 
@@ -141,12 +135,24 @@ function Navbar() {
     const handleNewNotification = () => loadNotificationData();
     const handleNewMessage = () => loadChatData();
     const handleConversationUpdated = () => loadChatData();
+    const handleUnreadUpdated = () => {
+      console.log("🔔 Unread count changed — refreshing badge");
+      loadChatData();
+    };
+
+    // 👇 NEW: refresh notification badge when notifications are marked read
+    const handleNotificationsUpdated = () => {
+      console.log("🔔 Notifications updated — refreshing badge");
+      loadNotificationData();
+    };
 
     socket.on("new_match", handleNewMatch);
     socket.on("match_removed", handleMatchRemoved);
     socket.on("new_notification", handleNewNotification);
     socket.on("new_message", handleNewMessage);
     socket.on("conversation_updated", handleConversationUpdated);
+    socket.on("unread_updated", handleUnreadUpdated);
+    socket.on("notifications_updated", handleNotificationsUpdated); // 👈 ADDED
 
     return () => {
       socket.off("new_match", handleNewMatch);
@@ -154,6 +160,8 @@ function Navbar() {
       socket.off("new_notification", handleNewNotification);
       socket.off("new_message", handleNewMessage);
       socket.off("conversation_updated", handleConversationUpdated);
+      socket.off("unread_updated", handleUnreadUpdated);
+      socket.off("notifications_updated", handleNotificationsUpdated); // 👈 ADDED
     };
   }, [socket, user, loadMatchCount, loadNotificationData, loadChatData]);
 
@@ -167,7 +175,25 @@ function Navbar() {
       setMobileOpen(false);
       setChatOpen(false);
       setNotificationsOpen(false);
-      navigate("/login");
+      window.location.href = "/login";
+    }
+  };
+
+  const handleToggleNotifications = async () => {
+    const opening = !notificationsOpen;
+
+    setNotificationsOpen(opening);
+    setChatOpen(false);
+
+    if (opening && notificationCount > 0) {
+      setNotificationCount(0);
+      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+
+      try {
+        await markAllAsRead();
+      } catch (error) {
+        console.error("Mark notifications read error:", error);
+      }
     }
   };
 
@@ -184,12 +210,7 @@ function Navbar() {
   return (
     <header className="site-navbar">
       <div className="navbar-container">
-        {/* BRAND */}
-        <NavLink
-          to="/"
-          className="navbar-brand-custom"
-          onClick={closeMobileMenu}
-        >
+        <a href="/" className="navbar-brand-custom" onClick={closeMobileMenu}>
           <div className="brand-icon">
             <i className="bi bi-heart-fill"></i>
           </div>
@@ -197,11 +218,10 @@ function Navbar() {
             <span className="brand-name">LoveConnect</span>
             <span className="brand-tagline">Find your connection</span>
           </div>
-        </NavLink>
+        </a>
 
         {user ? (
           <>
-            {/* NAVIGATION */}
             <nav
               className={`navbar-navigation ${
                 mobileOpen ? "navbar-navigation-open" : ""
@@ -232,9 +252,7 @@ function Navbar() {
               </NavLink>
             </nav>
 
-            {/* RIGHT ACTIONS - FACEBOOK STYLE */}
             <div className="navbar-actions">
-              {/* MESSENGER/CHAT ICON - FACEBOOK STYLE */}
               <div className="navbar-chat-dropdown" ref={chatRef}>
                 <button
                   type="button"
@@ -279,19 +297,70 @@ function Navbar() {
                               navigate(`/messages?conversationId=${chat._id}`);
                             }}
                           >
-                            <div className="item-avatar">
-                              {chat.user?.photos?.[0]?.url ? (
+                            {/* 👇 AVATAR WITH INLINE STYLES — cannot be broken by CSS conflicts */}
+                            <div
+                              style={{
+                                position: "relative",
+                                width: "52px",
+                                height: "52px",
+                                flexShrink: 0,
+                                borderRadius: "50%",
+                                overflow: "hidden",
+                                background: "#ffffff",
+                                border: "1px solid #f1f5f9",
+                              }}
+                            >
+                              {getAvatarUrl(chat.user?.photos) ? (
                                 <img
-                                  src={chat.user.photos[0].url}
-                                  alt={chat.user.name}
+                                  src={getAvatarUrl(chat.user.photos)}
+                                  alt={chat.user?.name}
+                                  style={{
+                                    width: "100%",
+                                    height: "100%",
+                                    objectFit: "cover",
+                                    objectPosition: "center",
+                                    display: "block",
+                                    borderRadius: "50%",
+                                    background: "#ffffff",
+                                  }}
                                 />
                               ) : (
-                                <span>{chat.user?.name?.charAt(0) || "U"}</span>
+                                <span
+                                  style={{
+                                    width: "100%",
+                                    height: "100%",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    borderRadius: "50%",
+                                    background:
+                                      "linear-gradient(135deg, #fce7f3, #ede9fe)",
+                                    color: "#db2777",
+                                    fontWeight: 700,
+                                    fontSize: "18px",
+                                  }}
+                                >
+                                  {chat.user?.name?.charAt(0) || "U"}
+                                </span>
                               )}
+
                               {chat.user?.isOnline && (
-                                <span className="online-indicator-small"></span>
+                                <span
+                                  style={{
+                                    position: "absolute",
+                                    bottom: "2px",
+                                    right: "2px",
+                                    width: "12px",
+                                    height: "12px",
+                                    background: "#22c55e",
+                                    border: "2px solid white",
+                                    borderRadius: "50%",
+                                    zIndex: 1,
+                                  }}
+                                ></span>
                               )}
                             </div>
+
                             <div className="item-content">
                               <div className="item-top">
                                 <strong>{chat.user?.name}</strong>
@@ -319,7 +388,6 @@ function Navbar() {
                 )}
               </div>
 
-              {/* NOTIFICATIONS ICON - FACEBOOK STYLE */}
               <div
                 className="navbar-notifications-dropdown"
                 ref={notificationsRef}
@@ -329,10 +397,7 @@ function Navbar() {
                   className={`navbar-icon-button ${
                     notificationsOpen ? "active" : ""
                   }`}
-                  onClick={() => {
-                    setNotificationsOpen(!notificationsOpen);
-                    setChatOpen(false);
-                  }}
+                  onClick={handleToggleNotifications}
                   aria-label="Notifications"
                 >
                   <i className="bi bi-bell-fill"></i>
@@ -376,10 +441,11 @@ function Navbar() {
                             }}
                           >
                             <div className="item-avatar">
-                              {notification.sender?.photos?.[0]?.url ? (
+                              {getAvatarUrl(notification.sender?.photos) ? (
                                 <img
-                                  src={notification.sender.photos[0].url}
-                                  alt={notification.sender.name}
+                                  src={getAvatarUrl(notification.sender.photos)}
+                                  alt={notification.sender?.name}
+                                  className="item-avatar-img"
                                 />
                               ) : (
                                 <span>
@@ -414,7 +480,6 @@ function Navbar() {
                 )}
               </div>
 
-              {/* PROFILE DROPDOWN */}
               <div className="navbar-profile" ref={profileRef}>
                 <button
                   type="button"
@@ -497,7 +562,6 @@ function Navbar() {
                 )}
               </div>
 
-              {/* MOBILE MENU TOGGLE */}
               <button
                 type="button"
                 className="navbar-mobile-button"

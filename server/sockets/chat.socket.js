@@ -211,12 +211,18 @@ const registerChatSocket = (io, socket) => {
       if (!message || message.isRead) return;
 
       message.isRead = true;
-      message.isDelivered = true;
+      message.isDelivered = true; // Read implies delivered
       message.readAt = new Date();
       await message.save();
 
+      // 1️⃣ Notify the SENDER → ticks turn into the read circle (●)
       io.to(`user:${message.sender.toString()}`).emit("message_read", {
         messageId: message._id,
+        conversationId: message.conversation,
+      });
+
+      // 2️⃣  NEW: Notify the READER → their navbar badge clears instantly
+      io.to(`user:${message.receiver.toString()}`).emit("unread_updated", {
         conversationId: message.conversation,
       });
     } catch (error) {

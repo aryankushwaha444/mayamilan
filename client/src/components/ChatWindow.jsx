@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import MessageBubble from "./MessageBubble.jsx";
 import {
   getMessages,
@@ -22,6 +22,29 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
   const typingTimeoutRef = useRef(null);
   const messagesContainerRef = useRef(null);
+
+  /*
+   * ==========================================
+   * LOAD / RESYNC MESSAGE HISTORY
+   * ==========================================
+   */
+  const loadMessages = useCallback(async () => {
+    try {
+      const data = await getMessages(conversationId);
+      setMessages(data.messages || []);
+    } catch (error) {
+      console.error("Load messages error:", error);
+    } finally {
+      setLoading(false);
+    }
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (conversationId) {
+      setLoading(true);
+      loadMessages();
+    }
+  }, [conversationId, loadMessages]);
 
   /*
    * ==========================================
@@ -69,7 +92,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
    * ==========================================
    */
   useEffect(() => {
-    if (!socket || !otherUser?._id) return;
+    if (!socket || !connected || !otherUser?._id) return;
 
     const otherUserId = otherUser._id.toString();
 
@@ -85,45 +108,27 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     return () => {
       socket.off("presence_result", handlePresenceResult);
     };
-  }, [socket, otherUser]);
+  }, [socket, connected, otherUser]);
 
   /*
    * ==========================================
-   * LOAD MESSAGE HISTORY
+   * JOIN CONVERSATION + RESYNC MISSED MESSAGES
+   * 👇 Every time the socket (re)connects, re-join the
+   * room AND reload history so nothing stays missing.
    * ==========================================
    */
   useEffect(() => {
-    const loadMessages = async () => {
-      try {
-        setLoading(true);
-        const data = await getMessages(conversationId);
-        setMessages(data.messages || []);
-      } catch (error) {
-        console.error("Load messages error:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    if (conversationId) {
-      loadMessages();
-    }
-  }, [conversationId]);
-
-  /*
-   * ==========================================
-   * JOIN CONVERSATION
-   * ==========================================
-   */
-  useEffect(() => {
-    if (!socket || !conversationId) return;
+    if (!socket || !connected || !conversationId) return;
 
     socket.emit("join_conversation", conversationId);
+
+    // Resync any messages missed while disconnected
+    loadMessages();
 
     return () => {
       socket.emit("leave_conversation", conversationId);
     };
-  }, [socket, conversationId]);
+  }, [socket, connected, conversationId, loadMessages]);
 
   /*
    * ==========================================
@@ -205,7 +210,13 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
    * ==========================================
    */
   useEffect(() => {
-    if (!socket || !conversationId || messages.length === 0 || userScrolled)
+    if (
+      !socket ||
+      !connected ||
+      !conversationId ||
+      messages.length === 0 ||
+      userScrolled
+    )
       return;
 
     messages.forEach((message) => {
@@ -217,7 +228,14 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         socket.emit("mark_read", { messageId: message._id });
       }
     });
-  }, [messages, socket, conversationId, currentUserId, userScrolled]);
+  }, [
+    messages,
+    socket,
+    connected,
+    conversationId,
+    currentUserId,
+    userScrolled,
+  ]);
 
   /*
    * ==========================================
@@ -271,9 +289,16 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         socket.emit("send_message", { conversationId, text: cleanText });
         setText("");
       } else {
+        // HTTP fallback — backend now broadcasts this too
         const data = await sendMessageApi(conversationId, cleanText);
         if (data.message) {
-          setMessages((currentMessages) => [...currentMessages, data.message]);
+          setMessages((currentMessages) => {
+            const alreadyExists = currentMessages.some(
+              (item) => item._id === data.message._id
+            );
+            if (alreadyExists) return currentMessages;
+            return [...currentMessages, data.message];
+          });
         }
         setText("");
       }

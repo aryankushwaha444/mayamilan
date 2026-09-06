@@ -62,11 +62,11 @@ const initializeSocket = (server) => {
 
     console.log(`Socket connected: ${socket.user.name} (${userId})`);
 
+    // Join personal room
     socket.join(`user:${userId}`);
 
+    // Mark online + broadcast
     await User.findByIdAndUpdate(userId, { isOnline: true });
-
-    // 👇 BROADCAST: Tell everyone this user is now ONLINE
     socket.broadcast.emit("user_online", { userId });
 
     registerChatSocket(io, socket);
@@ -74,19 +74,31 @@ const initializeSocket = (server) => {
 
     /*
      * ==========================================
-     * DISCONNECT (fires on logout / tab close)
+     * DISCONNECT (RACE-SAFE)
+     * Only mark offline if NO other socket exists for this user
      * ==========================================
      */
     socket.on("disconnect", async () => {
       console.log(`Socket disconnected: ${socket.user.name}`);
 
-      await User.findByIdAndUpdate(userId, {
-        isOnline: false,
-        lastSeen: new Date(),
-      });
+      try {
+        const remainingSockets = await io.in(`user:${userId}`).fetchSockets();
 
-      // 👇 BROADCAST: Tell everyone this user is now OFFLINE
-      socket.broadcast.emit("user_offline", { userId });
+        if (remainingSockets.length === 0) {
+          await User.findByIdAndUpdate(userId, {
+            isOnline: false,
+            lastSeen: new Date(),
+          });
+
+          socket.broadcast.emit("user_offline", { userId });
+        } else {
+          console.log(
+            `ℹ️ ${socket.user.name} still has ${remainingSockets.length} active connection(s)`
+          );
+        }
+      } catch (error) {
+        console.error("Disconnect cleanup error:", error);
+      }
     });
   });
 
