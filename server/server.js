@@ -1,9 +1,7 @@
 import dotenv from "dotenv";
-
 dotenv.config();
 
 import http from "http";
-
 import app from "./app.js";
 import connectDB from "./config/db.js";
 import initializeSocket from "./sockets/socket.js";
@@ -16,17 +14,15 @@ const startServer = async () => {
 
     const server = http.createServer(app);
 
-    /*
-     * Initialize Socket.io
-     */
-    initializeSocket(server);
+    // Initialize Socket.io and store the io instance in the app
+    const io = initializeSocket(server);
+    app.set("io", io); // 👈 ADD THIS LINE
 
     server.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
   } catch (error) {
     console.error("Server startup error:", error);
-
     process.exit(1);
   }
 };

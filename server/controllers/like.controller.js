@@ -1,8 +1,9 @@
 import mongoose from "mongoose";
-
 import User from "../models/User.js";
 import Like from "../models/Like.js";
 import Match from "../models/Match.js";
+import { getIO } from "../sockets/socket.js";
+import Notification from "../models/Notification.js";
 
 // ==========================================
 // LIKE USER
@@ -63,9 +64,23 @@ export const likeUser = async (req, res, next) => {
       to: targetUserId,
     });
 
-    console.log(
-      `LIKE CREATED: ${currentUserId} -> ${targetUserId}`
-    );
+    await Notification.create({
+      recipient: targetUserId,
+      sender: currentUserId,
+      type: "like",
+      message: "liked your profile",
+      isRead: false,
+    });
+
+    const io = getIO();
+    if (io) {
+      io.to(`user:${targetUserId}`).emit("new_notification", {
+        type: "like",
+        senderId: currentUserId,
+      });
+    }
+
+    console.log(`LIKE CREATED: ${currentUserId} -> ${targetUserId}`);
 
     // Check reciprocal like
     const mutualLike = await Like.findOne({
@@ -84,29 +99,20 @@ export const likeUser = async (req, res, next) => {
       });
     }
 
-    console.log(
-      `MUTUAL LIKE FOUND: ${targetUserId} -> ${currentUserId}`
-    );
+    console.log(`MUTUAL LIKE FOUND: ${targetUserId} -> ${currentUserId}`);
 
     // Create a unique pair key
     const sortedIds = [
       currentUserId.toString(),
       targetUserId.toString(),
     ].sort();
-
     const pairKey = `${sortedIds[0]}_${sortedIds[1]}`;
-
-    const userIds = sortedIds.map(
-      (id) => new mongoose.Types.ObjectId(id)
-    );
+    const userIds = sortedIds.map((id) => new mongoose.Types.ObjectId(id));
 
     console.log("PAIR KEY:", pairKey);
 
     // Find existing match
-    let match = await Match.findOne({
-      pairKey,
-    });
-
+    let match = await Match.findOne({ pairKey });
     let newMatch = false;
 
     // Create match if it does not exist
@@ -119,13 +125,18 @@ export const likeUser = async (req, res, next) => {
 
       newMatch = true;
 
-      console.log(
-        `MATCH CREATED: ${sortedIds[0]} <-> ${sortedIds[1]}`
-      );
+      console.log(`MATCH CREATED: ${sortedIds[0]} <-> ${sortedIds[1]}`);
+
+      // 👇 EMIT REAL-TIME EVENT TO BOTH USERS
+      const io = getIO();
+      if (io) {
+        io.to(`user:${currentUserId}`).emit("new_match", {
+          matchId: match._id,
+        });
+        io.to(`user:${targetUserId}`).emit("new_match", { matchId: match._id });
+      }
     } else {
-      console.log(
-        `MATCH ALREADY EXISTS: ${sortedIds[0]} <-> ${sortedIds[1]}`
-      );
+      console.log(`MATCH ALREADY EXISTS: ${sortedIds[0]} <-> ${sortedIds[1]}`);
     }
 
     // Populate users
@@ -139,9 +150,7 @@ export const likeUser = async (req, res, next) => {
       liked: true,
       matched: true,
       newMatch,
-      message: newMatch
-        ? "It's a match!"
-        : "You are already matched!",
+      message: newMatch ? "It's a match!" : "You are already matched!",
       likeId: like._id,
       matchId: match._id,
       match,
@@ -193,27 +202,30 @@ export const unlikeUser = async (req, res, next) => {
       currentUserId.toString(),
       targetUserId.toString(),
     ].sort();
-
     const pairKey = `${sortedIds[0]}_${sortedIds[1]}`;
 
     console.log("PAIR KEY:", pairKey);
 
     // Find match
-    const match = await Match.findOne({
-      pairKey,
-    });
-
+    const match = await Match.findOne({ pairKey });
     console.log("MATCH FOUND:", match);
 
     // Delete match immediately
     if (match) {
-      await Match.deleteOne({
-        _id: match._id,
-      });
+      await Match.deleteOne({ _id: match._id });
 
-      console.log(
-        `MATCH DELETED: ${sortedIds[0]} <-> ${sortedIds[1]}`
-      );
+      console.log(`MATCH DELETED: ${sortedIds[0]} <-> ${sortedIds[1]}`);
+
+      // 👇 EMIT REAL-TIME EVENT TO BOTH USERS
+      const io = getIO();
+      if (io) {
+        io.to(`user:${currentUserId}`).emit("match_removed", {
+          matchId: match._id,
+        });
+        io.to(`user:${targetUserId}`).emit("match_removed", {
+          matchId: match._id,
+        });
+      }
     }
 
     return res.status(200).json({
@@ -237,9 +249,7 @@ export const unlikeUser = async (req, res, next) => {
 
 export const getSentLikes = async (req, res, next) => {
   try {
-    const likes = await Like.find({
-      from: req.user._id,
-    })
+    const likes = await Like.find({ from: req.user._id })
       .populate("to", "name dateOfBirth gender photos location occupation")
       .sort({ createdAt: -1 });
 
@@ -260,9 +270,7 @@ export const getSentLikes = async (req, res, next) => {
 
 export const getReceivedLikes = async (req, res, next) => {
   try {
-    const likes = await Like.find({
-      to: req.user._id,
-    })
+    const likes = await Like.find({ to: req.user._id })
       .populate("from", "name dateOfBirth gender photos location occupation")
       .sort({ createdAt: -1 });
 

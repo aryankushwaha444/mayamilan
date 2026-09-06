@@ -1,5 +1,7 @@
 import User from "../models/User.js";
 import cloudinary from "../config/cloudinary.js";
+import Like from "../models/Like.js"; 
+import Match from "../models/Match.js";
 
 /*
 GET MY PROFILE
@@ -83,18 +85,37 @@ GET /api/users/:userId
 
 export const getUserProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.userId).select(
-      "name dateOfBirth gender bio photos location occupation education interests relationshipGoal isVerified isOnline lastSeen"
-    );
+    const { userId } = req.params;
+    const currentUserId = req.user._id;
 
-    if (!user) {
+    const user = await User.findById(userId).select("-password -refreshToken");
+
+    if (!user || !user.isActive) {
       return res.status(404).json({
+        success: false,
         message: "User not found",
       });
     }
 
-    res.status(200).json({
-      user,
+    // Check if current user has liked this profile
+    const sentLike = await Like.findOne({
+      from: currentUserId,
+      to: userId,
+    });
+
+    // Check if they are matched
+    const sortedIds = [currentUserId.toString(), userId.toString()].sort();
+    const pairKey = `${sortedIds[0]}_${sortedIds[1]}`;
+
+    const match = await Match.findOne({ pairKey });
+
+    return res.status(200).json({
+      success: true,
+      user: {
+        ...user.toObject(),
+        isLiked: Boolean(sentLike),
+        isMatched: Boolean(match),
+      },
     });
   } catch (error) {
     next(error);
@@ -246,4 +267,3 @@ export const setPrimaryPhoto = async (req, res, next) => {
     next(error);
   }
 };
-

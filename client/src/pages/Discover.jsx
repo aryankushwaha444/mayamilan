@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { discoverUsers } from "../services/userService";
 import ProfileCard from "../components/ProfileCard";
 import { likeUser, unlikeUser } from "../services/matchService";
+import { useSocket } from "../hooks/useSocket"; // 👈 ADD THIS IMPORT
 
 function Discover() {
+  const { socket } = useSocket(); // 👈 ADD THIS HOOK
+
   const [users, setUsers] = useState([]);
-
   const [loading, setLoading] = useState(true);
-
   const [error, setError] = useState("");
 
   const [filters, setFilters] = useState({
@@ -52,7 +53,6 @@ function Discover() {
       }
     } catch (error) {
       console.error("Discovery error:", error);
-
       setError(error.response?.data?.message || "Unable to load profiles");
     } finally {
       setLoading(false);
@@ -63,9 +63,39 @@ function Discover() {
     fetchUsers();
   }, []);
 
+  /*
+   * ==========================================
+   * SOCKET LISTENER FOR REAL-TIME UNMATCH 👈 ADD THIS BLOCK
+   * ==========================================
+   */
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleMatchRemoved = (data) => {
+      console.log("💔 MATCH REMOVED EVENT IN DISCOVER", data);
+
+      setUsers((previousUsers) =>
+        previousUsers.map((user) => {
+          if (user._id === data.userId) {
+            return {
+              ...user,
+              isMatched: false,
+            };
+          }
+          return user;
+        })
+      );
+    };
+
+    socket.on("match_removed", handleMatchRemoved);
+
+    return () => {
+      socket.off("match_removed", handleMatchRemoved);
+    };
+  }, [socket]);
+
   const handleFilterChange = (event) => {
     const { name, value } = event.target;
-
     setFilters((previous) => ({
       ...previous,
       [name]: value,
@@ -74,7 +104,6 @@ function Discover() {
 
   const handleFilterSubmit = (event) => {
     event.preventDefault();
-
     fetchUsers(filters, 1);
   };
 
@@ -87,9 +116,7 @@ function Discover() {
       relationshipGoal: "",
       interests: "",
     };
-
     setFilters(emptyFilters);
-
     fetchUsers(emptyFilters, 1);
   };
 
@@ -97,27 +124,21 @@ function Discover() {
     try {
       if (user.isLiked) {
         console.log("UNLIKE:", user._id);
-
         const response = await unlikeUser(user._id);
-
         console.log("UNLIKE RESPONSE:", response);
 
         if (response.success) {
           await fetchUsers(filters, pagination.page);
         }
-
         return;
       }
 
       console.log("LIKE:", user._id);
-
       const response = await likeUser(user._id);
-
       console.log("LIKE RESPONSE:", response);
 
       if (response.success) {
         await fetchUsers(filters, pagination.page);
-
         if (response.matched) {
           alert("❤️ It's a Match!");
         }
@@ -135,10 +156,7 @@ function Discover() {
 
   const handlePageChange = (page) => {
     fetchUsers(filters, page);
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   return (
@@ -147,12 +165,10 @@ function Discover() {
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-4">
         <div>
           <h1 className="fw-bold mb-1">Discover</h1>
-
           <p className="text-muted mb-0">
             Find people who could be a great match for you.
           </p>
         </div>
-
         {pagination.total > 0 && (
           <span className="text-muted mt-2 mt-md-0">
             {pagination.total} profiles
@@ -165,12 +181,10 @@ function Discover() {
         <div className="card-body p-3 p-md-4">
           <form onSubmit={handleFilterSubmit}>
             <div className="row g-3">
-              {/* Minimum Age */}
               <div className="col-6 col-md-2">
                 <label htmlFor="minAge" className="form-label">
                   Min Age
                 </label>
-
                 <input
                   id="minAge"
                   name="minAge"
@@ -183,13 +197,10 @@ function Discover() {
                   placeholder="18"
                 />
               </div>
-
-              {/* Maximum Age */}
               <div className="col-6 col-md-2">
                 <label htmlFor="maxAge" className="form-label">
                   Max Age
                 </label>
-
                 <input
                   id="maxAge"
                   name="maxAge"
@@ -202,13 +213,10 @@ function Discover() {
                   placeholder="60"
                 />
               </div>
-
-              {/* Gender */}
               <div className="col-12 col-md-2">
                 <label htmlFor="gender" className="form-label">
                   Gender
                 </label>
-
                 <select
                   id="gender"
                   name="gender"
@@ -223,13 +231,10 @@ function Discover() {
                   <option value="other">Other</option>
                 </select>
               </div>
-
-              {/* City */}
               <div className="col-12 col-md-2">
                 <label htmlFor="city" className="form-label">
                   City
                 </label>
-
                 <input
                   id="city"
                   name="city"
@@ -240,13 +245,10 @@ function Discover() {
                   placeholder="Kathmandu"
                 />
               </div>
-
-              {/* Relationship Goal */}
               <div className="col-12 col-md-2">
                 <label htmlFor="relationshipGoal" className="form-label">
                   Looking for
                 </label>
-
                 <select
                   id="relationshipGoal"
                   name="relationshipGoal"
@@ -262,18 +264,14 @@ function Discover() {
                   <option value="not-sure">Not Sure</option>
                 </select>
               </div>
-
-              {/* Buttons */}
               <div className="col-12 col-md-2 d-flex align-items-end gap-2">
                 <button
                   type="submit"
                   className="btn btn-primary flex-fill"
                   disabled={loading}
                 >
-                  <i className="bi bi-funnel me-1"></i>
-                  Filter
+                  <i className="bi bi-funnel me-1"></i> Filter
                 </button>
-
                 <button
                   type="button"
                   className="btn btn-outline-secondary"
@@ -283,13 +281,10 @@ function Discover() {
                   <i className="bi bi-x-lg"></i>
                 </button>
               </div>
-
-              {/* Interests */}
               <div className="col-12">
                 <label htmlFor="interests" className="form-label">
                   Interests
                 </label>
-
                 <input
                   id="interests"
                   name="interests"
@@ -299,7 +294,6 @@ function Discover() {
                   onChange={handleFilterChange}
                   placeholder="music, travel, coding"
                 />
-
                 <small className="text-muted">
                   Separate multiple interests with commas.
                 </small>
@@ -309,34 +303,27 @@ function Discover() {
         </div>
       </div>
 
-      {/* Error */}
       {error && <div className="alert alert-danger">{error}</div>}
 
-      {/* Loading */}
       {loading ? (
         <div className="text-center py-5">
           <div className="spinner-border text-primary" role="status">
             <span className="visually-hidden">Loading...</span>
           </div>
-
           <p className="text-muted mt-3">Finding profiles...</p>
         </div>
       ) : users.length === 0 ? (
-        /* Empty */
         <div className="text-center py-5">
           <div className="display-4 text-muted mb-3">
             <i className="bi bi-people"></i>
           </div>
-
           <h4>No profiles found</h4>
-
           <p className="text-muted">
             Try changing your filters to discover more people.
           </p>
         </div>
       ) : (
         <>
-          {/* Profile Grid */}
           <div className="row g-4">
             {users.map((user) => (
               <div key={user._id} className="col-12 col-sm-6 col-lg-4 col-xl-3">
@@ -349,7 +336,6 @@ function Discover() {
             ))}
           </div>
 
-          {/* Pagination */}
           {pagination.totalPages > 1 && (
             <nav className="mt-5" aria-label="Discovery pagination">
               <ul className="pagination justify-content-center">
@@ -366,11 +352,8 @@ function Discover() {
                     Previous
                   </button>
                 </li>
-
                 {Array.from(
-                  {
-                    length: pagination.totalPages,
-                  },
+                  { length: pagination.totalPages },
                   (_, index) => index + 1
                 )
                   .slice(0, 5)
@@ -389,7 +372,6 @@ function Discover() {
                       </button>
                     </li>
                   ))}
-
                 <li
                   className={`page-item ${
                     !pagination.hasNextPage ? "disabled" : ""

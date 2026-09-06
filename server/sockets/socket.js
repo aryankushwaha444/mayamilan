@@ -1,14 +1,22 @@
 import { Server } from "socket.io";
-
 import jwt from "jsonwebtoken";
-
 import User from "../models/User.js";
-
 import registerChatSocket from "./chat.socket.js";
 import registerNotificationSocket from "./notification.socket.js";
 
+// 👇 Store io instance in a module-level variable
+let io;
+
+// 👇 Export a function to retrieve it safely
+export const getIO = () => {
+  if (!io) {
+    throw new Error("Socket.io not initialized!");
+  }
+  return io;
+};
+
 const initializeSocket = (server) => {
-  const io = new Server(server, {
+  io = new Server(server, {
     cors: {
       origin: process.env.CLIENT_URL || "http://localhost:5173",
       credentials: true,
@@ -20,47 +28,29 @@ const initializeSocket = (server) => {
    * SOCKET AUTHENTICATION
    * ==========================================
    */
-
   io.use(async (socket, next) => {
     try {
-      const token =
-        socket.handshake.auth?.token;
+      const token = socket.handshake.auth?.token;
 
       if (!token) {
-        return next(
-          new Error("Authentication required")
-        );
+        return next(new Error("Authentication required"));
       }
 
-      const decoded = jwt.verify(
-        token,
-        process.env.JWT_ACCESS_SECRET
-      );
+      const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
 
-      const user = await User.findById(
-        decoded.userId
-      ).select(
+      const user = await User.findById(decoded.userId).select(
         "_id name photos isActive isOnline"
       );
 
       if (!user || !user.isActive) {
-        return next(
-          new Error("User not found or inactive")
-        );
+        return next(new Error("User not found or inactive"));
       }
 
       socket.user = user;
-
       next();
     } catch (error) {
-      console.error(
-        "Socket authentication error:",
-        error.message
-      );
-
-      next(
-        new Error("Invalid or expired token")
-      );
+      console.error("Socket authentication error:", error.message);
+      next(new Error("Invalid or expired token"));
     }
   });
 
@@ -69,41 +59,19 @@ const initializeSocket = (server) => {
    * CONNECTION
    * ==========================================
    */
-
   io.on("connection", async (socket) => {
     const userId = socket.user._id.toString();
 
-    console.log(
-      `Socket connected: ${socket.user.name} (${userId})`
-    );
+    console.log(`Socket connected: ${socket.user.name} (${userId})`);
 
-    /*
-     * Join personal room.
-     *
-     * This allows us to send events
-     * directly to a specific user.
-     */
-
+    // Join personal room for targeted events
     socket.join(`user:${userId}`);
 
-    /*
-     * Update online status.
-     */
+    // Update online status
+    await User.findByIdAndUpdate(userId, { isOnline: true });
 
-    await User.findByIdAndUpdate(userId, {
-      isOnline: true,
-    });
-
-    /*
-     * Register chat events.
-     */
-
+    // Register chat and notification events
     registerChatSocket(io, socket);
-
-    /*
-     * Register notification events.
-     */
-
     registerNotificationSocket(io, socket);
 
     /*
@@ -111,11 +79,8 @@ const initializeSocket = (server) => {
      * DISCONNECT
      * ==========================================
      */
-
     socket.on("disconnect", async () => {
-      console.log(
-        `Socket disconnected: ${socket.user.name}`
-      );
+      console.log(`Socket disconnected: ${socket.user.name}`);
 
       await User.findByIdAndUpdate(userId, {
         isOnline: false,

@@ -18,18 +18,51 @@ export const discoverUsers = async (req, res, next) => {
     const currentUser = req.user;
 
     const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
-
     const limitNumber = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
-
     const skip = (pageNumber - 1) * limitNumber;
 
     // ==========================================
-    // USER QUERY
+    // 1. GET CURRENT USER'S MATCHES & LIKES FIRST
+    // ==========================================
+    // We need these IDs to exclude them from the discovery query
+
+    const matches = await Match.find({
+      users: currentUser._id,
+    })
+      .select("users")
+      .lean();
+
+    const matchedUserIds = new Set();
+    matches.forEach((match) => {
+      match.users.forEach((userId) => {
+        if (userId.toString() !== currentUser._id.toString()) {
+          matchedUserIds.add(userId.toString());
+        }
+      });
+    });
+
+    const sentLikes = await Like.find({
+      from: currentUser._id,
+    })
+      .select("to")
+      .lean();
+
+    const likedUserIds = new Set(sentLikes.map((like) => like.to.toString()));
+
+    // Combine IDs to exclude from discovery feed
+    const excludeUserIds = [
+      currentUser._id.toString(),
+      ...Array.from(matchedUserIds),
+      ...Array.from(likedUserIds),
+    ];
+
+    // ==========================================
+    // 2. BUILD USER QUERY
     // ==========================================
 
     const query = {
       _id: {
-        $ne: currentUser._id,
+        $nin: excludeUserIds, // 👈 EXCLUDE current user, matched users, and already-liked users
       },
       isActive: true,
     };
@@ -55,22 +88,17 @@ export const discoverUsers = async (req, res, next) => {
     // Age
     if (minAge || maxAge) {
       const today = new Date();
-
       query.dateOfBirth = {};
 
       if (maxAge) {
         const oldestDate = new Date(today);
-
         oldestDate.setFullYear(today.getFullYear() - Number(maxAge) - 1);
-
         query.dateOfBirth.$gte = oldestDate;
       }
 
       if (minAge) {
         const youngestDate = new Date(today);
-
         youngestDate.setFullYear(today.getFullYear() - Number(minAge));
-
         query.dateOfBirth.$lte = youngestDate;
       }
     }
@@ -90,7 +118,7 @@ export const discoverUsers = async (req, res, next) => {
     }
 
     // ==========================================
-    // FETCH USERS
+    // 3. FETCH USERS
     // ==========================================
 
     const [users, total] = await Promise.all([
@@ -111,63 +139,24 @@ export const discoverUsers = async (req, res, next) => {
     ]);
 
     // ==========================================
-    // GET CURRENT USER'S LIKES
+    // 4. FORMAT RESPONSE
     // ==========================================
-
-    const userIds = users.map((user) => user._id);
-
-    const sentLikes = await Like.find({
-      from: currentUser._id,
-      to: {
-        $in: userIds,
-      },
-    })
-      .select("to")
-      .lean();
-
-    const likedUserIds = new Set(sentLikes.map((like) => like.to.toString()));
-
-    // ==========================================
-    // GET CURRENT USER'S MATCHES
-    // ==========================================
-
-    const matches = await Match.find({
-      users: currentUser._id,
-    })
-      .select("users")
-      .lean();
-
-    const matchedUserIds = new Set();
-
-    matches.forEach((match) => {
-      match.users.forEach((userId) => {
-        if (userId.toString() !== currentUser._id.toString()) {
-          matchedUserIds.add(userId.toString());
-        }
-      });
-    });
-
-    // ==========================================
-    // ADD LIKE + MATCH STATUS
-    // ==========================================
+    // Since we already excluded matched/liked users at the database level,
+    // all returned users will naturally be isLiked: false and isMatched: false
 
     const formattedUsers = users.map((user) => ({
       ...user,
-
-      isLiked: likedUserIds.has(user._id.toString()),
-
-      isMatched: matchedUserIds.has(user._id.toString()),
+      isLiked: false,
+      isMatched: false,
     }));
 
     // ==========================================
-    // RESPONSE
+    // 5. RESPONSE
     // ==========================================
 
     res.status(200).json({
       success: true,
-
       users: formattedUsers,
-
       pagination: {
         page: pageNumber,
         limit: limitNumber,

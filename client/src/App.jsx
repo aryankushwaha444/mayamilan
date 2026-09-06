@@ -18,6 +18,8 @@ import Matches from "./pages/Matches.jsx";
 import Messages from "./pages/Messages.jsx";
 import Footer from "./components/Footer.jsx";
 import Navbar from "./components/Navbar.jsx";
+import UserProfile from "./pages/UserProfile";
+import Notifications from "./pages/Notifications";
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, loading } = useAuth();
@@ -105,7 +107,15 @@ function App() {
             </ProtectedRoute>
           }
         />
-
+        <Route
+          path="/notifications"
+          element={
+            <ProtectedRoute>
+              <Notifications />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="/users/:userId" element={<UserProfile />} />
         {/* Unknown route */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

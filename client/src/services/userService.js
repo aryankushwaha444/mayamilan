@@ -48,3 +48,8 @@ export const discoverUsers = async (filters = {}) => {
 
   return response.data;
 };
+
+export const getUserById = async (userId) => {
+  const response = await api.get(`/users/${userId}`);
+  return response.data;
+};
