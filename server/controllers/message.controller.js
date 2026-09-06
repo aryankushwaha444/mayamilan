@@ -11,142 +11,118 @@ import User from "../models/User.js";
  * ==========================================
  */
 
-export const createOrGetConversation = async (
-  req,
-  res,
-  next
-) => {
+export const createOrGetConversation = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
     const { matchId } = req.params;
 
-    // Validate match ID
+    console.log(
+      "🔵 Creating conversation for matchId:",
+      matchId,
+      "by user:",
+      currentUserId
+    );
+
+    // 1. Validate match ID
     if (!mongoose.Types.ObjectId.isValid(matchId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid match ID",
-      });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid match ID" });
     }
 
-    // Find match belonging to current user
+    // 2. Find match belonging to current user
     const match = await Match.findOne({
       _id: matchId,
       users: currentUserId,
     });
 
     if (!match) {
-      return res.status(404).json({
-        success: false,
-        message: "Match not found",
-      });
+      console.log("❌ Match not found for user");
+      return res
+        .status(404)
+        .json({ success: false, message: "Match not found" });
     }
 
-    // Match must contain exactly two users
+    console.log("✅ Match found:", match._id);
+
+    // 3. Match must contain exactly two users
     if (!match.users || match.users.length !== 2) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid match",
-      });
+      console.log("❌ Invalid match structure:", match.users);
+      return res.status(400).json({ success: false, message: "Invalid match" });
     }
 
-    // Find the other matched user
+    // 4. Find the other matched user
     const otherUserId = match.users.find(
-      (userId) =>
-        userId.toString() !==
-        currentUserId.toString()
+      (userId) => userId.toString() !== currentUserId.toString()
     );
 
     if (!otherUserId) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Unable to determine matched user",
-      });
+      console.log("❌ Unable to determine matched user");
+      return res
+        .status(400)
+        .json({ success: false, message: "Unable to determine matched user" });
     }
 
-    // Check whether other user is still active
+    console.log("✅ Other user ID:", otherUserId);
+
+    // 5. Check whether other user is still active
     const otherUser = await User.findOne({
       _id: otherUserId,
       isActive: true,
-    }).select(
-      "_id name photos dateOfBirth gender location occupation"
-    );
+    }).select("_id name photos dateOfBirth gender location occupation");
 
     if (!otherUser) {
-      return res.status(404).json({
-        success: false,
-        message: "Matched user not found",
-      });
+      console.log("❌ Matched user not found or inactive");
+      return res
+        .status(404)
+        .json({ success: false, message: "Matched user not found" });
     }
 
-    /*
-     * Keep participant order consistent.
-     */
+    console.log("✅ Other user verified:", otherUser.name);
 
-    const participants = [
-      currentUserId.toString(),
-      otherUserId.toString(),
-    ]
+    // 6. Keep participant order consistent
+    const participants = [currentUserId.toString(), otherUserId.toString()]
       .sort()
-      .map(
-        (id) => new mongoose.Types.ObjectId(id)
-      );
+      .map((id) => new mongoose.Types.ObjectId(id));
 
-    /*
-     * Find existing conversation.
-     */
+    console.log("✅ Participants sorted:", participants);
 
-    let conversation =
-      await Conversation.findOne({
-        participants,
-      })
+    // 7. Find existing conversation
+    let conversation = await Conversation.findOne({ participants })
+      .populate(
+        "participants",
+        "_id name photos dateOfBirth gender location occupation"
+      )
+      .populate("lastMessage", "_id sender receiver text isRead createdAt");
+
+    // 8. Create conversation if it doesn't exist
+    if (!conversation) {
+      console.log("🆕 Creating new conversation...");
+      conversation = await Conversation.create({ participants });
+
+      conversation = await Conversation.findById(conversation._id)
         .populate(
           "participants",
           "_id name photos dateOfBirth gender location occupation"
         )
-        .populate(
-          "lastMessage",
-          "_id sender receiver text isRead createdAt"
-        );
-
-    /*
-     * Create conversation if it doesn't exist.
-     */
-
-    if (!conversation) {
-      conversation =
-        await Conversation.create({
-          participants,
-        });
-
-      conversation =
-        await Conversation.findById(
-          conversation._id
-        )
-          .populate(
-            "participants",
-            "_id name photos dateOfBirth gender location occupation"
-          )
-          .populate(
-            "lastMessage",
-            "_id sender receiver text isRead createdAt"
-          );
+        .populate("lastMessage", "_id sender receiver text isRead createdAt");
     }
+
+    console.log("✅ Conversation ready:", conversation._id);
 
     return res.status(200).json({
       success: true,
       conversation: {
         _id: conversation._id,
         participants: conversation.participants,
-        lastMessage:
-          conversation.lastMessage,
-        lastMessageAt:
-          conversation.lastMessageAt,
-        createdAt:
-          conversation.createdAt,
+        lastMessage: conversation.lastMessage,
+        lastMessageAt: conversation.lastMessageAt,
+        createdAt: conversation.createdAt,
       },
     });
   } catch (error) {
+    // 👇 THIS WILL PRINT THE EXACT ERROR IN YOUR TERMINAL
+    console.error("❌ CREATE CONVERSATION ERROR:", error);
     next(error);
   }
 };
@@ -157,57 +133,42 @@ export const createOrGetConversation = async (
  * ==========================================
  */
 
-export const getConversations = async (
-  req,
-  res,
-  next
-) => {
+export const getConversations = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
 
-    const conversations =
-      await Conversation.find({
-        participants: currentUserId,
+    const conversations = await Conversation.find({
+      participants: currentUserId,
+    })
+      .populate(
+        "participants",
+        "_id name photos dateOfBirth gender location occupation"
+      )
+      .populate("lastMessage", "_id sender receiver text isRead createdAt")
+      .sort({
+        lastMessageAt: -1,
+        updatedAt: -1,
+      });
+
+    const formattedConversations = conversations
+      .map((conversation) => {
+        const otherUser = conversation.participants.find(
+          (user) => user._id.toString() !== currentUserId.toString()
+        );
+
+        if (!otherUser) {
+          return null;
+        }
+
+        return {
+          _id: conversation._id,
+          lastMessage: conversation.lastMessage,
+          lastMessageAt: conversation.lastMessageAt,
+          user: otherUser,
+          createdAt: conversation.createdAt,
+        };
       })
-        .populate(
-          "participants",
-          "_id name photos dateOfBirth gender location occupation"
-        )
-        .populate(
-          "lastMessage",
-          "_id sender receiver text isRead createdAt"
-        )
-        .sort({
-          lastMessageAt: -1,
-          updatedAt: -1,
-        });
-
-    const formattedConversations =
-      conversations
-        .map((conversation) => {
-          const otherUser =
-            conversation.participants.find(
-              (user) =>
-                user._id.toString() !==
-                currentUserId.toString()
-            );
-
-          if (!otherUser) {
-            return null;
-          }
-
-          return {
-            _id: conversation._id,
-            lastMessage:
-              conversation.lastMessage,
-            lastMessageAt:
-              conversation.lastMessageAt,
-            user: otherUser,
-            createdAt:
-              conversation.createdAt,
-          };
-        })
-        .filter(Boolean);
+      .filter(Boolean);
 
     return res.status(200).json({
       success: true,
@@ -225,31 +186,22 @@ export const getConversations = async (
  * ==========================================
  */
 
-export const getMessages = async (
-  req,
-  res,
-  next
-) => {
+export const getMessages = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
     const { conversationId } = req.params;
 
-    if (
-      !mongoose.Types.ObjectId.isValid(
-        conversationId
-      )
-    ) {
+    if (!mongoose.Types.ObjectId.isValid(conversationId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid conversation ID",
       });
     }
 
-    const conversation =
-      await Conversation.findOne({
-        _id: conversationId,
-        participants: currentUserId,
-      });
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: currentUserId,
+    });
 
     if (!conversation) {
       return res.status(404).json({
@@ -261,14 +213,8 @@ export const getMessages = async (
     const messages = await Message.find({
       conversation: conversationId,
     })
-      .populate(
-        "sender",
-        "_id name photos"
-      )
-      .populate(
-        "receiver",
-        "_id name photos"
-      )
+      .populate("sender", "_id name photos")
+      .populate("receiver", "_id name photos")
       .sort({
         createdAt: 1,
       });
@@ -289,31 +235,20 @@ export const getMessages = async (
  * ==========================================
  */
 
-export const sendMessage = async (
-  req,
-  res,
-  next
-) => {
+export const sendMessage = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
     const { conversationId } = req.params;
     const { text } = req.body;
 
-    if (
-      !mongoose.Types.ObjectId.isValid(
-        conversationId
-      )
-    ) {
+    if (!mongoose.Types.ObjectId.isValid(conversationId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid conversation ID",
       });
     }
 
-    if (
-      typeof text !== "string" ||
-      !text.trim()
-    ) {
+    if (typeof text !== "string" || !text.trim()) {
       return res.status(400).json({
         success: false,
         message: "Message cannot be empty",
@@ -325,8 +260,7 @@ export const sendMessage = async (
     if (cleanText.length > 2000) {
       return res.status(400).json({
         success: false,
-        message:
-          "Message cannot exceed 2000 characters",
+        message: "Message cannot exceed 2000 characters",
       });
     }
 
@@ -335,11 +269,10 @@ export const sendMessage = async (
      * to the conversation.
      */
 
-    const conversation =
-      await Conversation.findOne({
-        _id: conversationId,
-        participants: currentUserId,
-      });
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: currentUserId,
+    });
 
     if (!conversation) {
       return res.status(404).json({
@@ -352,18 +285,14 @@ export const sendMessage = async (
      * Find receiver.
      */
 
-    const receiverId =
-      conversation.participants.find(
-        (participant) =>
-          participant.toString() !==
-          currentUserId.toString()
-      );
+    const receiverId = conversation.participants.find(
+      (participant) => participant.toString() !== currentUserId.toString()
+    );
 
     if (!receiverId) {
       return res.status(400).json({
         success: false,
-        message:
-          "Unable to determine message receiver",
+        message: "Unable to determine message receiver",
       });
     }
 
@@ -399,8 +328,7 @@ export const sendMessage = async (
      */
 
     conversation.lastMessage = message._id;
-    conversation.lastMessageAt =
-      message.createdAt;
+    conversation.lastMessageAt = message.createdAt;
 
     await conversation.save();
 
@@ -408,16 +336,9 @@ export const sendMessage = async (
      * Populate message before returning.
      */
 
-    const populatedMessage =
-      await Message.findById(message._id)
-        .populate(
-          "sender",
-          "_id name photos"
-        )
-        .populate(
-          "receiver",
-          "_id name photos"
-        );
+    const populatedMessage = await Message.findById(message._id)
+      .populate("sender", "_id name photos")
+      .populate("receiver", "_id name photos");
 
     return res.status(201).json({
       success: true,
@@ -428,31 +349,44 @@ export const sendMessage = async (
   }
 };
 
+// ... (keep all existing code) ...
+
 /*
  * ==========================================
- * MARK MESSAGE AS READ
+ * GET UNREAD MESSAGE COUNT
  * ==========================================
  */
+export const getUnreadMessageCount = async (req, res, next) => {
+  try {
+    // Count unique senders with unread messages, not total messages
+    const unreadMessages = await Message.find({
+      receiver: req.user._id,
+      isRead: false,
+    }).select("sender");
 
-export const markMessageAsRead = async (
-  req,
-  res,
-  next
-) => {
+    // Get unique sender IDs
+    const uniqueSenders = new Set(
+      unreadMessages.map((msg) => msg.sender.toString())
+    );
+
+    res.status(200).json({
+      success: true,
+      count: uniqueSenders.size,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/*
+ * ==========================================
+ * MARK MESSAGE AS DELIVERED
+ * ==========================================
+ */
+export const markMessageAsDelivered = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
     const { messageId } = req.params;
-
-    if (
-      !mongoose.Types.ObjectId.isValid(
-        messageId
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid message ID",
-      });
-    }
 
     const message = await Message.findOne({
       _id: messageId,
@@ -460,23 +394,81 @@ export const markMessageAsRead = async (
     });
 
     if (!message) {
-      return res.status(404).json({
-        success: false,
-        message: "Message not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Message not found" });
+    }
+
+    if (!message.isDelivered) {
+      message.isDelivered = true;
+      message.deliveredAt = new Date();
+      await message.save();
+    }
+
+    res
+      .status(200)
+      .json({ success: true, message: "Message marked as delivered" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/*
+ * ==========================================
+ * MARK MESSAGE AS READ
+ * ==========================================
+ */
+export const markMessageAsRead = async (req, res, next) => {
+  try {
+    const currentUserId = req.user._id;
+    const { messageId } = req.params;
+
+    const message = await Message.findOne({
+      _id: messageId,
+      receiver: currentUserId,
+    });
+
+    if (!message) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Message not found" });
     }
 
     if (!message.isRead) {
       message.isRead = true;
       message.readAt = new Date();
-
       await message.save();
     }
 
-    return res.status(200).json({
-      success: true,
-      message: "Message marked as read",
+    res.status(200).json({ success: true, message: "Message marked as read" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getRecentConversations = async (req, res, next) => {
+  try {
+    const conversations = await Conversation.find({
+      participants: req.user._id,
+    })
+      .populate("participants", "_id name photos")
+      .populate("lastMessage", "text createdAt sender receiver isRead")
+      .sort({ lastMessageAt: -1 })
+      .limit(5); // Show top 5 recent chats
+
+    const formatted = conversations.map((conv) => {
+      const otherUser = conv.participants.find(
+        (p) => p._id.toString() !== req.user._id.toString()
+      );
+      return {
+        _id: conv._id,
+        user: otherUser,
+        lastMessage: conv.lastMessage,
+        lastMessageAt: conv.lastMessageAt,
+      };
     });
+
+    res.status(200).json({ success: true, conversations: formatted });
   } catch (error) {
     next(error);
   }

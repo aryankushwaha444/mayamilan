@@ -157,7 +157,7 @@
 }
 
 /* ==========================================
-     ICON BUTTON
+     ICON BUTTON (Chat & Notifications)
   ========================================== */
 
 .navbar-icon-button {
@@ -171,9 +171,13 @@
   text-decoration: none;
   border-radius: 12px;
   transition: color 0.2s ease, background 0.2s ease;
+  border: none;
+  background: transparent;
+  cursor: pointer;
 }
 
-.navbar-icon-button:hover {
+.navbar-icon-button:hover,
+.navbar-icon-button.active {
   color: #ec4899;
   background: #fdf2f8;
 }
@@ -182,15 +186,200 @@
   font-size: 19px;
 }
 
+/* Updated to support numbers like Facebook */
 .notification-dot {
   position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 7px;
-  height: 7px;
+  top: 6px;
+  right: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid white;
+  border-radius: 999px;
+  background: #ec4899;
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* ==========================================
+     FACEBOOK-STYLE DROPDOWNS (CHAT & NOTIFICATIONS)
+  ========================================== */
+
+.navbar-chat-dropdown,
+.navbar-notifications-dropdown {
+  position: relative;
+}
+
+.facebook-style-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 360px;
+  max-height: 500px;
+  background: white;
+  border-radius: 16px;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.12);
+  z-index: 1000;
+  overflow: hidden;
+  animation: dropdownIn 0.18s ease;
+}
+
+@keyframes dropdownIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dropdown-header {
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.dropdown-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.dropdown-header .btn-link {
+  color: #ec4899;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.dropdown-header .btn-link:hover {
+  color: #be123c;
+  text-decoration: underline;
+}
+
+.dropdown-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.dropdown-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s ease;
+}
+
+.dropdown-item:hover {
+  background-color: #fdf2f8;
+}
+
+.item-avatar {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.item-avatar img,
+.item-avatar span {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fce7f3;
+  color: #db2777;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.online-indicator-small {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 12px;
+  height: 12px;
+  background: #22c55e;
   border: 2px solid white;
   border-radius: 50%;
+}
+
+.item-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.item-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.item-top strong {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.item-time {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.item-text {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+.notification-item.unread {
+  background-color: #fdf2f8;
+}
+
+.unread-dot {
+  width: 10px;
+  height: 10px;
   background: #ec4899;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 6px;
 }
 
 /* ==========================================
@@ -296,17 +485,6 @@
   background: white;
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.12);
   animation: dropdownIn 0.18s ease;
-}
-
-@keyframes dropdownIn {
-  from {
-    opacity: 0;
-    transform: translateY(-5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .profile-dropdown-header {
@@ -491,6 +669,7 @@
     margin-left: auto;
   }
 
+  /* Hide chat/notification icons on mobile, rely on bottom nav or menu */
   .navbar-actions .navbar-icon-button {
     display: none;
   }
@@ -503,7 +682,8 @@
     display: none;
   }
 
-  .profile-dropdown {
+  .profile-dropdown,
+  .facebook-style-dropdown {
     right: 0;
   }
 }
@@ -531,12 +711,14 @@
     height: 37px;
   }
 
-  .profile-dropdown {
+  .profile-dropdown,
+  .facebook-style-dropdown {
     position: fixed;
     top: 70px;
     left: 10px;
     right: 10px;
     width: auto;
+    max-height: calc(100vh - 80px);
   }
 }
 
@@ -544,7 +726,6 @@
      LOGGED OUT NAVBAR
   ========================================== */
 
-/* Push Login + Sign Up completely to the right */
 .navbar-auth-buttons {
   margin-left: auto !important;
   display: flex !important;
@@ -553,10 +734,6 @@
   gap: 12px;
   flex-shrink: 0;
 }
-
-/* ==========================================
-     LOGIN BUTTON
-  ========================================== */
 
 .navbar-login-button {
   display: inline-flex !important;
@@ -584,10 +761,6 @@
   box-shadow: 0 8px 20px rgba(225, 29, 72, 0.15);
 }
 
-/* ==========================================
-     SIGN UP BUTTON
-  ========================================== */
-
 .navbar-register-button {
   display: inline-flex !important;
   align-items: center;
@@ -612,10 +785,6 @@
   box-shadow: 0 10px 25px rgba(225, 29, 72, 0.3);
 }
 
-/* ==========================================
-     ICON EFFECT
-  ========================================== */
-
 .navbar-login-button i,
 .navbar-register-button i {
   transition: transform 0.25s ease;
@@ -628,10 +797,6 @@
 .navbar-register-button:hover i {
   transform: scale(1.15);
 }
-
-/* ==========================================
-     MOBILE AUTH BUTTONS
-  ========================================== */
 
 @media (max-width: 991px) {
   .navbar-auth-buttons {

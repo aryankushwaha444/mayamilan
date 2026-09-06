@@ -102,7 +102,7 @@ function MatchCard({ match, onUnmatch }) {
   // ==============================
 
   const handleChat = () => {
-    navigate(`/messages?user=${user._id}`);
+    navigate(`/messages?matchId=${match._id}`);
   };
 
   // ==============================

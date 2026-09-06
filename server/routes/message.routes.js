@@ -6,6 +6,9 @@ import {
   getMessages,
   sendMessage,
   markMessageAsRead,
+  markMessageAsDelivered, // 👈 ADD THIS IMPORT
+  getUnreadMessageCount,
+  getRecentConversations,
 } from "../controllers/message.controller.js";
 
 import { protect } from "../middleware/auth.middleware.js";
@@ -26,15 +29,30 @@ router.get("/conversations", protect, getConversations);
 
 /*
  * ==========================================
- * MESSAGES
+ * SPECIFIC MESSAGE ROUTES (MUST BE ABOVE PARAMETERIZED ROUTES)
  * ==========================================
  */
 
-// Get messages
+// Get unread message count
+router.get("/unread-count", protect, getUnreadMessageCount);
+
+// Get recent conversations for navbar dropdown
+router.get("/recent", protect, getRecentConversations);
+
+/*
+ * ==========================================
+ * PARAMETERIZED MESSAGE ROUTES
+ * ==========================================
+ */
+
+// Get messages for a specific conversation
 router.get("/:conversationId", protect, getMessages);
 
-// Send message
+// Send message to a specific conversation
 router.post("/:conversationId", protect, sendMessage);
+
+// Mark message as delivered
+router.patch("/:messageId/delivered", protect, markMessageAsDelivered); // 👈 ADD THIS ROUTE
 
 // Mark message as read
 router.patch("/:messageId/read", protect, markMessageAsRead);

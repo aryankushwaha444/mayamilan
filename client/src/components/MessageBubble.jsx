@@ -1,55 +1,47 @@
 function MessageBubble({ message, currentUserId }) {
-    const senderId =
-      message.sender?._id || message.sender;
-  
-    const isMine =
-      senderId?.toString() ===
-      currentUserId?.toString();
-  
-    const formattedTime = message.createdAt
-      ? new Date(
-          message.createdAt
-        ).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "";
-  
-    return (
+  const isOwnMessage =
+    message.sender?._id?.toString() === currentUserId?.toString();
+
+  const formatTime = (date) => {
+    if (!date) return "";
+    return new Date(date).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const getStatusIndicator = () => {
+    if (!isOwnMessage) return null;
+
+    // Priority: Read > Delivered > Sent
+    if (message.isRead) {
+      return <span className="message-status read">●</span>;
+    } else if (message.isDelivered) {
+      return <span className="message-status delivered">✓✓</span>;
+    } else {
+      return <span className="message-status sent">✓</span>;
+    }
+  };
+
+  return (
+    <div
+      className={`message-row ${
+        isOwnMessage ? "message-row-own" : "message-row-other"
+      }`}
+    >
       <div
-        className={`message-row ${
-          isMine ? "message-row-own" : "message-row-other"
+        className={`message-bubble ${
+          isOwnMessage ? "message-bubble-own" : "message-bubble-other"
         }`}
       >
-        <div
-          className={`message-bubble ${
-            isMine
-              ? "message-bubble-own"
-              : "message-bubble-other"
-          }`}
-        >
-          <p className="message-text">
-            {message.text}
-          </p>
-  
-          <div className="message-meta">
-            <span>{formattedTime}</span>
-  
-            {isMine && (
-              <span
-                className={`message-status ${
-                  message.isRead
-                    ? "message-read"
-                    : ""
-                }`}
-              >
-                {message.isRead ? "✓✓" : "✓"}
-              </span>
-            )}
-          </div>
+        <p className="message-text">{message.text}</p>
+        <div className="message-meta">
+          <span className="message-time">{formatTime(message.createdAt)}</span>
+          {getStatusIndicator()}
         </div>
       </div>
-    );
-  }
-  
-  export default MessageBubble;
+    </div>
+  );
+}
+
+export default MessageBubble;

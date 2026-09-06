@@ -77,3 +77,14 @@ export const markMessageAsRead = async (
 
   return response.data;
 };
+
+
+export const getUnreadMessageCount = async () => {
+  const response = await api.get("/messages/unread-count");
+  return response.data;
+};
+
+export const getRecentConversations = async () => {
+  const response = await api.get("/messages/recent");
+  return response.data;
+};

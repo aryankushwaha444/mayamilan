@@ -35,20 +35,9 @@ const conversationSchema = new mongoose.Schema(
 );
 
 /*
- * Always keep participants in a
- * consistent order.
- */
-conversationSchema.pre("validate", function (next) {
-  if (this.participants?.length === 2) {
-    this.participants.sort((a, b) => a.toString().localeCompare(b.toString()));
-  }
-
-  next();
-});
-
-/*
- * Prevent duplicate conversations
- * between the same two users.
+ * Prevent duplicate conversations between the same two users.
+ * Note: The participants array is already sorted in the controller
+ * before being saved, ensuring this unique index works perfectly.
  */
 conversationSchema.index({ participants: 1 }, { unique: true });
 
