@@ -567,13 +567,14 @@
 @media (max-width: 900px) {
   .messages-page {
     padding: 0;
+    width: 100%;
     background: white;
   }
 
   .messages-container {
     width: 100%;
     max-width: 100%;
-    height: calc(100vh - 76px);
+    height: calc(100vh - 68px);
     border-radius: 0;
     border: 0;
     box-shadow: none;

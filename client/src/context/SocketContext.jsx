@@ -5,13 +5,16 @@ import { useAuth } from "./AuthContext.jsx";
 export const SocketContext = createContext(null);
 
 function SocketProvider({ children }) {
-  // 👇 Use token from context STATE, not localStorage
-  const { user, accessToken } = useAuth();
+  const { user } = useAuth();
 
   const [socket, setSocket] = useState(null);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
+    // 👇 Read token directly from localStorage (not from state)
+    // This ensures we always have the current token
+    const accessToken = localStorage.getItem("accessToken");
+
     // No user or no token → no socket
     if (!user || !accessToken) {
       setSocket(null);
@@ -29,6 +32,7 @@ function SocketProvider({ children }) {
         reconnection: true,
         reconnectionAttempts: 5,
         reconnectionDelay: 1000,
+        timeout: 20000,
       }
     );
 
@@ -56,7 +60,7 @@ function SocketProvider({ children }) {
       setSocket(null);
       setConnected(false);
     };
-  }, [user, accessToken]); // 👈 Re-runs on EVERY login/logout/token change
+  }, [user?._id]); // 👈 Only reconnect when user ID changes, not on every user object update
 
   return (
     <SocketContext.Provider value={{ socket, connected }}>

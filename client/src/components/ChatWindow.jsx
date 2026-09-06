@@ -349,9 +349,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     <section className="chat-window">
       {/* HEADER */}
       <header className="chat-header">
-        <button type="button" className="chat-back-btn" onClick={onBack}>
-          ←
-        </button>
         <div className="chat-user-info">
           <div className="chat-user-avatar">
             {otherUser?.photos?.[0]?.url ? (

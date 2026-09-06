@@ -534,7 +534,7 @@ function Navbar() {
                       <span>My Profile</span>
                     </NavLink>
                     <NavLink
-                      to="/edit-profile"
+                      to="/profile/edit"
                       className="profile-dropdown-item"
                       onClick={() => setProfileOpen(false)}
                     >
