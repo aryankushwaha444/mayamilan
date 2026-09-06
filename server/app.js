@@ -1,37 +1,76 @@
+import dotenv from "dotenv";
+
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
+import userRoutes from "./routes/user.routes.js";
+import authRoutes from "./routes/auth.routes.js";
+import discoveryRoutes from "./routes/discovery.routes.js";
+import likeRoutes from "./routes/like.routes.js";
+import matchRoutes from "./routes/match.routes.js";
+import messageRoutes from "./routes/message.routes.js";
 
 const app = express();
 
-app.use(helmet());
-
+// CORS
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
+// SECURITY
+app.use(helmet());
+
+// BODY PARSER
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// COOKIE
 app.use(cookieParser());
 
-const apiLimiter = rateLimit({
+// RATE LIMIT
+const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+
+  // General API limit
+  max: 1000,
+
+  standardHeaders: true,
+  legacyHeaders: false,
+
+  message: {
+    success: false,
+    message: "Too many requests. Please try again later.",
+  },
+
+  // Authentication routes have their own limits
+  skip: (req) => req.path.startsWith("/auth"),
 });
 
-app.use("/api", apiLimiter);
+app.use("/api", limiter);
 
+// HEALTH CHECK
 app.get("/api/health", (req, res) => {
-  res.status(200).json({
+  res.json({
     success: true,
     message: "Dating Portal API is running",
   });
 });
+
+// ROUTES
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/discovery", discoveryRoutes);
+app.use("/api/likes", likeRoutes);
+app.use("/api/matches", matchRoutes);
+app.use("/api/messages", messageRoutes);
 
 export default app;
