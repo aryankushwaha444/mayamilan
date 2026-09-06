@@ -660,3 +660,21 @@
 .message-bubble-other .message-status {
   display: none; /* Hide status on received messages */
 }
+
+
+/* Online / Offline status colors */
+.chat-user-info p.status-online {
+  color: #22c55e;
+}
+
+.chat-user-info p.status-online::before {
+  background: #22c55e;
+}
+
+.chat-user-info p.status-offline {
+  color: #94a3b8;
+}
+
+.chat-user-info p.status-offline::before {
+  background: #94a3b8;
+}

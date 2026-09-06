@@ -23,14 +23,12 @@ export const createOrGetConversation = async (req, res, next) => {
       currentUserId
     );
 
-    // 1. Validate match ID
     if (!mongoose.Types.ObjectId.isValid(matchId)) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid match ID" });
     }
 
-    // 2. Find match belonging to current user
     const match = await Match.findOne({
       _id: matchId,
       users: currentUserId,
@@ -45,13 +43,11 @@ export const createOrGetConversation = async (req, res, next) => {
 
     console.log("✅ Match found:", match._id);
 
-    // 3. Match must contain exactly two users
     if (!match.users || match.users.length !== 2) {
       console.log("❌ Invalid match structure:", match.users);
       return res.status(400).json({ success: false, message: "Invalid match" });
     }
 
-    // 4. Find the other matched user
     const otherUserId = match.users.find(
       (userId) => userId.toString() !== currentUserId.toString()
     );
@@ -65,7 +61,6 @@ export const createOrGetConversation = async (req, res, next) => {
 
     console.log("✅ Other user ID:", otherUserId);
 
-    // 5. Check whether other user is still active
     const otherUser = await User.findOne({
       _id: otherUserId,
       isActive: true,
@@ -80,22 +75,19 @@ export const createOrGetConversation = async (req, res, next) => {
 
     console.log("✅ Other user verified:", otherUser.name);
 
-    // 6. Keep participant order consistent
     const participants = [currentUserId.toString(), otherUserId.toString()]
       .sort()
       .map((id) => new mongoose.Types.ObjectId(id));
 
     console.log("✅ Participants sorted:", participants);
 
-    // 7. Find existing conversation
     let conversation = await Conversation.findOne({ participants })
       .populate(
         "participants",
-        "_id name photos dateOfBirth gender location occupation"
+        "_id name photos dateOfBirth gender location occupation isOnline lastSeen"
       )
       .populate("lastMessage", "_id sender receiver text isRead createdAt");
 
-    // 8. Create conversation if it doesn't exist
     if (!conversation) {
       console.log("🆕 Creating new conversation...");
       conversation = await Conversation.create({ participants });
@@ -103,7 +95,7 @@ export const createOrGetConversation = async (req, res, next) => {
       conversation = await Conversation.findById(conversation._id)
         .populate(
           "participants",
-          "_id name photos dateOfBirth gender location occupation"
+          "_id name photos dateOfBirth gender location occupation isOnline lastSeen"
         )
         .populate("lastMessage", "_id sender receiver text isRead createdAt");
     }
@@ -121,7 +113,6 @@ export const createOrGetConversation = async (req, res, next) => {
       },
     });
   } catch (error) {
-    // 👇 THIS WILL PRINT THE EXACT ERROR IN YOUR TERMINAL
     console.error("❌ CREATE CONVERSATION ERROR:", error);
     next(error);
   }
@@ -142,7 +133,7 @@ export const getConversations = async (req, res, next) => {
     })
       .populate(
         "participants",
-        "_id name photos dateOfBirth gender location occupation"
+        "_id name photos dateOfBirth gender location occupation isOnline lastSeen"
       )
       .populate("lastMessage", "_id sender receiver text isRead createdAt")
       .sort({
@@ -264,11 +255,6 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    /*
-     * Make sure current user belongs
-     * to the conversation.
-     */
-
     const conversation = await Conversation.findOne({
       _id: conversationId,
       participants: currentUserId,
@@ -281,10 +267,6 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    /*
-     * Find receiver.
-     */
-
     const receiverId = conversation.participants.find(
       (participant) => participant.toString() !== currentUserId.toString()
     );
@@ -295,10 +277,6 @@ export const sendMessage = async (req, res, next) => {
         message: "Unable to determine message receiver",
       });
     }
-
-    /*
-     * Make sure receiver is active.
-     */
 
     const receiver = await User.findOne({
       _id: receiverId,
@@ -312,10 +290,6 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    /*
-     * Create message.
-     */
-
     const message = await Message.create({
       conversation: conversationId,
       sender: currentUserId,
@@ -323,18 +297,10 @@ export const sendMessage = async (req, res, next) => {
       text: cleanText,
     });
 
-    /*
-     * Update conversation preview.
-     */
-
     conversation.lastMessage = message._id;
     conversation.lastMessageAt = message.createdAt;
 
     await conversation.save();
-
-    /*
-     * Populate message before returning.
-     */
 
     const populatedMessage = await Message.findById(message._id)
       .populate("sender", "_id name photos")
@@ -349,8 +315,6 @@ export const sendMessage = async (req, res, next) => {
   }
 };
 
-// ... (keep all existing code) ...
-
 /*
  * ==========================================
  * GET UNREAD MESSAGE COUNT
@@ -358,13 +322,11 @@ export const sendMessage = async (req, res, next) => {
  */
 export const getUnreadMessageCount = async (req, res, next) => {
   try {
-    // Count unique senders with unread messages, not total messages
     const unreadMessages = await Message.find({
       receiver: req.user._id,
       isRead: false,
     }).select("sender");
 
-    // Get unique sender IDs
     const uniqueSenders = new Set(
       unreadMessages.map((msg) => msg.sender.toString())
     );
@@ -451,10 +413,10 @@ export const getRecentConversations = async (req, res, next) => {
     const conversations = await Conversation.find({
       participants: req.user._id,
     })
-      .populate("participants", "_id name photos")
+      .populate("participants", "_id name photos isOnline lastSeen")
       .populate("lastMessage", "text createdAt sender receiver isRead")
       .sort({ lastMessageAt: -1 })
-      .limit(5); // Show top 5 recent chats
+      .limit(5);
 
     const formatted = conversations.map((conv) => {
       const otherUser = conv.participants.find(

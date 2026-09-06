@@ -16,8 +16,76 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const [typing, setTyping] = useState(false);
   const [userScrolled, setUserScrolled] = useState(false);
 
+  const [otherUserOnline, setOtherUserOnline] = useState(
+    Boolean(otherUser?.isOnline)
+  );
+
   const typingTimeoutRef = useRef(null);
   const messagesContainerRef = useRef(null);
+
+  /*
+   * ==========================================
+   * SYNC ONLINE STATUS WHEN otherUser CHANGES
+   * ==========================================
+   */
+  useEffect(() => {
+    setOtherUserOnline(Boolean(otherUser?.isOnline));
+  }, [otherUser]);
+
+  /*
+   * ==========================================
+   * REAL-TIME ONLINE / OFFLINE PRESENCE
+   * ==========================================
+   */
+  useEffect(() => {
+    if (!socket) return;
+
+    const otherUserId = otherUser?._id?.toString();
+
+    const handleUserOnline = ({ userId }) => {
+      if (userId?.toString() === otherUserId) {
+        setOtherUserOnline(true);
+      }
+    };
+
+    const handleUserOffline = ({ userId }) => {
+      if (userId?.toString() === otherUserId) {
+        setOtherUserOnline(false);
+      }
+    };
+
+    socket.on("user_online", handleUserOnline);
+    socket.on("user_offline", handleUserOffline);
+
+    return () => {
+      socket.off("user_online", handleUserOnline);
+      socket.off("user_offline", handleUserOffline);
+    };
+  }, [socket, otherUser]);
+
+  /*
+   * ==========================================
+   * ASK SERVER FOR THE OTHER USER'S LIVE STATUS
+   * ==========================================
+   */
+  useEffect(() => {
+    if (!socket || !otherUser?._id) return;
+
+    const otherUserId = otherUser._id.toString();
+
+    const handlePresenceResult = ({ userId, isOnline }) => {
+      if (userId?.toString() === otherUserId) {
+        setOtherUserOnline(isOnline);
+      }
+    };
+
+    socket.on("presence_result", handlePresenceResult);
+    socket.emit("check_presence", { userId: otherUserId });
+
+    return () => {
+      socket.off("presence_result", handlePresenceResult);
+    };
+  }, [socket, otherUser]);
 
   /*
    * ==========================================
@@ -59,7 +127,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
   /*
    * ==========================================
-   * REAL-TIME EVENTS
+   * REAL-TIME CHAT EVENTS
    * ==========================================
    */
   useEffect(() => {
@@ -78,7 +146,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         return [...currentMessages, message];
       });
 
-      // If I'm the receiver, ack delivery (fallback for backend auto-delivery)
       const receiverId = message.receiver?._id || message.receiver;
       if (receiverId?.toString() === currentUserId?.toString()) {
         socket.emit("mark_delivered", { messageId: message._id });
@@ -134,9 +201,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
   /*
    * ==========================================
-   * MARK MESSAGES AS READ (FIXED - SIMPLE & RELIABLE)
-   * Marks all unread received messages as read
-   * whenever the chat is open and user is NOT scrolled up.
+   * MARK MESSAGES AS READ
    * ==========================================
    */
   useEffect(() => {
@@ -272,8 +337,8 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           </div>
           <div>
             <h2>{otherUser?.name}</h2>
-            <p>
-              {typing ? "Typing..." : connected ? "Online" : "Connecting..."}
+            <p className={otherUserOnline ? "status-online" : "status-offline"}>
+              {typing ? "Typing..." : otherUserOnline ? "Online" : "Offline"}
             </p>
           </div>
         </div>

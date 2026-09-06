@@ -143,22 +143,16 @@ const registerChatSocket = (io, socket) => {
         .populate("sender", "_id name photos")
         .populate("receiver", "_id name photos");
 
-      // Send to conversation room
       io.to(`conversation:${conversationId}`).emit(
         "new_message",
         populatedMessage
       );
 
-      // Send to receiver's personal room
       io.to(`user:${receiverId.toString()}`).emit("conversation_updated", {
         conversationId,
         message: populatedMessage,
       });
 
-      /*
-       * 👇 AUTO-DELIVERY: If the receiver is currently ONLINE (connected),
-       * mark as delivered instantly and notify the sender (double tick).
-       */
       const receiverSockets = await io
         .in(`user:${receiverId.toString()}`)
         .fetchSockets();
@@ -217,7 +211,7 @@ const registerChatSocket = (io, socket) => {
       if (!message || message.isRead) return;
 
       message.isRead = true;
-      message.isDelivered = true; // 👈 Read implies delivered
+      message.isDelivered = true;
       message.readAt = new Date();
       await message.save();
 
@@ -227,6 +221,24 @@ const registerChatSocket = (io, socket) => {
       });
     } catch (error) {
       console.error("Mark read error:", error);
+    }
+  });
+
+  /*
+   * ==========================================
+   * CHECK LIVE PRESENCE (Is the user actually connected right now?)
+   * ==========================================
+   */
+  socket.on("check_presence", async ({ userId }) => {
+    try {
+      const activeSockets = await io.in(`user:${userId}`).fetchSockets();
+
+      socket.emit("presence_result", {
+        userId,
+        isOnline: activeSockets.length > 0,
+      });
+    } catch (error) {
+      console.error("Check presence error:", error);
     }
   });
 };

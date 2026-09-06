@@ -4,10 +4,8 @@ import User from "../models/User.js";
 import registerChatSocket from "./chat.socket.js";
 import registerNotificationSocket from "./notification.socket.js";
 
-// 👇 Store io instance in a module-level variable
 let io;
 
-// 👇 Export a function to retrieve it safely (used by like/match controllers)
 export const getIO = () => {
   if (!io) {
     throw new Error("Socket.io not initialized!");
@@ -64,22 +62,19 @@ const initializeSocket = (server) => {
 
     console.log(`Socket connected: ${socket.user.name} (${userId})`);
 
-    // 👇 JOIN USER'S PERSONAL ROOM
-    // This is CRITICAL for receiving match notifications, new likes,
-    // AND chat delivery/read receipts (double ticks / blue circles).
     socket.join(`user:${userId}`);
-    console.log(`✅ ${socket.user.name} joined room: user:${userId}`);
 
-    // Update online status
     await User.findByIdAndUpdate(userId, { isOnline: true });
 
-    // Register chat and notification events
+    // 👇 BROADCAST: Tell everyone this user is now ONLINE
+    socket.broadcast.emit("user_online", { userId });
+
     registerChatSocket(io, socket);
     registerNotificationSocket(io, socket);
 
     /*
      * ==========================================
-     * DISCONNECT
+     * DISCONNECT (fires on logout / tab close)
      * ==========================================
      */
     socket.on("disconnect", async () => {
@@ -89,6 +84,9 @@ const initializeSocket = (server) => {
         isOnline: false,
         lastSeen: new Date(),
       });
+
+      // 👇 BROADCAST: Tell everyone this user is now OFFLINE
+      socket.broadcast.emit("user_offline", { userId });
     });
   });
 
