@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import PhotoLightbox from "../components/PhotoLightbox.jsx";
 
 import {
   getMyProfile,
@@ -20,6 +21,7 @@ function Profile() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [lightboxIndex, setLightboxIndex] = useState(null);
 
   useEffect(() => {
     loadProfile();
@@ -58,7 +60,6 @@ function Profile() {
     setError("");
     setSuccess("");
 
-    // Frontend validation
     if (!file.type.startsWith("image/")) {
       setError("Please select an image file.");
       event.target.value = "";
@@ -224,13 +225,15 @@ function Profile() {
             {/* Photo Grid */}
             {profile.photos?.length > 0 ? (
               <div className="row g-3">
-                {profile.photos.map((photo) => (
+                {/* 👇 FIXED: added `index` as second map parameter */}
+                {profile.photos.map((photo, index) => (
                   <div className="col-6 col-md-4" key={photo._id}>
                     <div className="profile-photo-card position-relative">
                       <img
                         src={photo.url}
                         alt={`${profile.name} profile`}
                         className="profile-photo"
+                        onClick={() => setLightboxIndex(index)} // 👈 now works
                       />
 
                       {/* Primary badge */}
@@ -365,6 +368,15 @@ function Profile() {
           </div>
         </div>
       </div>
+
+      {/* 👇 FIXED: RENDER THE LIGHTBOX (was missing!) */}
+      {lightboxIndex !== null && (
+        <PhotoLightbox
+          photos={profile.photos}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+        />
+      )}
     </div>
   );
 }

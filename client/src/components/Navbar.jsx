@@ -542,12 +542,12 @@ function Navbar() {
                       <span>Edit Profile</span>
                     </NavLink>
                     <NavLink
-                      to="/settings"
+                      to="/change-password"
                       className="profile-dropdown-item"
                       onClick={() => setProfileOpen(false)}
                     >
-                      <i className="bi bi-gear"></i>
-                      <span>Settings</span>
+                      <i className="bi bi-shield-lock"></i>
+                      <span>Change Password</span>
                     </NavLink>
                     <div className="profile-dropdown-divider"></div>
                     <button

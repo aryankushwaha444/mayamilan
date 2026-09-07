@@ -1,10 +1,10 @@
 import argon2 from "argon2";
 import jwt from "jsonwebtoken";
-
 import User from "../models/User.js";
 import RefreshToken from "../models/RefreshToken.js";
-
 import { registerSchema, loginSchema } from "../validators/auth.validator.js";
+import { sendOTP } from "../config/email.js";
+import { generateOTP, saveOTP, verifyOTP } from "../utils/otp.js";
 
 import {
   generateAccessToken,
@@ -277,5 +277,153 @@ export const refreshAccessToken = async (req, res) => {
       success: false,
       message: "Invalid or expired refresh token",
     });
+  }
+};
+
+export const changePassword = async (req, res, next) => {
+  try {
+    console.log("🔐 Change password request for user:", req.user._id);
+
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password and new password are required.",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must be at least 6 characters.",
+      });
+    }
+
+    // Get user with password field
+    const user = await User.findById(req.user._id).select("+password");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
+
+    console.log("✅ User found:", user.email);
+
+    // 👇 Verify current password using argon2 (not bcrypt!)
+    const isMatch = await argon2.verify(user.password, currentPassword);
+    console.log("🔑 Password verification result:", isMatch);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: "Current password is incorrect.",
+      });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must be different from current password.",
+      });
+    }
+
+    // 👇 Hash the new password with argon2 before saving
+    const hashedPassword = await argon2.hash(newPassword);
+    user.password = hashedPassword;
+    await user.save();
+
+    console.log("✅ Password changed successfully for:", user.email);
+
+    res.status(200).json({
+      success: true,
+      message: "Password changed successfully.",
+    });
+  } catch (error) {
+    console.error("❌ Change password error:", error);
+    next(error);
+  }
+};
+
+/*
+SEND OTP
+POST /api/auth/send-otp
+*/
+export const sendOTPCode = async (req, res, next) => {
+  try {
+    const { email, name } = req.body;
+
+    if (!email || !name) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and name are required",
+      });
+    }
+
+    // Check if user already exists and is verified
+    const existingUser = await User.findOne({ email });
+    if (existingUser && existingUser.isVerified) {
+      return res.status(409).json({
+        success: false,
+        message: "Email already registered and verified",
+      });
+    }
+
+    // Generate and save OTP
+    const otp = generateOTP();
+    await saveOTP(email, otp);
+
+    // Send email
+    await sendOTP(email, otp, name);
+
+    res.status(200).json({
+      success: true,
+      message: "OTP sent to your email",
+    });
+  } catch (error) {
+    console.error("Send OTP error:", error);
+    next(error);
+  }
+};
+
+// VERIFY OTP
+
+export const verifyOTPCode = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and OTP are required",
+      });
+    }
+
+    const result = await verifyOTP(email, otp);
+
+    if (!result.valid) {
+      return res.status(400).json({
+        success: false,
+        message: result.message,
+      });
+    }
+
+    // Mark user as verified
+    const user = await User.findOne({ email });
+
+    if (user && !user.isVerified) {
+      user.isVerified = true;
+      await user.save();
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Email verified successfully",
+    });
+  } catch (error) {
+    console.error("Verify OTP error:", error);
+    next(error);
   }
 };

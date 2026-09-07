@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { getUserById } from "../services/userService";
 import { likeUser, unlikeUser } from "../services/matchService";
+import PhotoLightbox from "../components/PhotoLightbox.jsx";
 
 function UserProfile() {
   const { userId } = useParams();
@@ -10,6 +11,7 @@ function UserProfile() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [lightboxIndex, setLightboxIndex] = useState(null);
 
   // ==========================================
   // FETCH USER PROFILE
@@ -101,6 +103,13 @@ function UserProfile() {
     return primary?.url || primary?.secure_url || null;
   };
 
+  // 👇 Index of the primary photo (for opening lightbox on main image)
+  const getPrimaryIndex = (photos) => {
+    if (!Array.isArray(photos) || photos.length === 0) return 0;
+    const index = photos.findIndex((p) => p?.isPrimary);
+    return index === -1 ? 0 : index;
+  };
+
   const getLocation = (location) => {
     if (!location) return "";
     if (typeof location === "object") {
@@ -139,21 +148,23 @@ function UserProfile() {
 
   const age = calculateAge(profile.dateOfBirth);
   const photo = getPrimaryPhoto(profile.photos);
+  const primaryIndex = getPrimaryIndex(profile.photos);
   const location = getLocation(profile.location);
 
   return (
     <div className="container py-4 py-md-5">
-
       <div className="row g-4">
         {/* LEFT: Profile Photo */}
         <div className="col-md-5">
-          <div className="card border-0 shadow-sm overflow-hidden">
+          {/* 👇 FIXED: added position-relative so badge anchors to card */}
+          <div className="card border-0 shadow-sm overflow-hidden position-relative">
             {photo ? (
               <img
                 src={photo}
                 alt={profile.name}
-                className="w-100"
+                className="w-100 user-profile-main-photo"
                 style={{ height: "500px", objectFit: "cover" }}
+                onClick={() => setLightboxIndex(primaryIndex)} // 👈 OPEN LIGHTBOX
               />
             ) : (
               <div
@@ -303,12 +314,14 @@ function UserProfile() {
               <div className="card-body p-4">
                 <h5 className="fw-semibold mb-3">More Photos</h5>
                 <div className="row g-2">
-                  {profile.photos.map((photo, index) => (
-                    <div key={index} className="col-4">
+                  {/* 👇 FIXED: open lightbox at the correct index */}
+                  {profile.photos.map((p, index) => (
+                    <div key={p._id || index} className="col-4">
                       <img
-                        src={photo?.url || photo?.secure_url}
+                        src={p?.url || p?.secure_url}
                         alt={`Photo ${index + 1}`}
-                        className="w-100 rounded"
+                        className="w-100 rounded user-profile-thumb"
+                        onClick={() => setLightboxIndex(index)} // 👈 correct index
                         style={{ height: "150px", objectFit: "cover" }}
                       />
                     </div>
@@ -319,6 +332,15 @@ function UserProfile() {
           )}
         </div>
       </div>
+
+      {/* 👇 FIXED: RENDER THE LIGHTBOX (was missing!) */}
+      {lightboxIndex !== null && (
+        <PhotoLightbox
+          photos={profile.photos}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+        />
+      )}
     </div>
   );
 }

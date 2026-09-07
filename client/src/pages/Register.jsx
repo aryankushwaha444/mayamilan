@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { sendOTP, verifyOTP } from "../services/authService";
 
 function Register() {
   const navigate = useNavigate();
@@ -9,6 +10,15 @@ function Register() {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  const [otp, setOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [resendTimer, setResendTimer] = useState(0);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -22,17 +32,125 @@ function Register() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-
+    setFormData((prev) => ({ ...prev, [name]: value }));
     setError("");
+    setSuccess("");
+  };
+
+  const getStrength = (pwd) => {
+    let score = 0;
+    if (pwd.length >= 8) score++;
+    if (pwd.length >= 12) score++;
+    if (/[A-Z]/.test(pwd)) score++;
+    if (/[0-9]/.test(pwd)) score++;
+    if (/[^A-Za-z0-9]/.test(pwd)) score++;
+    return score;
+  };
+
+  const strength = getStrength(formData.password);
+  const strengthLabels = [
+    "Too weak",
+    "Weak",
+    "Fair",
+    "Good",
+    "Strong",
+    "Very strong",
+  ];
+  const strengthColors = [
+    "#ef4444",
+    "#ef4444",
+    "#f59e0b",
+    "#eab308",
+    "#22c55e",
+    "#16a34a",
+  ];
+
+  const handleSendOTP = async () => {
+    setError("");
+    setSuccess("");
+
+    if (!formData.email) {
+      setError("Please enter your email");
+      return;
+    }
+
+    setOtpLoading(true);
+
+    try {
+      await sendOTP(formData.email, formData.name);
+      setOtpSent(true);
+      setSuccess("OTP sent to your email!");
+      setResendTimer(60);
+
+      // Countdown timer
+      const interval = setInterval(() => {
+        setResendTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to send OTP");
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleVerifyOTP = async () => {
+    setError("");
+    setSuccess("");
+
+    if (!otp || otp.length !== 6) {
+      setError("Please enter a valid 6-digit OTP");
+      return;
+    }
+
+    setOtpLoading(true);
+
+    try {
+      await verifyOTP(formData.email, otp);
+      setSuccess("Email verified successfully!");
+
+      // Now complete registration
+      await handleCompleteRegistration();
+    } catch (err) {
+      setError(err.response?.data?.message || "Invalid OTP");
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleCompleteRegistration = async () => {
+    try {
+      setLoading(true);
+
+      await register({
+        name: formData.name,
+        email: formData.email,
+        password: formData.password,
+        dateOfBirth: formData.dateOfBirth,
+        gender: formData.gender,
+        relationshipGoal: formData.relationshipGoal,
+      });
+
+      window.location.href = "/";
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          err.response?.data?.errors?.[0]?.message ||
+          "Registration failed. Please try again."
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   const nextStep = () => {
     setError("");
+    setSuccess("");
 
     if (step === 1) {
       if (!formData.name.trim()) {
@@ -73,45 +191,27 @@ function Register() {
       }
     }
 
+    if (step === 3) {
+      if (!formData.relationshipGoal) {
+        setError("Please select your relationship goal.");
+        return;
+      }
+
+      // Send OTP before moving to verification step
+      if (!otpSent) {
+        handleSendOTP();
+        setStep(4);
+        return;
+      }
+    }
+
     setStep((prev) => prev + 1);
   };
 
   const previousStep = () => {
     setError("");
+    setSuccess("");
     setStep((prev) => prev - 1);
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
-
-    if (!formData.relationshipGoal) {
-      setError("Please select your relationship goal.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-
-      await register({
-        name: formData.name,
-        email: formData.email,
-        password: formData.password,
-        dateOfBirth: formData.dateOfBirth,
-        gender: formData.gender,
-        relationshipGoal: formData.relationshipGoal,
-      });
-
-      window.location.href = "/";
-    } catch (err) {
-      setError(
-        err.response?.data?.message ||
-          err.response?.data?.errors?.[0]?.message ||
-          "Registration failed. Please try again."
-      );
-    } finally {
-      setLoading(false);
-    }
   };
 
   return (
@@ -121,22 +221,18 @@ function Register() {
           <div className="col-12 col-md-10 col-lg-7 col-xl-6">
             <div className="card auth-card border-0 shadow-lg">
               <div className="card-body p-4 p-md-5">
-                {/* Header */}
                 <div className="text-center mb-4">
                   <div className="auth-logo mb-3">
                     <i className="bi bi-heart-fill"></i>
                   </div>
-
                   <h2 className="fw-bold mb-2">Create Your Account</h2>
-
                   <p className="text-muted mb-0">
                     Find meaningful connections that matter.
                   </p>
                 </div>
 
-                {/* Progress */}
                 <div className="register-progress mb-4">
-                  {[1, 2, 3].map((number) => (
+                  {[1, 2, 3, 4].map((number) => (
                     <div
                       key={number}
                       className={`progress-step ${
@@ -150,17 +246,16 @@ function Register() {
                           number
                         )}
                       </div>
-
                       <span>
                         {number === 1 && "Account"}
                         {number === 2 && "About You"}
                         {number === 3 && "Preferences"}
+                        {number === 4 && "Verify"}
                       </span>
                     </div>
                   ))}
                 </div>
 
-                {/* Error */}
                 {error && (
                   <div
                     className="alert alert-danger d-flex align-items-center"
@@ -171,25 +266,31 @@ function Register() {
                   </div>
                 )}
 
-                <form onSubmit={handleSubmit}>
-                  {/* STEP 1 */}
+                {success && (
+                  <div
+                    className="alert alert-success d-flex align-items-center"
+                    role="alert"
+                  >
+                    <i className="bi bi-check-circle me-2"></i>
+                    <span>{success}</span>
+                  </div>
+                )}
+
+                <form onSubmit={(e) => e.preventDefault()}>
                   {step === 1 && (
                     <div>
                       <h5 className="fw-bold mb-3">
                         Let's create your account
                       </h5>
 
-                      {/* Name */}
                       <div className="mb-3">
                         <label htmlFor="name" className="form-label">
                           Full Name
                         </label>
-
                         <div className="input-group">
                           <span className="input-group-text">
                             <i className="bi bi-person"></i>
                           </span>
-
                           <input
                             type="text"
                             id="name"
@@ -203,17 +304,14 @@ function Register() {
                         </div>
                       </div>
 
-                      {/* Email */}
                       <div className="mb-3">
                         <label htmlFor="email" className="form-label">
                           Email Address
                         </label>
-
                         <div className="input-group">
                           <span className="input-group-text">
                             <i className="bi bi-envelope"></i>
                           </span>
-
                           <input
                             type="email"
                             id="email"
@@ -227,19 +325,16 @@ function Register() {
                         </div>
                       </div>
 
-                      {/* Password */}
                       <div className="mb-3">
                         <label htmlFor="password" className="form-label">
                           Password
                         </label>
-
                         <div className="input-group">
                           <span className="input-group-text">
                             <i className="bi bi-lock"></i>
                           </span>
-
                           <input
-                            type="password"
+                            type={showPassword ? "text" : "password"}
                             id="password"
                             name="password"
                             className="form-control"
@@ -248,30 +343,79 @@ function Register() {
                             onChange={handleChange}
                             autoComplete="new-password"
                           />
+                          <button
+                            type="button"
+                            className="input-group-text password-toggle"
+                            onClick={() => setShowPassword(!showPassword)}
+                            tabIndex={-1}
+                          >
+                            <i
+                              className={`bi ${
+                                showPassword ? "bi-eye-slash" : "bi-eye"
+                              }`}
+                            ></i>
+                          </button>
                         </div>
+
+                        {formData.password && (
+                          <div className="mt-2">
+                            <div className="progress" style={{ height: "6px" }}>
+                              <div
+                                className="progress-bar"
+                                style={{
+                                  width: `${(strength / 5) * 100}%`,
+                                  background: strengthColors[strength],
+                                }}
+                              ></div>
+                            </div>
+                            <small
+                              className="fw-semibold"
+                              style={{ color: strengthColors[strength] }}
+                            >
+                              {strengthLabels[strength]}
+                            </small>
+                          </div>
+                        )}
                       </div>
 
-                      {/* Confirm Password */}
                       <div className="mb-4">
                         <label htmlFor="confirmPassword" className="form-label">
                           Confirm Password
                         </label>
-
                         <div className="input-group">
                           <span className="input-group-text">
                             <i className="bi bi-shield-lock"></i>
                           </span>
-
                           <input
-                            type="password"
+                            type={showConfirmPassword ? "text" : "password"}
                             id="confirmPassword"
                             name="confirmPassword"
-                            className="form-control"
+                            className={`form-control ${
+                              formData.confirmPassword
+                                ? formData.confirmPassword === formData.password
+                                  ? "is-valid"
+                                  : "is-invalid"
+                                : ""
+                            }`}
                             placeholder="Confirm your password"
                             value={formData.confirmPassword}
                             onChange={handleChange}
                             autoComplete="new-password"
                           />
+                          <button
+                            type="button"
+                            className="input-group-text password-toggle"
+                            onClick={() =>
+                              setShowConfirmPassword(!showConfirmPassword)
+                            }
+                            tabIndex={-1}
+                          >
+                            <i
+                              className={`bi ${
+                                showConfirmPassword ? "bi-eye-slash" : "bi-eye"
+                              }`}
+                            ></i>
+                          </button>
                         </div>
                       </div>
 
@@ -280,28 +424,23 @@ function Register() {
                         className="btn btn-primary w-100"
                         onClick={nextStep}
                       >
-                        Continue
-                        <i className="bi bi-arrow-right ms-2"></i>
+                        Continue <i className="bi bi-arrow-right ms-2"></i>
                       </button>
                     </div>
                   )}
 
-                  {/* STEP 2 */}
                   {step === 2 && (
                     <div>
                       <h5 className="fw-bold mb-3">Tell us about yourself</h5>
 
-                      {/* Date of Birth */}
                       <div className="mb-3">
                         <label htmlFor="dateOfBirth" className="form-label">
                           Date of Birth
                         </label>
-
                         <div className="input-group">
                           <span className="input-group-text">
                             <i className="bi bi-calendar"></i>
                           </span>
-
                           <input
                             type="date"
                             id="dateOfBirth"
@@ -313,12 +452,10 @@ function Register() {
                         </div>
                       </div>
 
-                      {/* Gender */}
                       <div className="mb-4">
                         <label htmlFor="gender" className="form-label">
                           Gender
                         </label>
-
                         <select
                           id="gender"
                           name="gender"
@@ -340,23 +477,19 @@ function Register() {
                           className="btn btn-outline-secondary flex-fill"
                           onClick={previousStep}
                         >
-                          <i className="bi bi-arrow-left me-2"></i>
-                          Back
+                          <i className="bi bi-arrow-left me-2"></i> Back
                         </button>
-
                         <button
                           type="button"
                           className="btn btn-primary flex-fill"
                           onClick={nextStep}
                         >
-                          Continue
-                          <i className="bi bi-arrow-right ms-2"></i>
+                          Continue <i className="bi bi-arrow-right ms-2"></i>
                         </button>
                       </div>
                     </div>
                   )}
 
-                  {/* STEP 3 */}
                   {step === 3 && (
                     <div>
                       <h5 className="fw-bold mb-3">
@@ -364,138 +497,67 @@ function Register() {
                       </h5>
 
                       <div className="relationship-options">
-                        {/* Serious */}
-                        <label
-                          className={`relationship-option ${
-                            formData.relationshipGoal === "serious"
-                              ? "selected"
-                              : ""
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="relationshipGoal"
-                            value="serious"
-                            checked={formData.relationshipGoal === "serious"}
-                            onChange={handleChange}
-                          />
-
-                          <div>
-                            <i className="bi bi-heart-fill"></i>
-
-                            <strong>Serious Relationship</strong>
-
-                            <small>
-                              Looking for a meaningful long-term connection.
-                            </small>
-                          </div>
-                        </label>
-
-                        {/* Marriage */}
-                        <label
-                          className={`relationship-option ${
-                            formData.relationshipGoal === "marriage"
-                              ? "selected"
-                              : ""
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="relationshipGoal"
-                            value="marriage"
-                            checked={formData.relationshipGoal === "marriage"}
-                            onChange={handleChange}
-                          />
-
-                          <div>
-                            <i className="bi bi-stars"></i>
-
-                            <strong>Marriage</strong>
-
-                            <small>Looking for a life partner.</small>
-                          </div>
-                        </label>
-
-                        {/* Friendship */}
-                        <label
-                          className={`relationship-option ${
-                            formData.relationshipGoal === "friendship"
-                              ? "selected"
-                              : ""
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="relationshipGoal"
-                            value="friendship"
-                            checked={formData.relationshipGoal === "friendship"}
-                            onChange={handleChange}
-                          />
-
-                          <div>
-                            <i className="bi bi-people-fill"></i>
-
-                            <strong>Friendship</strong>
-
-                            <small>
-                              Meet new people and build friendships.
-                            </small>
-                          </div>
-                        </label>
-
-                        {/* Casual */}
-                        <label
-                          className={`relationship-option ${
-                            formData.relationshipGoal === "casual"
-                              ? "selected"
-                              : ""
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="relationshipGoal"
-                            value="casual"
-                            checked={formData.relationshipGoal === "casual"}
-                            onChange={handleChange}
-                          />
-
-                          <div>
-                            <i className="bi bi-chat-heart-fill"></i>
-
-                            <strong>Casual Dating</strong>
-
-                            <small>
-                              Meet people and enjoy getting to know each other.
-                            </small>
-                          </div>
-                        </label>
-
-                        {/* Not Sure */}
-                        <label
-                          className={`relationship-option ${
-                            formData.relationshipGoal === "not-sure"
-                              ? "selected"
-                              : ""
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="relationshipGoal"
-                            value="not-sure"
-                            checked={formData.relationshipGoal === "not-sure"}
-                            onChange={handleChange}
-                          />
-
-                          <div>
-                            <i className="bi bi-question-circle-fill"></i>
-
-                            <strong>Not Sure Yet</strong>
-
-                            <small>
-                              Open to seeing where the connection goes.
-                            </small>
-                          </div>
-                        </label>
+                        {[
+                          "serious",
+                          "marriage",
+                          "friendship",
+                          "casual",
+                          "not-sure",
+                        ].map((goal) => (
+                          <label
+                            key={goal}
+                            className={`relationship-option ${
+                              formData.relationshipGoal === goal
+                                ? "selected"
+                                : ""
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="relationshipGoal"
+                              value={goal}
+                              checked={formData.relationshipGoal === goal}
+                              onChange={handleChange}
+                            />
+                            <div>
+                              <i
+                                className={`bi ${
+                                  goal === "serious"
+                                    ? "bi-heart-fill"
+                                    : goal === "marriage"
+                                    ? "bi-stars"
+                                    : goal === "friendship"
+                                    ? "bi-people-fill"
+                                    : goal === "casual"
+                                    ? "bi-chat-heart-fill"
+                                    : "bi-question-circle-fill"
+                                }`}
+                              ></i>
+                              <strong>
+                                {goal === "serious"
+                                  ? "Serious Relationship"
+                                  : goal === "marriage"
+                                  ? "Marriage"
+                                  : goal === "friendship"
+                                  ? "Friendship"
+                                  : goal === "casual"
+                                  ? "Casual Dating"
+                                  : "Not Sure Yet"}
+                              </strong>
+                              <small>
+                                {goal === "serious"
+                                  ? "Looking for a meaningful long-term connection."
+                                  : goal === "marriage"
+                                  ? "Looking for a life partner."
+                                  : goal === "friendship"
+                                  ? "Meet new people and build friendships."
+                                  : goal === "casual"
+                                  ? "Meet people and enjoy getting to know each other."
+                                  : "Open to seeing where the connection goes."}
+                              </small>
+                            </div>
+                          </label>
+                        ))}
                       </div>
 
                       <div className="d-flex gap-2 mt-4">
@@ -504,36 +566,97 @@ function Register() {
                           className="btn btn-outline-secondary flex-fill"
                           onClick={previousStep}
                         >
-                          <i className="bi bi-arrow-left me-2"></i>
-                          Back
+                          <i className="bi bi-arrow-left me-2"></i> Back
                         </button>
-
                         <button
-                          type="submit"
+                          type="button"
                           className="btn btn-primary flex-fill"
+                          onClick={nextStep}
                           disabled={loading}
                         >
-                          {loading ? (
-                            <>
-                              <span
-                                className="spinner-border spinner-border-sm me-2"
-                                role="status"
-                              ></span>
-                              Creating...
-                            </>
+                          Continue <i className="bi bi-arrow-right ms-2"></i>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {step === 4 && (
+                    <div>
+                      <h5 className="fw-bold mb-3">Verify Your Email</h5>
+
+                      <p className="text-muted mb-4">
+                        We've sent a 6-digit verification code to{" "}
+                        <strong>{formData.email}</strong>
+                      </p>
+
+                      <div className="mb-4">
+                        <label htmlFor="otp" className="form-label">
+                          Enter OTP
+                        </label>
+                        <input
+                          type="text"
+                          id="otp"
+                          className="form-control form-control-lg text-center"
+                          placeholder="000000"
+                          maxLength="6"
+                          value={otp}
+                          onChange={(e) =>
+                            setOtp(e.target.value.replace(/\D/g, ""))
+                          }
+                          style={{ fontSize: "24px", letterSpacing: "8px" }}
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        className="btn btn-primary w-100 mb-3"
+                        onClick={handleVerifyOTP}
+                        disabled={otpLoading || otp.length !== 6}
+                      >
+                        {otpLoading ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2"></span>
+                            Verifying...
+                          </>
+                        ) : (
+                          <>
+                            <i className="bi bi-check-circle me-2"></i>
+                            Verify & Create Account
+                          </>
+                        )}
+                      </button>
+
+                      <div className="text-center">
+                        <small className="text-muted">
+                          Didn't receive the code?{" "}
+                          {resendTimer > 0 ? (
+                            <span>Resend in {resendTimer}s</span>
                           ) : (
-                            <>
-                              Create Account
-                              <i className="bi bi-check2 ms-2"></i>
-                            </>
+                            <button
+                              type="button"
+                              className="btn btn-link p-0"
+                              onClick={handleSendOTP}
+                              disabled={otpLoading}
+                            >
+                              Resend OTP
+                            </button>
                           )}
+                        </small>
+                      </div>
+
+                      <div className="d-flex gap-2 mt-4">
+                        <button
+                          type="button"
+                          className="btn btn-outline-secondary flex-fill"
+                          onClick={previousStep}
+                        >
+                          <i className="bi bi-arrow-left me-2"></i> Back
                         </button>
                       </div>
                     </div>
                   )}
                 </form>
 
-                {/* Login */}
                 <div className="text-center mt-4">
                   <span className="text-muted">Already have an account?</span>{" "}
                   <button

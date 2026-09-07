@@ -448,7 +448,6 @@ img {
   }
 }
 
-
 /* =========================================
    DISCOVERY
 ========================================= */
@@ -456,9 +455,7 @@ img {
 .profile-discovery-card {
   border-radius: 18px;
   overflow: hidden;
-  transition:
-    transform 0.25s ease,
-    box-shadow 0.25s ease;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
 
 .profile-discovery-card:hover {
@@ -544,10 +541,7 @@ img {
 
 .matches-grid {
   display: grid;
-  grid-template-columns: repeat(
-    auto-fill,
-    minmax(280px, 1fr)
-  );
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 24px;
 }
 
@@ -638,7 +632,6 @@ img {
   padding: 60px 20px;
 }
 
-
 /* ==========================================
    MOBILE FULL-WIDTH FIX (removes right gap)
 ========================================== */
@@ -646,24 +639,24 @@ img {
 html,
 body {
   width: 100%;
-  overflow-x: hidden;          /* stop horizontal overflow */
+  overflow-x: hidden; /* stop horizontal overflow */
 }
 
 #root {
   width: 100%;
   min-height: 100vh;
-  overflow-x: clip;            /* clip anything that tries to overflow */
+  overflow-x: clip; /* clip anything that tries to overflow */
 }
 
 /* Make the scrollbar invisible on phones (app-like feel) */
 @media (max-width: 575px) {
   html {
-    scrollbar-width: none;               /* Firefox */
+    scrollbar-width: none; /* Firefox */
   }
 
   body::-webkit-scrollbar {
     width: 0;
-    height: 0;                           /* Chrome / Safari / emulator */
+    height: 0; /* Chrome / Safari / emulator */
   }
 }
 
@@ -688,5 +681,228 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Password toggle button */
+.password-toggle {
+  cursor: pointer;
+  background: #f8f7fb;
+  border: 1px solid #e5e7eb;
+  border-left: none;
+  color: #8b5cf6;
+  transition: color 0.2s ease;
+}
+
+.password-toggle:hover {
+  color: #6d28d9;
+}
+
+.password-toggle i {
+  font-size: 16px;
+}
+
+/* Progress bar animation */
+.progress-bar {
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+
+/* ==========================================
+   PHOTO LIGHTBOX (Fullscreen Viewer)
+========================================== */
+
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: lightboxFade 0.2s ease;
+}
+
+@keyframes lightboxFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.lightbox-image {
+  max-width: min(92vw, 1200px);
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 25px 80px rgba(0, 0, 0, 0.6);
+  animation: lightboxZoom 0.25s ease;
+  user-select: none;
+  cursor: default;
+}
+
+@keyframes lightboxZoom {
+  from {
+    transform: scale(0.92);
+    opacity: 0.5;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  z-index: 2;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.lightbox-counter {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 6px 14px;
+  border-radius: 999px;
+  z-index: 2;
+}
+
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  z-index: 2;
+}
+
+.lightbox-nav:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+.lightbox-prev {
+  left: 16px;
+}
+.lightbox-next {
+  right: 16px;
+}
+
+.lightbox-thumbs {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  max-width: 90vw;
+  overflow-x: auto;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  z-index: 2;
+}
+
+.lightbox-thumb {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: all 0.2s;
+}
+
+.lightbox-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lightbox-thumb.active {
+  border-color: #ec4899;
+  opacity: 1;
+}
+.lightbox-thumb:hover {
+  opacity: 1;
+}
+
+/* Clickable photos get zoom cursor */
+.profile-photo,
+.user-profile-main-photo,
+.user-profile-thumb {
+  cursor: zoom-in;
+}
+
+/* Mobile */
+@media (max-width: 575px) {
+  .lightbox-image {
+    max-width: 96vw;
+    max-height: 68vh;
+    border-radius: 8px;
+  }
+
+  .lightbox-nav {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+  .lightbox-prev {
+    left: 8px;
+  }
+  .lightbox-next {
+    right: 8px;
+  }
+  .lightbox-thumbs {
+    bottom: 10px;
+  }
+  .lightbox-thumb {
+    width: 44px;
+    height: 44px;
+  }
+  .lightbox-counter {
+    top: 16px;
+    left: 16px;
+  }
+  .lightbox-close {
+    top: 12px;
+    right: 12px;
+    width: 40px;
+    height: 40px;
   }
 }
