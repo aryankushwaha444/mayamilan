@@ -21,6 +21,7 @@ import Navbar from "./components/Navbar.jsx";
 import UserProfile from "./pages/UserProfile";
 import Notifications from "./pages/Notifications";
 import ChangePassword from "./pages/ChangePassword";
+import ForgotPassword from "./pages/ForgotPassword.jsx";
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, loading } = useAuth();
@@ -127,6 +128,7 @@ function App() {
         <Route path="/users/:userId" element={<UserProfile />} />
         {/* Unknown route */}
         <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
       </Routes>
       <Footer />
     </BrowserRouter>

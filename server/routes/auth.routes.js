@@ -1,6 +1,6 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { sendOTPCode, verifyOTPCode } from "../controllers/auth.controller.js";
+import { sendOTPCode, verifyOTPCode,forgotPassword,resetPassword } from "../controllers/auth.controller.js";
 
 import {
   register,
@@ -50,11 +50,11 @@ router.post("/register", authLimiter, register);
 router.post("/login", authLimiter, login);
 router.post("/logout", logout);
 router.post("/refresh", refreshLimiter, refreshAccessToken);
+router.get("/me", protect, getMe);
 router.post("/send-otp", sendOTPCode);
 router.post("/verify-otp", verifyOTPCode);
-
-router.get("/me", protect, getMe);
-
 router.put("/change-password", protect, changePassword);
+router.post("/forgot-password", forgotPassword);
+router.post("/reset-password", resetPassword);
 
 export default router;

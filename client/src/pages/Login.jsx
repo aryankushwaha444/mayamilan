@@ -188,6 +188,15 @@ function Login() {
                       </>
                     )}
                   </button>
+                  <div className="d-flex justify-content-end mb-3">
+                    <button
+                      type="button"
+                      className="btn btn-link p-0 text-decoration-none"
+                      onClick={() => navigate("/forgot-password")}
+                    >
+                      Forgot Password?
+                    </button>
+                  </div>
                 </form>
 
                 <div className="text-center mt-4">

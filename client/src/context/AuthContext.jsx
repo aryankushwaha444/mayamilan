@@ -33,9 +33,7 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     const handleAuthLogout = () => {
       localStorage.removeItem("accessToken");
-
       localStorage.removeItem("user");
-
       setAccessToken(null);
       setUser(null);
     };
@@ -45,10 +43,6 @@ export const AuthProvider = ({ children }) => {
     const initializeAuth = async () => {
       try {
         const storedToken = localStorage.getItem("accessToken");
-
-        // ==============================
-        // ACCESS TOKEN EXISTS
-        // ==============================
 
         if (storedToken) {
           setAccessToken(storedToken);
@@ -61,10 +55,6 @@ export const AuthProvider = ({ children }) => {
 
           return;
         }
-
-        // ==============================
-        // NO ACCESS TOKEN
-        // ==============================
 
         const refreshResponse = await refreshAccessToken();
 
@@ -87,21 +77,11 @@ export const AuthProvider = ({ children }) => {
           error.response?.data?.message || error.message
         );
 
-        /*
-         * Only clear authentication
-         * when refresh is actually invalid.
-         *
-         * Don't wipe local auth because
-         * of temporary server/rate-limit errors.
-         */
-
         const status = error.response?.status;
 
         if (status === 401 || status === 403) {
           localStorage.removeItem("accessToken");
-
           localStorage.removeItem("user");
-
           setAccessToken(null);
           setUser(null);
         }
@@ -126,11 +106,9 @@ export const AuthProvider = ({ children }) => {
 
     if (response.success) {
       const newToken = response.accessToken;
-
       const newUser = response.user;
 
       localStorage.setItem("accessToken", newToken);
-
       localStorage.setItem("user", JSON.stringify(newUser));
 
       setAccessToken(newToken);
@@ -149,11 +127,9 @@ export const AuthProvider = ({ children }) => {
 
     if (response.success) {
       const newToken = response.accessToken;
-
       const loggedInUser = response.user;
 
       localStorage.setItem("accessToken", newToken);
-
       localStorage.setItem("user", JSON.stringify(loggedInUser));
 
       setAccessToken(newToken);
@@ -177,9 +153,7 @@ export const AuthProvider = ({ children }) => {
       );
     } finally {
       localStorage.removeItem("accessToken");
-
       localStorage.removeItem("user");
-
       setAccessToken(null);
       setUser(null);
     }

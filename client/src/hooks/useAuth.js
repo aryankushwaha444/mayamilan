@@ -1,2 +1,3 @@
+import { useAuth } from "../context/AuthContext.jsx";
 
-export { useAuth } from "../context/AuthContext";
+export { useAuth };

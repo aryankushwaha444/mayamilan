@@ -300,7 +300,6 @@ export const changePassword = async (req, res, next) => {
       });
     }
 
-    // Get user with password field
     const user = await User.findById(req.user._id).select("+password");
 
     if (!user) {
@@ -312,7 +311,6 @@ export const changePassword = async (req, res, next) => {
 
     console.log("✅ User found:", user.email);
 
-    // 👇 Verify current password using argon2 (not bcrypt!)
     const isMatch = await argon2.verify(user.password, currentPassword);
     console.log("🔑 Password verification result:", isMatch);
 
@@ -330,7 +328,6 @@ export const changePassword = async (req, res, next) => {
       });
     }
 
-    // 👇 Hash the new password with argon2 before saving
     const hashedPassword = await argon2.hash(newPassword);
     user.password = hashedPassword;
     await user.save();
@@ -362,7 +359,6 @@ export const sendOTPCode = async (req, res, next) => {
       });
     }
 
-    // Check if user already exists and is verified
     const existingUser = await User.findOne({ email });
     if (existingUser && existingUser.isVerified) {
       return res.status(409).json({
@@ -371,11 +367,9 @@ export const sendOTPCode = async (req, res, next) => {
       });
     }
 
-    // Generate and save OTP
     const otp = generateOTP();
     await saveOTP(email, otp);
 
-    // Send email
     await sendOTP(email, otp, name);
 
     res.status(200).json({
@@ -388,8 +382,10 @@ export const sendOTPCode = async (req, res, next) => {
   }
 };
 
-// VERIFY OTP
-
+/*
+VERIFY OTP
+POST /api/auth/verify-otp
+*/
 export const verifyOTPCode = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
@@ -410,7 +406,6 @@ export const verifyOTPCode = async (req, res, next) => {
       });
     }
 
-    // Mark user as verified
     const user = await User.findOne({ email });
 
     if (user && !user.isVerified) {
@@ -424,6 +419,105 @@ export const verifyOTPCode = async (req, res, next) => {
     });
   } catch (error) {
     console.error("Verify OTP error:", error);
+    next(error);
+  }
+};
+
+export const forgotPassword = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    // Check if user exists
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "No account found with this email",
+      });
+    }
+
+    // Generate and save OTP
+    const otp = generateOTP();
+    await saveOTP(email, otp);
+
+    // Send email
+    await sendOTP(email, otp, user.name);
+
+    res.status(200).json({
+      success: true,
+      message: "Password reset OTP sent to your email",
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    next(error);
+  }
+};
+
+/*
+RESET PASSWORD (verifies OTP internally)
+POST /api/auth/reset-password
+*/
+export const resetPassword = async (req, res, next) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Email, OTP and new password are required",
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 8 characters",
+      });
+    }
+
+    // 👇 Reuses the SAME verifyOTP util as registration
+    const result = await verifyOTP(email, otp);
+
+    if (!result.valid) {
+      return res.status(400).json({
+        success: false,
+        message: result.message,
+      });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const hashedPassword = await argon2.hash(newPassword);
+    user.password = hashedPassword;
+    await user.save();
+
+    // Force re-login on all devices
+    await RefreshToken.updateMany(
+      { user: user._id, revokedAt: null },
+      { revokedAt: new Date() }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Password reset successfully. Please login with your new password.",
+    });
+  } catch (error) {
+    console.error("Reset password error:", error);
     next(error);
   }
 };
