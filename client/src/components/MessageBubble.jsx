@@ -1,11 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-const REACTIONS = ["❤️", "😂", "😮", "😢", "😡", "👍"];
+const REACTIONS = ["❤️", "😂", "", "😢", "", "👍"];
 
 function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
-  const [menu, setMenu] = useState(null);
+  const [menu, setMenu] = useState(null); // "react" | "delete" | null
 
-  // Handle failed messages
+  // 👇 Close menus when clicking anywhere else on the page
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const t = setTimeout(() => document.addEventListener("click", close), 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("click", close);
+    };
+  }, [menu]);
+
+  /* ---------- FAILED MESSAGE ---------- */
   if (message.failed) {
     return (
       <div className={`message-row ${isMine ? "mine" : ""}`}>
@@ -19,8 +30,7 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
               <div className="message-text">{message.text}</div>
             )}
             <span className="message-time">
-              Failed{" "}
-              <i className="bi bi-exclamation-circle-fill text-danger ms-1"></i>
+              Failed <i className="bi bi-exclamation-circle-fill ms-1"></i>
             </span>
           </div>
         </div>
@@ -28,6 +38,7 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
     );
   }
 
+  /* ---------- DELETED MESSAGE ---------- */
   if (message.deletedForEveryone) {
     return (
       <div className={`message-row ${isMine ? "mine" : ""}`}>
@@ -79,30 +90,24 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
 
   const noPad = ["image", "gif", "sticker", "heart"].includes(message.type);
 
-  // Status Indicator Logic
   const getStatusIcon = () => {
     if (!isMine) return null;
-
-    if (message.isRead) {
-      // Blue double check (Read)
+    if (message.isRead)
       return <i className="bi bi-check2-all status-read ms-1" title="Read"></i>;
-    }
-    if (message.isDelivered) {
-      // Gray double check (Delivered)
+    if (message.isDelivered)
       return (
         <i
           className="bi bi-check2-all status-delivered ms-1"
           title="Delivered"
         ></i>
       );
-    }
-    // Gray single check (Sent)
     return <i className="bi bi-check2 status-sent ms-1" title="Sent"></i>;
   };
 
   return (
     <div className={`message-row ${isMine ? "mine" : ""}`}>
-      <div className="message-bubble-wrap">
+      {/* 👇 menu-open class keeps buttons visible while a menu is open */}
+      <div className={`message-bubble-wrap ${menu ? "menu-open" : ""}`}>
         <div
           className={`message-bubble ${isMine ? "mine" : ""} ${
             noPad ? "no-pad" : ""
@@ -120,6 +125,7 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           )}
         </div>
 
+        {/* Reaction chips */}
         {Object.keys(reactionCounts).length > 0 && (
           <div className="message-reactions">
             {Object.entries(reactionCounts).map(([emoji, count]) => (
@@ -131,7 +137,8 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           </div>
         )}
 
-        <div className="message-actions">
+        {/* 👇 HOVER ACTIONS — stopPropagation so outside-click closer doesn't fire */}
+        <div className="message-actions" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
             title="React"
@@ -148,8 +155,12 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           </button>
         </div>
 
+        {/* React menu */}
         {menu === "react" && (
-          <div className="message-menu react-menu">
+          <div
+            className="message-menu react-menu"
+            onClick={(e) => e.stopPropagation()}
+          >
             {REACTIONS.map((e) => (
               <button
                 key={e}
@@ -165,8 +176,12 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           </div>
         )}
 
+        {/* Delete menu */}
         {menu === "delete" && (
-          <div className="message-menu delete-menu">
+          <div
+            className="message-menu delete-menu"
+            onClick={(e) => e.stopPropagation()}
+          >
             <button
               type="button"
               onClick={() => {

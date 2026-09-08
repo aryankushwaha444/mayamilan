@@ -349,7 +349,7 @@
   justify-content: flex-end;
   gap: 4px;
   font-size: 10px;
-  opacity: 0.8;
+  opacity: 0.7;
 }
 
 .message-read {
@@ -620,7 +620,9 @@
 }
 
 @media (max-width: 768px) {
-  .chat-back-btn { display: flex; }
+  .chat-back-btn {
+    display: flex;
+  }
 }
 
 @media (max-width: 480px) {
@@ -666,7 +668,6 @@
 .message-bubble-other .message-status {
   display: none; /* Hide status on received messages */
 }
-
 
 /* Online / Offline status colors */
 .chat-user-info p.status-online {
@@ -757,7 +758,9 @@
   transition: transform 0.15s;
 }
 
-.composer-heart:hover { transform: scale(1.1); }
+.composer-heart:hover {
+  transform: scale(1.1);
+}
 
 .composer-recording {
   flex: 1;
@@ -778,10 +781,16 @@
 }
 
 @keyframes recPulse {
-  50% { opacity: 0.3; }
+  50% {
+    opacity: 0.3;
+  }
 }
 
-.rec-time { font-weight: 600; color: #b91c1c; flex: 1; }
+.rec-time {
+  font-weight: 600;
+  color: #b91c1c;
+  flex: 1;
+}
 
 /* Panels */
 .composer-panel {
@@ -801,21 +810,59 @@
   overflow-y: auto;
 }
 
-.emoji-panel { grid-template-columns: repeat(9, 1fr); }
-.emoji-panel button { font-size: 22px; border: none; background: none; cursor: pointer; border-radius: 8px; padding: 4px; }
-.emoji-panel button:hover { background: #fce7f3; }
+.emoji-panel {
+  grid-template-columns: repeat(9, 1fr);
+}
+.emoji-panel button {
+  font-size: 22px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 4px;
+}
+.emoji-panel button:hover {
+  background: #fce7f3;
+}
 
-.sticker-panel { grid-template-columns: repeat(6, 1fr); }
-.sticker-panel button { font-size: 40px; border: none; background: none; cursor: pointer; border-radius: 12px; padding: 6px; }
-.sticker-panel button:hover { background: #fce7f3; }
+.sticker-panel {
+  grid-template-columns: repeat(6, 1fr);
+}
+.sticker-panel button {
+  font-size: 40px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 12px;
+  padding: 6px;
+}
+.sticker-panel button:hover {
+  background: #fce7f3;
+}
 
-.gif-panel { grid-template-columns: repeat(3, 1fr); }
-.gif-panel img { width: 100%; height: 90px; object-fit: cover; border-radius: 10px; cursor: pointer; }
-.gif-panel img:hover { opacity: 0.85; }
+.gif-panel {
+  grid-template-columns: repeat(3, 1fr);
+}
+.gif-panel img {
+  width: 100%;
+  height: 90px;
+  object-fit: cover;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.gif-panel img:hover {
+  opacity: 0.85;
+}
 
 /* ============ MESSAGE BUBBLE TYPES ============ */
-.message-bubble.no-pad { padding: 4px; background: transparent; box-shadow: none; }
-.message-bubble.mine.no-pad { background: transparent; }
+.message-bubble.no-pad {
+  padding: 4px;
+  background: transparent;
+  box-shadow: none;
+}
+.message-bubble.mine.no-pad {
+  background: transparent;
+}
 
 .message-media {
   max-width: 260px;
@@ -825,9 +872,16 @@
   display: block;
 }
 
-.message-audio { width: 220px; height: 40px; }
+.message-audio {
+  width: 220px;
+  height: 40px;
+}
 
-.message-sticker { font-size: 64px; line-height: 1; padding: 8px; }
+.message-sticker {
+  font-size: 64px;
+  line-height: 1;
+  padding: 8px;
+}
 
 .message-heart i {
   font-size: 42px;
@@ -844,11 +898,20 @@
 }
 
 /* ============ HOVER ACTIONS + MENUS ============ */
-.message-bubble-wrap { position: relative; display: inline-block; max-width: 70%; }
+.message-bubble-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 70%;
+}
 
-.message-row { display: flex; }
-.message-row.mine { justify-content: flex-end; }
+.message-row {
+  display: flex;
+}
+.message-row.mine {
+  justify-content: flex-end;
+}
 
+/* 👇 Buttons ALWAYS clickable — never pointer-events: none */
 .message-actions {
   position: absolute;
   top: 50%;
@@ -857,16 +920,23 @@
   gap: 4px;
   opacity: 0;
   transition: opacity 0.15s;
-  pointer-events: none;
+  pointer-events: auto; /* 👈 ALWAYS enabled */
+  z-index: 5;
 }
 
-.message-row:not(.mine) .message-actions { left: calc(100% + 8px); }
-.message-row.mine .message-actions { right: calc(100% + 8px); }
+.message-row:not(.mine) .message-actions {
+  left: calc(100% + 8px);
+}
+.message-row.mine .message-actions {
+  right: calc(100% + 8px);
+}
 
+/* 👇 Hover the ROW (not just the bubble) → buttons visible */
 @media (hover: hover) and (min-width: 992px) {
-  .message-bubble-wrap:hover .message-actions {
+  .message-row:hover .message-actions,
+  .message-row:focus-within .message-actions,
+  .message-bubble-wrap.menu-open .message-actions {
     opacity: 1;
-    pointer-events: auto;
   }
 }
 
@@ -884,7 +954,9 @@
   justify-content: center;
 }
 
-.message-actions button:hover { color: #ec4899; }
+.message-actions button:hover {
+  color: #ec4899;
+}
 
 .message-menu {
   position: absolute;
@@ -901,8 +973,12 @@
   white-space: nowrap;
 }
 
-.message-row:not(.mine) .message-menu { left: 0; }
-.message-row.mine .message-menu { right: 0; }
+.message-row:not(.mine) .message-menu {
+  left: 0;
+}
+.message-row.mine .message-menu {
+  right: 0;
+}
 
 .react-menu button {
   font-size: 20px;
@@ -914,7 +990,9 @@
   transition: transform 0.15s;
 }
 
-.react-menu button:hover { transform: scale(1.25); }
+.react-menu button:hover {
+  transform: scale(1.25);
+}
 
 .delete-menu {
   flex-direction: column;
@@ -933,9 +1011,15 @@
   cursor: pointer;
 }
 
-.delete-menu button:hover { background: #f1f5f9; }
-.delete-menu button.danger { color: #dc2626; }
-.delete-menu button.danger:hover { background: #fee2e2; }
+.delete-menu button:hover {
+  background: #f1f5f9;
+}
+.delete-menu button.danger {
+  color: #dc2626;
+}
+.delete-menu button.danger:hover {
+  background: #fee2e2;
+}
 
 /* Reactions chips */
 .message-reactions {
@@ -955,10 +1039,14 @@
 
 /* Mobile: always show actions slightly */
 @media (max-width: 991px) {
-  .message-actions { opacity: 0.6; pointer-events: auto; }
-  .message-bubble-wrap { max-width: 85%; }
+  .message-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .message-bubble-wrap {
+    max-width: 85%;
+  }
 }
-
 
 .chat-header-user {
   display: flex;
@@ -968,8 +1056,14 @@
   min-width: 0;
 }
 
-.chat-header-user strong { display: block; font-size: 15px; }
-.chat-header-user small { color: #64748b; font-size: 12px; }
+.chat-header-user strong {
+  display: block;
+  font-size: 15px;
+}
+.chat-header-user small {
+  color: #64748b;
+  font-size: 12px;
+}
 
 .chat-header-avatar {
   position: relative;
@@ -1026,9 +1120,13 @@
   padding: 40px 20px;
 }
 
-.chat-empty-icon { font-size: 60px; margin-bottom: 12px; }
-.chat-empty p { max-width: 280px; }
-
+.chat-empty-icon {
+  font-size: 60px;
+  margin-bottom: 12px;
+}
+.chat-empty p {
+  max-width: 280px;
+}
 
 /* Message Status Checkmarks */
 .status-sent {
@@ -1056,4 +1154,9 @@
 .failed-bubble .message-time {
   color: #dc2626 !important;
   font-weight: 600;
+}
+
+.message-time {
+  font-size: 12px;
+  color: #94a3b8;
 }
