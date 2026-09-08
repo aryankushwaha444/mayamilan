@@ -53,3 +53,18 @@ export const getUserById = async (userId) => {
   const response = await api.get(`/users/${userId}`);
   return response.data;
 };
+
+export const reportUser = async (userId, message) => {
+  const response = await api.post(`/users/${userId}/report`, { message });
+  return response.data;
+};
+
+export const toggleBlockUser = async (userId) => {
+  const response = await api.post(`/users/${userId}/block`);
+  return response.data;
+};
+
+export const getBlockStatus = async (userId) => {
+  const response = await api.get(`/users/${userId}/block-status`);
+  return response.data;
+};

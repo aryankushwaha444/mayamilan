@@ -11,6 +11,8 @@ import {
 
 import { protect } from "../middleware/auth.middleware.js";
 import upload from "../middleware/upload.middleware.js";
+import { reportUser, toggleBlock, getBlockStatus } from "../controllers/user.controller.js";
+
 
 const router = express.Router();
 
@@ -23,5 +25,8 @@ router.put("/me/photos/:photoId/primary", protect, setPrimaryPhoto);
 
 // OTHER USER
 router.get("/:userId", protect, getUserProfile);
+router.post("/:userId/report", protect, reportUser);
+router.post("/:userId/block", protect, toggleBlock);
+router.get("/:userId/block-status", protect, getBlockStatus);
 
 export default router;

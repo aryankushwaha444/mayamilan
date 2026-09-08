@@ -127,13 +127,31 @@ export const AuthProvider = ({ children }) => {
 
     if (response.success) {
       const newToken = response.accessToken;
-      const loggedInUser = response.user;
 
       localStorage.setItem("accessToken", newToken);
-      localStorage.setItem("user", JSON.stringify(loggedInUser));
-
       setAccessToken(newToken);
-      setUser(loggedInUser);
+
+      // 👇 ALWAYS fetch the freshest user data from /auth/me
+      // This guarantees role and other fields are up-to-date
+      try {
+        const freshData = await getCurrentUser();
+        if (freshData.success && freshData.user) {
+          const freshUser = freshData.user;
+          localStorage.setItem("user", JSON.stringify(freshUser));
+          setUser(freshUser);
+          console.log(
+            "✅ Fresh user loaded after login, role:",
+            freshUser.role
+          );
+          return { ...response, user: freshUser };
+        }
+      } catch (err) {
+        console.warn("Falling back to login response user:", err);
+      }
+
+      // Fallback
+      localStorage.setItem("user", JSON.stringify(response.user));
+      setUser(response.user);
     }
 
     return response;

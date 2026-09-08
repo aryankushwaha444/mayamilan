@@ -23,6 +23,13 @@ import Notifications from "./pages/Notifications";
 import ChangePassword from "./pages/ChangePassword";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
 
+// Admin
+import AdminRoutes from "./pages/admin/AdminRoutes.jsx";
+import AdminDashboard from "./pages/admin/AdminDashboard.jsx";
+import Users from "./pages/admin/Users.jsx";
+import UserDetails from "./pages/admin/UserDetails.jsx";
+import AdminReports from "./pages/admin/AdminReports.jsx";
+
 function ProtectedRoute({ children }) {
   const { isAuthenticated, loading } = useAuth();
   const location = useLocation();
@@ -47,14 +54,13 @@ function App() {
     <BrowserRouter>
       <Navbar />
       <Routes>
-        {/* Public */}
+        {/* ============ PUBLIC ============ */}
         <Route path="/" element={<Home />} />
-
         <Route path="/login" element={<Login />} />
-
         <Route path="/register" element={<Register />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
 
-        {/* Protected */}
+        {/* ============ PROTECTED (any logged-in user) ============ */}
         <Route
           path="/profile"
           element={
@@ -73,7 +79,6 @@ function App() {
           }
         />
 
-        {/* Temporary dashboard */}
         <Route
           path="/dashboard"
           element={
@@ -109,6 +114,7 @@ function App() {
             </ProtectedRoute>
           }
         />
+
         <Route
           path="/notifications"
           element={
@@ -117,6 +123,7 @@ function App() {
             </ProtectedRoute>
           }
         />
+
         <Route
           path="/change-password"
           element={
@@ -125,10 +132,26 @@ function App() {
             </ProtectedRoute>
           }
         />
-        <Route path="/users/:userId" element={<UserProfile />} />
-        {/* Unknown route */}
+
+        <Route
+          path="/users/:userId"
+          element={
+            <ProtectedRoute>
+              <UserProfile />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* ============ ADMIN ONLY (role protected) ============ */}
+        <Route element={<AdminRoutes />}>
+          <Route path="/admin" element={<AdminDashboard />} />
+          <Route path="/admin/users" element={<Users />} />
+          <Route path="/admin/users/:userId" element={<UserDetails />} />
+          <Route path="/admin/reports" element={<AdminReports />} /> 
+        </Route>
+
+        {/* ============ UNKNOWN ============ */}
         <Route path="*" element={<Navigate to="/" replace />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
       </Routes>
       <Footer />
     </BrowserRouter>

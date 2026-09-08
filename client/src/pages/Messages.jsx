@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   getConversations,
@@ -21,22 +21,31 @@ function Messages() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  /*
-   * ==========================================
-   * LOAD CONVERSATIONS
-   * ==========================================
-   */
+  const openingRef = useRef(false);
+  const conversationsRef = useRef([]);
+
+  // Keep ref in sync so socket handlers can read latest list safely
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  /* ==========================================
+     LOAD CONVERSATIONS (sorted newest first)
+  ========================================== */
   const loadConversations = async () => {
     try {
       setLoading(true);
       setError("");
       const data = await getConversations();
-      setConversations(data.conversations || []);
-    } catch (error) {
-      console.error("Load conversations error:", error);
-      setError(
-        error.response?.data?.message || "Unable to load conversations."
+      const sorted = (data.conversations || []).sort(
+        (a, b) =>
+          new Date(b.lastMessageAt || b.createdAt || 0) -
+          new Date(a.lastMessageAt || a.createdAt || 0)
       );
+      setConversations(sorted);
+    } catch (err) {
+      console.error("Load conversations error:", err);
+      setError(err.response?.data?.message || "Unable to load conversations.");
     } finally {
       setLoading(false);
     }
@@ -46,102 +55,116 @@ function Messages() {
     loadConversations();
   }, []);
 
-  /*
-   * ==========================================
-   * AUTO-OPEN CONVERSATION FROM matchId URL
-   * ==========================================
-   */
+  /* ==========================================
+     MOVE CONVERSATION TO TOP (no side effects inside setState)
+  ========================================== */
+  const moveConversationToTop = (conversationId, message) => {
+    if (!conversationId) return;
+
+    const exists = conversationsRef.current.some(
+      (c) => c._id === conversationId
+    );
+
+    // New conversation we don't have yet → full reload (outside setState!)
+    if (!exists) {
+      loadConversations();
+      return;
+    }
+
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c._id === conversationId);
+      if (idx === -1) return prev;
+
+      const updated = [...prev];
+      const [conv] = updated.splice(idx, 1);
+
+      updated.unshift({
+        ...conv,
+        lastMessage: message || conv.lastMessage,
+        lastMessageAt:
+          message?.createdAt || conv.lastMessageAt || new Date().toISOString(),
+      });
+
+      return updated;
+    });
+  };
+
+  /* ==========================================
+     AUTO-OPEN CHAT FROM ?matchId= URL
+  ========================================== */
   useEffect(() => {
     const autoOpenChat = async () => {
       if (!matchIdFromUrl || !user) return;
-
-      console.log("🔵 Auto-opening chat for matchId:", matchIdFromUrl);
+      if (openingRef.current) return;
+      openingRef.current = true;
 
       try {
         setLoading(true);
-
-        // 1. Create or get the conversation from the match
         const data = await createOrGetConversation(matchIdFromUrl);
 
-        console.log("✅ Conversation created/fetched:", data);
-
         if (data.success && data.conversation) {
-          // 2. Find the other user in the conversation
           const otherUser = data.conversation.participants.find(
             (p) => p._id.toString() !== user._id.toString()
           );
 
-          // 3. Set as selected conversation
-          const conversationToSelect = {
+          setSelectedConversation({
             _id: data.conversation._id,
             user: otherUser,
             lastMessage: data.conversation.lastMessage,
             lastMessageAt: data.conversation.lastMessageAt,
-          };
+          });
 
-          setSelectedConversation(conversationToSelect);
-
-          // 4. Reload conversations list to include the new one
           await loadConversations();
-
-          // 5. Clean URL so it doesn't re-trigger
           navigate("/messages", { replace: true });
         }
-      } catch (error) {
-        console.error(" Auto-open chat error:", error);
-        setError("Failed to open conversation. Please try again.");
+      } catch (err) {
+        const backendError = err.response?.data;
+        console.error("❌ BACKEND ERROR:", backendError || err.message);
+        setError(backendError?.message || "Failed to open conversation.");
       } finally {
         setLoading(false);
+        openingRef.current = false;
       }
     };
 
     autoOpenChat();
   }, [matchIdFromUrl, user, navigate]);
 
-  /*
-   * ==========================================
-   * REAL-TIME CONVERSATION UPDATE
-   * ==========================================
-   */
+  /* ==========================================
+     REAL-TIME: reorder on ANY new activity
+  ========================================== */
   useEffect(() => {
     if (!socket) return;
 
     const handleConversationUpdated = ({ conversationId, message }) => {
-      setConversations((currentConversations) => {
-        const existing = currentConversations.find(
-          (conv) => conv._id === conversationId
-        );
+      moveConversationToTop(conversationId, message);
+    };
 
-        if (!existing) {
-          loadConversations();
-          return currentConversations;
-        }
-
-        const updated = currentConversations.map((conv) =>
-          conv._id === conversationId
-            ? {
-                ...conv,
-                lastMessage: message,
-                lastMessageAt: message.createdAt,
-              }
-            : conv
-        );
-
-        return updated.sort(
-          (a, b) =>
-            new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0)
-        );
-      });
+    // Backup: also reorder on raw new_message (covers sender side)
+    const handleNewMessage = (msg) => {
+      const convId =
+        typeof msg.conversation === "string"
+          ? msg.conversation
+          : msg.conversation?._id;
+      moveConversationToTop(convId, msg);
     };
 
     socket.on("conversation_updated", handleConversationUpdated);
-    return () => socket.off("conversation_updated", handleConversationUpdated);
+    socket.on("new_message", handleNewMessage);
+
+    return () => {
+      socket.off("conversation_updated", handleConversationUpdated);
+      socket.off("new_message", handleNewMessage);
+    };
   }, [socket]);
 
   const handleSelectConversation = (conversation) => {
     setSelectedConversation(conversation);
   };
 
+  /* ==========================================
+     RENDER
+  ========================================== */
   if (loading) {
     return (
       <main className="messages-page">
@@ -158,7 +181,7 @@ function Messages() {
         <div className="messages-container">
           <div className="messages-error">
             <h2>Messages</h2>
-            <p>{error}</p>
+            <p style={{ color: "#dc2626", fontWeight: "bold" }}>{error}</p>
             <button type="button" onClick={loadConversations}>
               Try Again
             </button>
@@ -171,7 +194,6 @@ function Messages() {
   return (
     <main className="messages-page">
       <div className="messages-container">
-        {/* CONVERSATION LIST SIDEBAR */}
         <aside
           className={`conversation-sidebar ${
             selectedConversation ? "conversation-sidebar-hidden-mobile" : ""
@@ -227,7 +249,19 @@ function Messages() {
                           </time>
                         )}
                       </div>
-                      <p>{lastMessage?.text || "Start a conversation"}</p>
+                      <p>
+                        {lastMessage?.deletedForEveryone
+                          ? "This message was deleted"
+                          : lastMessage?.type === "image"
+                          ? "📷 Photo"
+                          : lastMessage?.type === "voice"
+                          ? "🎤 Voice message"
+                          : lastMessage?.type === "sticker"
+                          ? `${lastMessage.text} Sticker`
+                          : lastMessage?.type === "heart"
+                          ? "❤️"
+                          : lastMessage?.text || "Start a conversation"}
+                      </p>
                     </div>
                   </button>
                 );
@@ -236,7 +270,6 @@ function Messages() {
           )}
         </aside>
 
-        {/* CHAT AREA */}
         <div
           className={`messages-chat-area ${
             !selectedConversation ? "messages-chat-empty-mobile" : ""

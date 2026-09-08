@@ -2,9 +2,22 @@
    NAVBAR
 ========================================== */
 
+body {
+  padding-top: 76px; /* desktop navbar height */
+  overflow-y: auto; /* guarantee page scrolling */
+}
+
+@media (max-width: 991px) {
+  body {
+    padding-top: 68px; /* mobile navbar height */
+  }
+}
+
 .site-navbar {
-  position: sticky;
+  position: fixed; /* 👈 was sticky */
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 1000;
   width: 100%;
   background: rgba(255, 255, 255, 0.94);
@@ -667,6 +680,10 @@
     border-radius: 16px;
     background: white;
     box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
+
+    /* 👇 ADDED: scroll when menu is taller than screen */
+    max-height: calc(100vh - 110px);
+    overflow-y: auto;
   }
 
   .navbar-navigation-open {
@@ -848,90 +865,89 @@
   }
 }
 
-
 /* ==========================================
      SMALL PHONES (≤480px)
      Shrink everything so the hamburger always fits
   ========================================== */
-  @media (max-width: 480px) {
-    .navbar-container {
-      width: calc(100% - 16px);
-      gap: 8px;
-    }
-  
-    .navbar-brand-custom {
-      gap: 8px;
-      min-width: 0;
-    }
-  
-    .brand-name {
-      font-size: 15px;
-    }
-  
-    .navbar-actions {
-      margin-left: auto;
-      gap: 4px;
-      flex-shrink: 0;
-    }
-  
-    /* Chat & bell icons — smaller but always visible */
-    .navbar-icon-button {
-      width: 36px;
-      height: 36px;
-      flex-shrink: 0;
-    }
-  
-    .navbar-icon-button i {
-      font-size: 16px;
-    }
-  
-    .notification-dot {
-      top: 2px;
-      right: 2px;
-      min-width: 15px;
-      height: 15px;
-      padding: 0 4px;
-      font-size: 9px;
-    }
-  
-    /* Profile — avatar only, no chevron */
-    .navbar-profile-button {
-      padding: 4px;
-      gap: 4px;
-    }
-  
-    .navbar-avatar {
-      width: 34px;
-      height: 34px;
-    }
-  
-    .navbar-profile-button > i {
-      display: none; /* hide chevron to save space */
-    }
-  
-    /* Hamburger — compact but always visible */
-    .navbar-mobile-button {
-      display: flex;
-      width: 38px;
-      height: 38px;
-      font-size: 18px;
-    }
+@media (max-width: 480px) {
+  .navbar-container {
+    width: calc(100% - 16px);
+    gap: 8px;
   }
-  
-  /* ==========================================
+
+  .navbar-brand-custom {
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .brand-name {
+    font-size: 15px;
+  }
+
+  .navbar-actions {
+    margin-left: auto;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  /* Chat & bell icons — smaller but always visible */
+  .navbar-icon-button {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+  }
+
+  .navbar-icon-button i {
+    font-size: 16px;
+  }
+
+  .notification-dot {
+    top: 2px;
+    right: 2px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    font-size: 9px;
+  }
+
+  /* Profile — avatar only, no chevron */
+  .navbar-profile-button {
+    padding: 4px;
+    gap: 4px;
+  }
+
+  .navbar-avatar {
+    width: 34px;
+    height: 34px;
+  }
+
+  .navbar-profile-button > i {
+    display: none; /* hide chevron to save space */
+  }
+
+  /* Hamburger — compact but always visible */
+  .navbar-mobile-button {
+    display: flex;
+    width: 38px;
+    height: 38px;
+    font-size: 18px;
+  }
+}
+
+/* ==========================================
        EXTRA SMALL (≤360px)
        Hide brand text so everything fits
     ========================================== */
-  @media (max-width: 360px) {
-    .brand-text {
-      display: none; /* only the heart logo remains */
-    }
-  
-    .navbar-container {
-      gap: 6px;
-    }
-  
-    .navbar-actions {
-      gap: 3px;
-    }
+@media (max-width: 360px) {
+  .brand-text {
+    display: none; /* only the heart logo remains */
   }
+
+  .navbar-container {
+    gap: 6px;
+  }
+
+  .navbar-actions {
+    gap: 3px;
+  }
+}

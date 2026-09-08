@@ -1,7 +1,8 @@
 import User from "../models/User.js";
 import cloudinary from "../config/cloudinary.js";
-import Like from "../models/Like.js"; 
+import Like from "../models/Like.js";
 import Match from "../models/Match.js";
+import Report from "../models/Report.js";
 
 /*
 GET MY PROFILE
@@ -262,6 +263,113 @@ export const setPrimaryPhoto = async (req, res, next) => {
     res.status(200).json({
       message: "Primary photo updated successfully",
       photos: user.photos,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const reportUser = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const { message } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Report message is required",
+      });
+    }
+
+    if (userId === req.user._id.toString()) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot report yourself",
+      });
+    }
+
+    const target = await User.findById(userId);
+    if (!target) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    await Report.findOneAndUpdate(
+      { reporter: req.user._id, reportedUser: userId },
+      { message: message.trim(), status: "pending" },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Report submitted. Our team will review it.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/*
+BLOCK / UNBLOCK USER
+POST /api/users/:userId/block
+*/
+export const toggleBlock = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+
+    if (userId === req.user._id.toString()) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot block yourself",
+      });
+    }
+
+    const me = await User.findById(req.user._id);
+    const alreadyBlocked = me.blockedUsers.some(
+      (id) => id.toString() === userId
+    );
+
+    if (alreadyBlocked) {
+      me.blockedUsers = me.blockedUsers.filter(
+        (id) => id.toString() !== userId
+      );
+    } else {
+      me.blockedUsers.push(userId);
+    }
+
+    await me.save();
+
+    res.status(200).json({
+      success: true,
+      blocked: !alreadyBlocked,
+      message: !alreadyBlocked
+        ? "User blocked successfully"
+        : "User unblocked successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/*
+BLOCK STATUS
+GET /api/users/:userId/block-status
+*/
+export const getBlockStatus = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+
+    const me = await User.findById(req.user._id).select("blockedUsers");
+    const other = await User.findById(userId).select("blockedUsers");
+
+    res.status(200).json({
+      success: true,
+      iBlocked: me.blockedUsers.some((id) => id.toString() === userId),
+      blockedMe:
+        other?.blockedUsers.some(
+          (id) => id.toString() === req.user._id.toString()
+        ) || false,
     });
   } catch (error) {
     next(error);

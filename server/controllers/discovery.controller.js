@@ -22,9 +22,25 @@ export const discoverUsers = async (req, res, next) => {
     const skip = (pageNumber - 1) * limitNumber;
 
     // ==========================================
-    // 1. GET CURRENT USER'S MATCHES & LIKES FIRST
+    // 0. GET CURRENT USER'S BLOCKED USERS (with fresh fetch)
     // ==========================================
-    // We need these IDs to exclude them from the discovery query
+    // req.user may not include blockedUsers, so fetch explicitly
+    const me = await User.findById(currentUser._id).select("blockedUsers");
+    const iBlockedIds = (me?.blockedUsers || []).map((id) => id.toString());
+
+    // Get users who have blocked the current user
+    const blockedMeIds = await User.find({
+      blockedUsers: currentUser._id,
+      isActive: true,
+    })
+      .select("_id")
+      .lean();
+
+    const blockedMeIdStrings = blockedMeIds.map((u) => u._id.toString());
+
+    // ==========================================
+    // 1. GET CURRENT USER'S MATCHES & LIKES
+    // ==========================================
 
     const matches = await Match.find({
       users: currentUser._id,
@@ -49,20 +65,27 @@ export const discoverUsers = async (req, res, next) => {
 
     const likedUserIds = new Set(sentLikes.map((like) => like.to.toString()));
 
-    // Combine IDs to exclude from discovery feed
+    // ==========================================
+    // 2. COMBINE ALL EXCLUDED IDS (includes blocked users)
+    // ==========================================
     const excludeUserIds = [
       currentUser._id.toString(),
       ...Array.from(matchedUserIds),
       ...Array.from(likedUserIds),
+      ...iBlockedIds, // 👈 Users I blocked
+      ...blockedMeIdStrings, // 👈 Users who blocked me
     ];
 
+    // Remove duplicates
+    const uniqueExcludeIds = Array.from(new Set(excludeUserIds));
+
     // ==========================================
-    // 2. BUILD USER QUERY
+    // 3. BUILD USER QUERY
     // ==========================================
 
     const query = {
       _id: {
-        $nin: excludeUserIds, // 👈 EXCLUDE current user, matched users, and already-liked users
+        $nin: uniqueExcludeIds, // 👈 Excludes current user, matched, liked, AND blocked (both directions)
       },
       isActive: true,
     };
@@ -118,7 +141,7 @@ export const discoverUsers = async (req, res, next) => {
     }
 
     // ==========================================
-    // 3. FETCH USERS
+    // 4. FETCH USERS
     // ==========================================
 
     const [users, total] = await Promise.all([
@@ -139,10 +162,8 @@ export const discoverUsers = async (req, res, next) => {
     ]);
 
     // ==========================================
-    // 4. FORMAT RESPONSE
+    // 5. FORMAT RESPONSE
     // ==========================================
-    // Since we already excluded matched/liked users at the database level,
-    // all returned users will naturally be isLiked: false and isMatched: false
 
     const formattedUsers = users.map((user) => ({
       ...user,
@@ -151,7 +172,7 @@ export const discoverUsers = async (req, res, next) => {
     }));
 
     // ==========================================
-    // 5. RESPONSE
+    // 6. RESPONSE
     // ==========================================
 
     res.status(200).json({

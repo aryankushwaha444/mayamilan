@@ -60,7 +60,7 @@ function Login() {
       });
 
       if (response.success) {
-        window.location.href = "/";
+        window.location.href = response.user?.role === "admin" ? "/admin" : "/";
       } else {
         setError(response.message || "Login failed");
       }

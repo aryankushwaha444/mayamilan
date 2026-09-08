@@ -18,6 +18,13 @@ const conversationSchema = new mongoose.Schema(
       },
     },
 
+    // Safe unique key: "userIdA_userIdB" (sorted string)
+    participantsKey: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
+
     lastMessage: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Message",
@@ -34,12 +41,8 @@ const conversationSchema = new mongoose.Schema(
   }
 );
 
-/*
- * Prevent duplicate conversations between the same two users.
- * Note: The participants array is already sorted in the controller
- * before being saved, ensuring this unique index works perfectly.
- */
-conversationSchema.index({ participants: 1 }, { unique: true });
+// Normal index for faster lookups (no unique constraint on the array)
+conversationSchema.index({ participants: 1 });
 
 const Conversation = mongoose.model("Conversation", conversationSchema);
 

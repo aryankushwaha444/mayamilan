@@ -20,9 +20,36 @@ const messageSchema = new mongoose.Schema(
     },
     text: {
       type: String,
-      required: true,
       trim: true,
       maxlength: 2000,
+      default: "", // No longer required (voice/heart/sticker can be empty)
+    },
+    type: {
+      type: String,
+      enum: ["text", "image", "gif", "sticker", "voice", "heart"],
+      default: "text",
+    },
+    attachment: {
+      url: String,
+      publicId: String,
+      mimeType: String,
+      duration: Number,
+    },
+    reactions: [
+      {
+        user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        emoji: String,
+      },
+    ],
+    deletedFor: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    deletedForEveryone: {
+      type: Boolean,
+      default: false,
     },
     isDelivered: {
       type: Boolean,

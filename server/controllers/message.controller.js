@@ -1,120 +1,129 @@
 import mongoose from "mongoose";
+import cloudinary from "../config/cloudinary.js";
+import multer from "multer";
 
 import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import Match from "../models/Match.js";
 import User from "../models/User.js";
 import { getIO } from "../sockets/socket.js";
+
 /*
  * ==========================================
  * CREATE / GET CONVERSATION FROM MATCH
  * ==========================================
  */
-
-export const createOrGetConversation = async (req, res, next) => {
+export const createOrGetConversation = async (req, res) => {
   try {
     const currentUserId = req.user._id;
     const { matchId } = req.params;
 
-    console.log(
-      "🔵 Creating conversation for matchId:",
-      matchId,
-      "by user:",
-      currentUserId
-    );
-
-    if (!mongoose.Types.ObjectId.isValid(matchId)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid match ID" });
-    }
-
-    const match = await Match.findOne({
-      _id: matchId,
-      users: currentUserId,
-    });
-
+    // 1. Find match
+    const match = await Match.findOne({ _id: matchId, users: currentUserId });
     if (!match) {
-      console.log("❌ Match not found for user");
       return res
         .status(404)
         .json({ success: false, message: "Match not found" });
     }
 
-    console.log("✅ Match found:", match._id);
-
-    if (!match.users || match.users.length !== 2) {
-      console.log("❌ Invalid match structure:", match.users);
-      return res.status(400).json({ success: false, message: "Invalid match" });
-    }
-
+    // 2. Find other user
     const otherUserId = match.users.find(
-      (userId) => userId.toString() !== currentUserId.toString()
+      (id) => id.toString() !== currentUserId.toString()
     );
-
     if (!otherUserId) {
-      console.log("❌ Unable to determine matched user");
       return res
         .status(400)
-        .json({ success: false, message: "Unable to determine matched user" });
+        .json({ success: false, message: "No other user in match" });
     }
 
-    console.log("✅ Other user ID:", otherUserId);
+    // 3. Check blocks
+    const me = await User.findById(currentUserId).select(
+      "blockedUsers isActive"
+    );
+    const otherUser = await User.findById(otherUserId).select(
+      "blockedUsers isActive"
+    );
 
-    const otherUser = await User.findOne({
-      _id: otherUserId,
-      isActive: true,
-    }).select("_id name photos dateOfBirth gender location occupation");
-
-    if (!otherUser) {
-      console.log("❌ Matched user not found or inactive");
+    if (!me || !otherUser || !otherUser.isActive) {
       return res
         .status(404)
-        .json({ success: false, message: "Matched user not found" });
+        .json({ success: false, message: "User missing or inactive" });
     }
 
-    console.log("✅ Other user verified:", otherUser.name);
+    const iBlocked = (me.blockedUsers || []).some(
+      (id) => id.toString() === otherUserId.toString()
+    );
+    const blockedMe = (otherUser.blockedUsers || []).some(
+      (id) => id.toString() === currentUserId.toString()
+    );
 
+    if (iBlocked || blockedMe) {
+      return res.status(403).json({ success: false, message: "Blocked" });
+    }
+
+    // 4. Prepare sorted participants and unique key
     const participants = [currentUserId.toString(), otherUserId.toString()]
       .sort()
       .map((id) => new mongoose.Types.ObjectId(id));
 
-    console.log("✅ Participants sorted:", participants);
+    const participantsKey = [currentUserId.toString(), otherUserId.toString()]
+      .sort()
+      .join("_");
 
-    let conversation = await Conversation.findOne({ participants })
-      .populate(
-        "participants",
-        "_id name photos dateOfBirth gender location occupation isOnline lastSeen"
-      )
-      .populate("lastMessage", "_id sender receiver text isRead createdAt");
+    // 5. Find existing conversation (by key first, fallback to array query)
+    let conversation =
+      (await Conversation.findOne({ participantsKey })) ||
+      (await Conversation.findOne({
+        participants: { $all: participants, $size: 2 },
+      }));
 
-    if (!conversation) {
-      console.log("🆕 Creating new conversation...");
-      conversation = await Conversation.create({ participants });
-
-      conversation = await Conversation.findById(conversation._id)
-        .populate(
-          "participants",
-          "_id name photos dateOfBirth gender location occupation isOnline lastSeen"
-        )
-        .populate("lastMessage", "_id sender receiver text isRead createdAt");
+    // Backfill the key if it's missing (old conversations)
+    if (conversation && !conversation.participantsKey) {
+      conversation.participantsKey = participantsKey;
+      await conversation.save();
     }
 
-    console.log("✅ Conversation ready:", conversation._id);
+    // 6. Create if not found, with race condition handling
+    if (!conversation) {
+      try {
+        conversation = await Conversation.create({
+          participants,
+          participantsKey,
+        });
+      } catch (err) {
+        // Race condition: another request created it at the same moment
+        if (err.code === 11000) {
+          conversation = await Conversation.findOne({ participantsKey });
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    // 7. Populate and return
+    conversation = await Conversation.findById(conversation._id)
+      .populate("participants", "_id name photos isOnline lastSeen")
+      .populate(
+        "lastMessage",
+        "_id sender receiver text isRead createdAt type attachment"
+      );
 
     return res.status(200).json({
       success: true,
       conversation: {
         _id: conversation._id,
         participants: conversation.participants,
-        lastMessage: conversation.lastMessage,
-        lastMessageAt: conversation.lastMessageAt,
+        lastMessage: conversation.lastMessage || null,
+        lastMessageAt: conversation.lastMessageAt || conversation.createdAt,
         createdAt: conversation.createdAt,
       },
     });
   } catch (error) {
-    console.error("❌ CREATE CONVERSATION ERROR:", error);
-    next(error);
+    console.error("❌ createOrGetConversation error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
 
@@ -123,7 +132,6 @@ export const createOrGetConversation = async (req, res, next) => {
  * GET MY CONVERSATIONS
  * ==========================================
  */
-
 export const getConversations = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -133,13 +141,18 @@ export const getConversations = async (req, res, next) => {
     })
       .populate(
         "participants",
-        "_id name photos dateOfBirth gender location occupation isOnline lastSeen"
+        "_id name photos dateOfBirth gender location occupation isOnline lastSeen blockedUsers"
       )
-      .populate("lastMessage", "_id sender receiver text isRead createdAt")
+      .populate("lastMessage", "_id sender receiver text isRead createdAt type")
       .sort({
         lastMessageAt: -1,
         updatedAt: -1,
       });
+
+    const me = await User.findById(currentUserId).select("blockedUsers");
+    const myBlockedIds = new Set(
+      (me?.blockedUsers || []).map((id) => id.toString())
+    );
 
     const formattedConversations = conversations
       .map((conversation) => {
@@ -147,9 +160,14 @@ export const getConversations = async (req, res, next) => {
           (user) => user._id.toString() !== currentUserId.toString()
         );
 
-        if (!otherUser) {
-          return null;
-        }
+        if (!otherUser) return null;
+
+        const iBlocked = myBlockedIds.has(otherUser._id.toString());
+        const blockedMe = (otherUser.blockedUsers || []).some(
+          (id) => id.toString() === currentUserId.toString()
+        );
+
+        if (iBlocked || blockedMe) return null;
 
         return {
           _id: conversation._id,
@@ -176,7 +194,6 @@ export const getConversations = async (req, res, next) => {
  * GET MESSAGES
  * ==========================================
  */
-
 export const getMessages = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -206,6 +223,7 @@ export const getMessages = async (req, res, next) => {
     })
       .populate("sender", "_id name photos")
       .populate("receiver", "_id name photos")
+      .populate("reactions.user", "_id name")
       .sort({
         createdAt: 1,
       });
@@ -222,15 +240,14 @@ export const getMessages = async (req, res, next) => {
 
 /*
  * ==========================================
- * SEND MESSAGE
+ * SEND MESSAGE (text, image, voice, gif, sticker, heart)
  * ==========================================
  */
-
 export const sendMessage = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
     const { conversationId } = req.params;
-    const { text } = req.body;
+    const { text = "", type = "text", attachment = null } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(conversationId)) {
       return res.status(400).json({
@@ -239,14 +256,15 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    if (typeof text !== "string" || !text.trim()) {
+    // Validate text for text messages
+    if (type === "text" && (typeof text !== "string" || !text.trim())) {
       return res.status(400).json({
         success: false,
         message: "Message cannot be empty",
       });
     }
 
-    const cleanText = text.trim();
+    const cleanText = (text || "").trim();
 
     if (cleanText.length > 2000) {
       return res.status(400).json({
@@ -278,23 +296,40 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    const receiver = await User.findOne({
-      _id: receiverId,
-      isActive: true,
-    });
+    const [me, receiver] = await Promise.all([
+      User.findById(currentUserId).select("blockedUsers isActive"),
+      User.findById(receiverId).select("blockedUsers isActive"),
+    ]);
 
-    if (!receiver) {
+    if (!receiver || !receiver.isActive) {
       return res.status(404).json({
         success: false,
         message: "Receiver not found",
       });
     }
 
+    const iBlocked = (me?.blockedUsers || []).some(
+      (id) => id.toString() === receiverId.toString()
+    );
+    const blockedMe = (receiver.blockedUsers || []).some(
+      (id) => id.toString() === currentUserId.toString()
+    );
+
+    if (iBlocked || blockedMe) {
+      return res.status(403).json({
+        success: false,
+        message: "You cannot message this user",
+      });
+    }
+
+    // 👇 Create message with type and attachment support
     const message = await Message.create({
       conversation: conversationId,
       sender: currentUserId,
       receiver: receiverId,
       text: cleanText,
+      type,
+      attachment,
     });
 
     conversation.lastMessage = message._id;
@@ -304,13 +339,9 @@ export const sendMessage = async (req, res, next) => {
 
     const populatedMessage = await Message.findById(message._id)
       .populate("sender", "_id name photos")
-      .populate("receiver", "_id name photos");
+      .populate("receiver", "_id name photos")
+      .populate("reactions.user", "_id name");
 
-    /*
-     * 👇 BROADCAST EVEN FOR REST SENDS
-     * So the receiver sees it in real-time even if the
-     * sender's socket was disconnected (HTTP fallback).
-     */
     const io = getIO();
     if (io) {
       io.to(`conversation:${conversationId}`).emit(
@@ -323,7 +354,6 @@ export const sendMessage = async (req, res, next) => {
         message: populatedMessage,
       });
 
-      // Auto-delivery if receiver is online
       const receiverSockets = await io
         .in(`user:${receiverId.toString()}`)
         .fetchSockets();
@@ -351,6 +381,173 @@ export const sendMessage = async (req, res, next) => {
 
 /*
  * ==========================================
+ * UPLOAD CHAT ATTACHMENT (image / voice / gif)
+ * POST /api/messages/upload
+ * ==========================================
+ */
+export const uploadMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+}).single("file");
+
+export const uploadChatAttachment = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res
+        .status(400)
+        .json({ success: false, message: "No file uploaded" });
+    }
+
+    console.log("📤 Uploading file:", {
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+    });
+
+    const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString(
+      "base64"
+    )}`;
+
+    const result = await cloudinary.uploader.upload(b64, {
+      resource_type: "auto",
+      folder: "loveconnect/chat",
+    });
+
+    console.log("✅ Upload success:", result.secure_url);
+
+    res.status(200).json({
+      success: true,
+      attachment: {
+        url: result.secure_url,
+        publicId: result.public_id,
+        mimeType: req.file.mimetype,
+        duration: result.duration || 0,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Upload error:", error);
+    next(error);
+  }
+};
+
+/*
+ * ==========================================
+ * REACT TO MESSAGE
+ * POST /api/messages/:messageId/react
+ * ==========================================
+ */
+export const reactToMessage = async (req, res, next) => {
+  try {
+    const { emoji } = req.body;
+    const message = await Message.findById(req.params.messageId);
+
+    if (!message) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Message not found" });
+    }
+
+    const uid = req.user._id.toString();
+    const existing = message.reactions.find((r) => r.user.toString() === uid);
+
+    if (existing) {
+      if (existing.emoji === emoji) {
+        message.reactions = message.reactions.filter(
+          (r) => r.user.toString() !== uid
+        );
+      } else {
+        existing.emoji = emoji;
+      }
+    } else {
+      message.reactions.push({ user: req.user._id, emoji });
+    }
+
+    await message.save();
+
+    const populatedMessage = await Message.findById(message._id).populate(
+      "reactions.user",
+      "_id name"
+    );
+
+    const io = getIO();
+    if (io) {
+      io.to(`conversation:${message.conversation}`).emit("message_reacted", {
+        messageId: message._id.toString(),
+        reactions: populatedMessage.reactions,
+      });
+    }
+
+    res
+      .status(200)
+      .json({ success: true, reactions: populatedMessage.reactions });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/*
+ * ==========================================
+ * DELETE MESSAGE (for me / for everyone)
+ * DELETE /api/messages/:messageId?scope=me|everyone
+ * ==========================================
+ */
+export const deleteMessage = async (req, res, next) => {
+  try {
+    const scope = req.query.scope || "me";
+    const message = await Message.findById(req.params.messageId);
+
+    if (!message) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Message not found" });
+    }
+
+    const uid = req.user._id.toString();
+    const isParticipant =
+      message.sender.toString() === uid || message.receiver.toString() === uid;
+
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: "Not allowed" });
+    }
+
+    if (scope === "everyone") {
+      if (message.sender.toString() !== uid) {
+        return res.status(403).json({
+          success: false,
+          message: "Only the sender can delete for everyone",
+        });
+      }
+
+      message.deletedForEveryone = true;
+
+      if (message.attachment?.publicId) {
+        cloudinary.uploader
+          .destroy(message.attachment.publicId)
+          .catch(() => {});
+      }
+
+      await message.save();
+
+      const io = getIO();
+      if (io) {
+        io.to(`conversation:${message.conversation}`).emit("message_deleted", {
+          messageId: message._id.toString(),
+        });
+      }
+    } else {
+      if (!message.deletedFor.some((id) => id.toString() === uid)) {
+        message.deletedFor.push(req.user._id);
+      }
+      await message.save();
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/*
+ * ==========================================
  * GET UNREAD MESSAGE COUNT
  * ==========================================
  */
@@ -359,6 +556,7 @@ export const getUnreadMessageCount = async (req, res, next) => {
     const unreadMessages = await Message.find({
       receiver: req.user._id,
       isRead: false,
+      deletedForEveryone: false,
     }).select("sender");
 
     const uniqueSenders = new Set(
@@ -447,22 +645,42 @@ export const getRecentConversations = async (req, res, next) => {
     const conversations = await Conversation.find({
       participants: req.user._id,
     })
-      .populate("participants", "_id name photos isOnline lastSeen")
-      .populate("lastMessage", "text createdAt sender receiver isRead")
+      .populate(
+        "participants",
+        "_id name photos isOnline lastSeen blockedUsers"
+      )
+      .populate("lastMessage", "text createdAt sender receiver isRead type")
       .sort({ lastMessageAt: -1 })
       .limit(5);
 
-    const formatted = conversations.map((conv) => {
-      const otherUser = conv.participants.find(
-        (p) => p._id.toString() !== req.user._id.toString()
-      );
-      return {
-        _id: conv._id,
-        user: otherUser,
-        lastMessage: conv.lastMessage,
-        lastMessageAt: conv.lastMessageAt,
-      };
-    });
+    const me = await User.findById(req.user._id).select("blockedUsers");
+    const myBlockedIds = new Set(
+      (me?.blockedUsers || []).map((id) => id.toString())
+    );
+
+    const formatted = conversations
+      .map((conv) => {
+        const otherUser = conv.participants.find(
+          (p) => p._id.toString() !== req.user._id.toString()
+        );
+
+        if (!otherUser) return null;
+
+        const iBlocked = myBlockedIds.has(otherUser._id.toString());
+        const blockedMe = (otherUser.blockedUsers || []).some(
+          (id) => id.toString() === req.user._id.toString()
+        );
+
+        if (iBlocked || blockedMe) return null;
+
+        return {
+          _id: conv._id,
+          user: otherUser,
+          lastMessage: conv.lastMessage,
+          lastMessageAt: conv.lastMessageAt,
+        };
+      })
+      .filter(Boolean);
 
     res.status(200).json({ success: true, conversations: formatted });
   } catch (error) {

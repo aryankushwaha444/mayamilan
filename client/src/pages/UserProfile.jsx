@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getUserById } from "../services/userService";
+import {
+  getUserById,
+  reportUser,
+  toggleBlockUser,
+  getBlockStatus,
+} from "../services/userService";
 import { likeUser, unlikeUser } from "../services/matchService";
 import PhotoLightbox from "../components/PhotoLightbox.jsx";
 
@@ -13,8 +18,18 @@ function UserProfile() {
   const [error, setError] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState(null);
 
+  // Report + Block state
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportMessage, setReportMessage] = useState("");
+  const [reporting, setReporting] = useState(false);
+  const [blockStatus, setBlockStatus] = useState({
+    iBlocked: false,
+    blockedMe: false,
+  });
+  const [blocking, setBlocking] = useState(false);
+
   // ==========================================
-  // FETCH USER PROFILE
+  // FETCH USER PROFILE + BLOCK STATUS
   // ==========================================
   useEffect(() => {
     const fetchProfile = async () => {
@@ -26,6 +41,17 @@ function UserProfile() {
 
         if (data.success) {
           setProfile(data.user);
+
+          // Load block status after profile loads
+          try {
+            const bs = await getBlockStatus(userId);
+            setBlockStatus({
+              iBlocked: bs.iBlocked,
+              blockedMe: bs.blockedMe,
+            });
+          } catch (e) {
+            console.warn("Could not load block status:", e);
+          }
         } else {
           setError(data.message || "User not found");
         }
@@ -76,6 +102,42 @@ function UserProfile() {
   };
 
   // ==========================================
+  // REPORT HANDLER
+  // ==========================================
+  const handleReport = async () => {
+    if (!reportMessage.trim()) {
+      alert("Please write a reason for reporting.");
+      return;
+    }
+    try {
+      setReporting(true);
+      const res = await reportUser(profile._id, reportMessage);
+      alert(res.message || "Report submitted");
+      setReportOpen(false);
+      setReportMessage("");
+    } catch (err) {
+      alert(err.response?.data?.message || "Failed to submit report");
+    } finally {
+      setReporting(false);
+    }
+  };
+
+  // ==========================================
+  // BLOCK / UNBLOCK HANDLER
+  // ==========================================
+  const handleBlock = async () => {
+    try {
+      setBlocking(true);
+      const res = await toggleBlockUser(profile._id);
+      setBlockStatus((prev) => ({ ...prev, iBlocked: res.blocked }));
+    } catch (err) {
+      alert(err.response?.data?.message || "Failed to update block");
+    } finally {
+      setBlocking(false);
+    }
+  };
+
+  // ==========================================
   // HELPERS
   // ==========================================
   const calculateAge = (dateOfBirth) => {
@@ -103,7 +165,6 @@ function UserProfile() {
     return primary?.url || primary?.secure_url || null;
   };
 
-  // 👇 Index of the primary photo (for opening lightbox on main image)
   const getPrimaryIndex = (photos) => {
     if (!Array.isArray(photos) || photos.length === 0) return 0;
     const index = photos.findIndex((p) => p?.isPrimary);
@@ -156,7 +217,6 @@ function UserProfile() {
       <div className="row g-4">
         {/* LEFT: Profile Photo */}
         <div className="col-md-5">
-          {/* 👇 FIXED: added position-relative so badge anchors to card */}
           <div className="card border-0 shadow-sm overflow-hidden position-relative">
             {photo ? (
               <img
@@ -164,7 +224,7 @@ function UserProfile() {
                 alt={profile.name}
                 className="w-100 user-profile-main-photo"
                 style={{ height: "500px", objectFit: "cover" }}
-                onClick={() => setLightboxIndex(primaryIndex)} // 👈 OPEN LIGHTBOX
+                onClick={() => setLightboxIndex(primaryIndex)}
               />
             ) : (
               <div
@@ -178,7 +238,6 @@ function UserProfile() {
               </div>
             )}
 
-            {/* Online/Offline Indicator */}
             <div className="position-absolute top-0 end-0 m-3">
               <span
                 className={`badge rounded-pill ${
@@ -271,13 +330,28 @@ function UserProfile() {
 
               <hr />
 
+              {/* 👇 BLOCK BANNERS */}
+              {blockStatus.iBlocked && (
+                <div className="alert alert-warning mt-3 mb-2 py-2">
+                  <i className="bi bi-slash-circle me-2"></i>
+                  You have blocked this user.
+                </div>
+              )}
+              {blockStatus.blockedMe && (
+                <div className="alert alert-secondary mt-3 mb-2 py-2">
+                  <i className="bi bi-eye-slash me-2"></i>
+                  This user has blocked you.
+                </div>
+              )}
+
               {/* ACTION BUTTONS */}
-              <div className="d-flex gap-3">
+              <div className="d-flex gap-2 flex-wrap">
                 <button
                   className={`btn flex-fill ${
                     profile.isLiked ? "btn-danger" : "btn-primary"
                   }`}
                   onClick={handleLike}
+                  disabled={blockStatus.iBlocked || blockStatus.blockedMe}
                 >
                   <i
                     className={`bi me-2 ${
@@ -287,15 +361,45 @@ function UserProfile() {
                   {profile.isLiked ? "Unlike" : "Like"}
                 </button>
 
-                {profile.isMatched && (
-                  <Link
-                    to={`/messages?user=${profile._id}`}
-                    className="btn btn-success flex-fill"
-                  >
-                    <i className="bi bi-chat-heart me-2"></i>
-                    Message
-                  </Link>
-                )}
+                {profile.isMatched &&
+                  !blockStatus.iBlocked &&
+                  !blockStatus.blockedMe && (
+                    <Link
+                      to={`/messages?user=${profile._id}`}
+                      className="btn btn-success flex-fill"
+                    >
+                      <i className="bi bi-chat-heart me-2"></i>
+                      Message
+                    </Link>
+                  )}
+              </div>
+
+              {/* 👇 REPORT + BLOCK BUTTONS */}
+              <div className="d-flex gap-2 mt-2">
+                <button
+                  className="btn btn-outline-warning flex-fill"
+                  onClick={() => setReportOpen(true)}
+                >
+                  <i className="bi bi-flag me-2"></i>
+                  Report
+                </button>
+
+                <button
+                  className={`btn flex-fill ${
+                    blockStatus.iBlocked
+                      ? "btn-outline-secondary"
+                      : "btn-outline-danger"
+                  }`}
+                  onClick={handleBlock}
+                  disabled={blocking}
+                >
+                  <i
+                    className={`bi me-2 ${
+                      blockStatus.iBlocked ? "bi-unlock" : "bi-slash-circle"
+                    }`}
+                  ></i>
+                  {blockStatus.iBlocked ? "Unblock" : "Block"}
+                </button>
               </div>
 
               {/* Match Status */}
@@ -314,14 +418,13 @@ function UserProfile() {
               <div className="card-body p-4">
                 <h5 className="fw-semibold mb-3">More Photos</h5>
                 <div className="row g-2">
-                  {/* 👇 FIXED: open lightbox at the correct index */}
                   {profile.photos.map((p, index) => (
                     <div key={p._id || index} className="col-4">
                       <img
                         src={p?.url || p?.secure_url}
                         alt={`Photo ${index + 1}`}
                         className="w-100 rounded user-profile-thumb"
-                        onClick={() => setLightboxIndex(index)} // 👈 correct index
+                        onClick={() => setLightboxIndex(index)}
                         style={{ height: "150px", objectFit: "cover" }}
                       />
                     </div>
@@ -333,13 +436,75 @@ function UserProfile() {
         </div>
       </div>
 
-      {/* 👇 FIXED: RENDER THE LIGHTBOX (was missing!) */}
+      {/* LIGHTBOX */}
       {lightboxIndex !== null && (
         <PhotoLightbox
           photos={profile.photos}
           initialIndex={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
         />
+      )}
+
+      {/* 👇 REPORT MODAL */}
+      {reportOpen && (
+        <div
+          className="report-modal-overlay"
+          onClick={() => setReportOpen(false)}
+        >
+          <div className="report-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="d-flex justify-content-between align-items-center mb-3">
+              <h5 className="fw-bold mb-0">
+                <i className="bi bi-flag-fill text-warning me-2"></i>
+                Report {profile.name}
+              </h5>
+              <button
+                className="btn btn-light btn-sm rounded-circle"
+                onClick={() => setReportOpen(false)}
+              >
+                <i className="bi bi-x-lg"></i>
+              </button>
+            </div>
+
+            <p className="text-muted small">
+              Tell us what's wrong. Our moderation team will review this report.
+            </p>
+
+            <textarea
+              className="form-control mb-3"
+              rows="4"
+              maxLength="500"
+              placeholder="e.g. Fake profile, abusive messages, inappropriate photos..."
+              value={reportMessage}
+              onChange={(e) => setReportMessage(e.target.value)}
+            ></textarea>
+
+            <div className="d-flex gap-2">
+              <button
+                className="btn btn-outline-secondary flex-fill"
+                onClick={() => setReportOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-warning flex-fill"
+                onClick={handleReport}
+                disabled={reporting || !reportMessage.trim()}
+              >
+                {reporting ? (
+                  <>
+                    <span className="spinner-border spinner-border-sm me-2"></span>
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-send me-2"></i>
+                    Submit Report
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

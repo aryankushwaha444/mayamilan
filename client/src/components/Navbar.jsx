@@ -17,6 +17,9 @@ function Navbar() {
   const { user, logout } = useAuth();
   const { socket } = useSocket();
 
+  // 👇 Is the logged-in user an admin?
+  const isAdmin = user?.role === "admin";
+
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -31,12 +34,8 @@ function Navbar() {
   const profileRef = useRef(null);
   const chatRef = useRef(null);
   const notificationsRef = useRef(null);
+  const [pendingReports, setPendingReports] = useState(0);
 
-  /*
-   * ==========================================
-   * GET USER'S BEST PHOTO (primary first)
-   * ==========================================
-   */
   const getAvatarUrl = (photos) => {
     if (!Array.isArray(photos) || photos.length === 0) return null;
     const primary = photos.find((p) => p?.isPrimary) || photos[0];
@@ -135,16 +134,8 @@ function Navbar() {
     const handleNewNotification = () => loadNotificationData();
     const handleNewMessage = () => loadChatData();
     const handleConversationUpdated = () => loadChatData();
-    const handleUnreadUpdated = () => {
-      console.log("🔔 Unread count changed — refreshing badge");
-      loadChatData();
-    };
-
-    // 👇 NEW: refresh notification badge when notifications are marked read
-    const handleNotificationsUpdated = () => {
-      console.log("🔔 Notifications updated — refreshing badge");
-      loadNotificationData();
-    };
+    const handleUnreadUpdated = () => loadChatData();
+    const handleNotificationsUpdated = () => loadNotificationData();
 
     socket.on("new_match", handleNewMatch);
     socket.on("match_removed", handleMatchRemoved);
@@ -152,7 +143,7 @@ function Navbar() {
     socket.on("new_message", handleNewMessage);
     socket.on("conversation_updated", handleConversationUpdated);
     socket.on("unread_updated", handleUnreadUpdated);
-    socket.on("notifications_updated", handleNotificationsUpdated); // 👈 ADDED
+    socket.on("notifications_updated", handleNotificationsUpdated);
 
     return () => {
       socket.off("new_match", handleNewMatch);
@@ -161,7 +152,7 @@ function Navbar() {
       socket.off("new_message", handleNewMessage);
       socket.off("conversation_updated", handleConversationUpdated);
       socket.off("unread_updated", handleUnreadUpdated);
-      socket.off("notifications_updated", handleNotificationsUpdated); // 👈 ADDED
+      socket.off("notifications_updated", handleNotificationsUpdated);
     };
   }, [socket, user, loadMatchCount, loadNotificationData, loadChatData]);
 
@@ -181,7 +172,6 @@ function Navbar() {
 
   const handleToggleNotifications = async () => {
     const opening = !notificationsOpen;
-
     setNotificationsOpen(opening);
     setChatOpen(false);
 
@@ -207,18 +197,51 @@ function Navbar() {
 
   const profileInitial = user?.name?.charAt(0)?.toUpperCase() || "U";
 
+  // 👇 load pending report count for admins
+  useEffect(() => {
+    if (!user || user.role !== "admin") return;
+
+    const load = async () => {
+      try {
+        const data = await getAllReports({ limit: 1 });
+        setPendingReports(data.pending || 0);
+      } catch (e) {
+        /* ignore */
+      }
+    };
+
+    load();
+  }, [user]);
+
   return (
     <header className="site-navbar">
       <div className="navbar-container">
-        <a href="/" className="navbar-brand-custom" onClick={closeMobileMenu}>
-          <div className="brand-icon">
-            <i className="bi bi-heart-fill"></i>
-          </div>
-          <div className="brand-text">
-            <span className="brand-name">LoveConnect</span>
-            <span className="brand-tagline">Find your connection</span>
-          </div>
-        </a>
+        {/* 👇 BRAND: Admin Panel for admins, LoveConnect for users */}
+        {isAdmin ? (
+          <NavLink
+            to="/admin"
+            className="navbar-brand-custom"
+            onClick={closeMobileMenu}
+          >
+            <div className="brand-icon admin-brand-icon">
+              <i className="bi bi-shield-lock-fill"></i>
+            </div>
+            <div className="brand-text">
+              <span className="brand-name">Admin Panel</span>
+              <span className="brand-tagline">LoveConnect Management</span>
+            </div>
+          </NavLink>
+        ) : (
+          <a href="/" className="navbar-brand-custom" onClick={closeMobileMenu}>
+            <div className="brand-icon">
+              <i className="bi bi-heart-fill"></i>
+            </div>
+            <div className="brand-text">
+              <span className="brand-name">LoveConnect</span>
+              <span className="brand-tagline">Find your connection</span>
+            </div>
+          </a>
+        )}
 
         {user ? (
           <>
@@ -227,259 +250,311 @@ function Navbar() {
                 mobileOpen ? "navbar-navigation-open" : ""
               }`}
             >
-              <NavLink
-                to="/discover"
-                onClick={closeMobileMenu}
-                className={({ isActive }) =>
-                  `navbar-link ${isActive ? "navbar-link-active" : ""}`
-                }
-              >
-                <i className="bi bi-compass"></i>
-                <span>Discover</span>
-              </NavLink>
-              <NavLink
-                to="/matches"
-                onClick={closeMobileMenu}
-                className={({ isActive }) =>
-                  `navbar-link ${isActive ? "navbar-link-active" : ""}`
-                }
-              >
-                <i className="bi bi-heart"></i>
-                <span>Matches</span>
-                {matchCount > 0 && (
-                  <span className="navbar-badge">{matchCount}</span>
-                )}
-              </NavLink>
+              {/* 👇 ADMIN: only "Users" link | NORMAL: Discover + Matches */}
+              {isAdmin ? (
+                <>
+                  <NavLink
+                    to="/admin/users"
+                    onClick={closeMobileMenu}
+                    className={({ isActive }) =>
+                      `navbar-link ${isActive ? "navbar-link-active" : ""}`
+                    }
+                  >
+                    <i className="bi bi-people"></i>
+                    <span>Users</span>
+                  </NavLink>
+
+                  {/* 👇 REPORTS LINK — right of Users, admins only */}
+                  <NavLink
+                    to="/admin/reports"
+                    onClick={closeMobileMenu}
+                    className={({ isActive }) =>
+                      `navbar-link ${isActive ? "navbar-link-active" : ""}`
+                    }
+                  >
+                    <i className="bi bi-flag"></i>
+                    <span>Reports</span>
+                    {pendingReports > 0 && (
+                      <span className="navbar-badge navbar-badge-pink">
+                        {pendingReports}
+                      </span>
+                    )}
+                  </NavLink>
+                </>
+              ) : (
+                <>
+                  <NavLink
+                    to="/discover"
+                    onClick={closeMobileMenu}
+                    className={({ isActive }) =>
+                      `navbar-link ${isActive ? "navbar-link-active" : ""}`
+                    }
+                  >
+                    <i className="bi bi-compass"></i>
+                    <span>Discover</span>
+                  </NavLink>
+                  <NavLink
+                    to="/matches"
+                    onClick={closeMobileMenu}
+                    className={({ isActive }) =>
+                      `navbar-link ${isActive ? "navbar-link-active" : ""}`
+                    }
+                  >
+                    <i className="bi bi-heart"></i>
+                    <span>Matches</span>
+                    {matchCount > 0 && (
+                      <span className="navbar-badge">{matchCount}</span>
+                    )}
+                  </NavLink>
+                </>
+              )}
             </nav>
 
             <div className="navbar-actions">
-              <div className="navbar-chat-dropdown" ref={chatRef}>
-                <button
-                  type="button"
-                  className={`navbar-icon-button ${chatOpen ? "active" : ""}`}
-                  onClick={() => {
-                    setChatOpen(!chatOpen);
-                    setNotificationsOpen(false);
-                  }}
-                  aria-label="Messages"
-                >
-                  <i className="bi bi-chat-dots-fill"></i>
-                  {messageCount > 0 && (
-                    <span className="notification-dot">{messageCount}</span>
-                  )}
-                </button>
+              {/* 👇 CHAT + NOTIFICATIONS: hidden for admins */}
+              {!isAdmin && (
+                <>
+                  {/* Chat dropdown */}
+                  <div className="navbar-chat-dropdown" ref={chatRef}>
+                    <button
+                      type="button"
+                      className={`navbar-icon-button ${
+                        chatOpen ? "active" : ""
+                      }`}
+                      onClick={() => {
+                        setChatOpen(!chatOpen);
+                        setNotificationsOpen(false);
+                      }}
+                      aria-label="Messages"
+                    >
+                      <i className="bi bi-chat-dots-fill"></i>
+                      {messageCount > 0 && (
+                        <span className="notification-dot">{messageCount}</span>
+                      )}
+                    </button>
 
-                {chatOpen && (
-                  <div className="facebook-style-dropdown chat-dropdown">
-                    <div className="dropdown-header">
-                      <h3>Chats</h3>
-                      <NavLink
-                        to="/messages"
-                        onClick={() => setChatOpen(false)}
-                        className="btn-link"
-                      >
-                        See all in Messenger
-                      </NavLink>
-                    </div>
-
-                    {recentChats.length === 0 ? (
-                      <div className="dropdown-empty">
-                        <p>No messages yet</p>
-                      </div>
-                    ) : (
-                      <div className="dropdown-list">
-                        {recentChats.map((chat) => (
-                          <button
-                            key={chat._id}
-                            className="dropdown-item chat-item"
-                            onClick={() => {
-                              setChatOpen(false);
-                              navigate(`/messages?conversationId=${chat._id}`);
-                            }}
+                    {chatOpen && (
+                      <div className="facebook-style-dropdown chat-dropdown">
+                        <div className="dropdown-header">
+                          <h3>Chats</h3>
+                          <NavLink
+                            to="/messages"
+                            onClick={() => setChatOpen(false)}
+                            className="btn-link"
                           >
-                            {/* 👇 AVATAR WITH INLINE STYLES — cannot be broken by CSS conflicts */}
-                            <div
-                              style={{
-                                position: "relative",
-                                width: "52px",
-                                height: "52px",
-                                flexShrink: 0,
-                                borderRadius: "50%",
-                                overflow: "hidden",
-                                background: "#ffffff",
-                                border: "1px solid #f1f5f9",
-                              }}
-                            >
-                              {getAvatarUrl(chat.user?.photos) ? (
-                                <img
-                                  src={getAvatarUrl(chat.user.photos)}
-                                  alt={chat.user?.name}
+                            See all in Messenger
+                          </NavLink>
+                        </div>
+
+                        {recentChats.length === 0 ? (
+                          <div className="dropdown-empty">
+                            <p>No messages yet</p>
+                          </div>
+                        ) : (
+                          <div className="dropdown-list">
+                            {recentChats.map((chat) => (
+                              <button
+                                key={chat._id}
+                                className="dropdown-item chat-item"
+                                onClick={() => {
+                                  setChatOpen(false);
+                                  navigate(
+                                    `/messages?conversationId=${chat._id}`
+                                  );
+                                }}
+                              >
+                                <div
                                   style={{
-                                    width: "100%",
-                                    height: "100%",
-                                    objectFit: "cover",
-                                    objectPosition: "center",
-                                    display: "block",
+                                    position: "relative",
+                                    width: "52px",
+                                    height: "52px",
+                                    flexShrink: 0,
                                     borderRadius: "50%",
+                                    overflow: "hidden",
                                     background: "#ffffff",
-                                  }}
-                                />
-                              ) : (
-                                <span
-                                  style={{
-                                    width: "100%",
-                                    height: "100%",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    borderRadius: "50%",
-                                    background:
-                                      "linear-gradient(135deg, #fce7f3, #ede9fe)",
-                                    color: "#db2777",
-                                    fontWeight: 700,
-                                    fontSize: "18px",
+                                    border: "1px solid #f1f5f9",
                                   }}
                                 >
-                                  {chat.user?.name?.charAt(0) || "U"}
-                                </span>
-                              )}
+                                  {getAvatarUrl(chat.user?.photos) ? (
+                                    <img
+                                      src={getAvatarUrl(chat.user.photos)}
+                                      alt={chat.user?.name}
+                                      style={{
+                                        width: "100%",
+                                        height: "100%",
+                                        objectFit: "cover",
+                                        objectPosition: "center",
+                                        display: "block",
+                                        borderRadius: "50%",
+                                        background: "#ffffff",
+                                      }}
+                                    />
+                                  ) : (
+                                    <span
+                                      style={{
+                                        width: "100%",
+                                        height: "100%",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        borderRadius: "50%",
+                                        background:
+                                          "linear-gradient(135deg, #fce7f3, #ede9fe)",
+                                        color: "#db2777",
+                                        fontWeight: 700,
+                                        fontSize: "18px",
+                                      }}
+                                    >
+                                      {chat.user?.name?.charAt(0) || "U"}
+                                    </span>
+                                  )}
 
-                              {chat.user?.isOnline && (
-                                <span
-                                  style={{
-                                    position: "absolute",
-                                    bottom: "2px",
-                                    right: "2px",
-                                    width: "12px",
-                                    height: "12px",
-                                    background: "#22c55e",
-                                    border: "2px solid white",
-                                    borderRadius: "50%",
-                                    zIndex: 1,
-                                  }}
-                                ></span>
-                              )}
-                            </div>
+                                  {chat.user?.isOnline && (
+                                    <span
+                                      style={{
+                                        position: "absolute",
+                                        bottom: "2px",
+                                        right: "2px",
+                                        width: "12px",
+                                        height: "12px",
+                                        background: "#22c55e",
+                                        border: "2px solid white",
+                                        borderRadius: "50%",
+                                        zIndex: 1,
+                                      }}
+                                    ></span>
+                                  )}
+                                </div>
 
-                            <div className="item-content">
-                              <div className="item-top">
-                                <strong>{chat.user?.name}</strong>
-                                {chat.lastMessageAt && (
-                                  <span className="item-time">
-                                    {new Date(
-                                      chat.lastMessageAt
-                                    ).toLocaleTimeString([], {
-                                      hour: "2-digit",
-                                      minute: "2-digit",
-                                    })}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="item-text">
-                                {chat.lastMessage?.text ||
-                                  "Start a conversation"}
-                              </p>
-                            </div>
-                          </button>
-                        ))}
+                                <div className="item-content">
+                                  <div className="item-top">
+                                    <strong>{chat.user?.name}</strong>
+                                    {chat.lastMessageAt && (
+                                      <span className="item-time">
+                                        {new Date(
+                                          chat.lastMessageAt
+                                        ).toLocaleTimeString([], {
+                                          hour: "2-digit",
+                                          minute: "2-digit",
+                                        })}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="item-text">
+                                    {chat.lastMessage?.text ||
+                                      "Start a conversation"}
+                                  </p>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
 
-              <div
-                className="navbar-notifications-dropdown"
-                ref={notificationsRef}
-              >
-                <button
-                  type="button"
-                  className={`navbar-icon-button ${
-                    notificationsOpen ? "active" : ""
-                  }`}
-                  onClick={handleToggleNotifications}
-                  aria-label="Notifications"
-                >
-                  <i className="bi bi-bell-fill"></i>
-                  {notificationCount > 0 && (
-                    <span className="notification-dot">
-                      {notificationCount}
-                    </span>
-                  )}
-                </button>
+                  {/* Notifications dropdown */}
+                  <div
+                    className="navbar-notifications-dropdown"
+                    ref={notificationsRef}
+                  >
+                    <button
+                      type="button"
+                      className={`navbar-icon-button ${
+                        notificationsOpen ? "active" : ""
+                      }`}
+                      onClick={handleToggleNotifications}
+                      aria-label="Notifications"
+                    >
+                      <i className="bi bi-bell-fill"></i>
+                      {notificationCount > 0 && (
+                        <span className="notification-dot">
+                          {notificationCount}
+                        </span>
+                      )}
+                    </button>
 
-                {notificationsOpen && (
-                  <div className="facebook-style-dropdown notifications-dropdown">
-                    <div className="dropdown-header">
-                      <h3>Notifications</h3>
-                      <NavLink
-                        to="/notifications"
-                        onClick={() => setNotificationsOpen(false)}
-                        className="btn-link"
-                      >
-                        See all
-                      </NavLink>
-                    </div>
-
-                    {notifications.length === 0 ? (
-                      <div className="dropdown-empty">
-                        <p>No new notifications</p>
-                      </div>
-                    ) : (
-                      <div className="dropdown-list">
-                        {notifications.map((notification) => (
-                          <button
-                            key={notification._id}
-                            className={`dropdown-item notification-item ${
-                              !notification.isRead ? "unread" : ""
-                            }`}
-                            onClick={() => {
-                              setNotificationsOpen(false);
-                              if (notification.sender?._id) {
-                                navigate(`/users/${notification.sender._id}`);
-                              }
-                            }}
+                    {notificationsOpen && (
+                      <div className="facebook-style-dropdown notifications-dropdown">
+                        <div className="dropdown-header">
+                          <h3>Notifications</h3>
+                          <NavLink
+                            to="/notifications"
+                            onClick={() => setNotificationsOpen(false)}
+                            className="btn-link"
                           >
-                            <div className="item-avatar">
-                              {getAvatarUrl(notification.sender?.photos) ? (
-                                <img
-                                  src={getAvatarUrl(notification.sender.photos)}
-                                  alt={notification.sender?.name}
-                                  className="item-avatar-img"
-                                />
-                              ) : (
-                                <span>
-                                  {notification.sender?.name?.charAt(0) || "N"}
-                                </span>
-                              )}
-                            </div>
-                            <div className="item-content">
-                              <p className="item-text">
-                                <strong>{notification.sender?.name}</strong>{" "}
-                                {notification.message}
-                              </p>
-                              {notification.createdAt && (
-                                <span className="item-time">
-                                  {new Date(
-                                    notification.createdAt
-                                  ).toLocaleTimeString([], {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}
-                                </span>
-                              )}
-                            </div>
-                            {!notification.isRead && (
-                              <span className="unread-dot"></span>
-                            )}
-                          </button>
-                        ))}
+                            See all
+                          </NavLink>
+                        </div>
+
+                        {notifications.length === 0 ? (
+                          <div className="dropdown-empty">
+                            <p>No new notifications</p>
+                          </div>
+                        ) : (
+                          <div className="dropdown-list">
+                            {notifications.map((notification) => (
+                              <button
+                                key={notification._id}
+                                className={`dropdown-item notification-item ${
+                                  !notification.isRead ? "unread" : ""
+                                }`}
+                                onClick={() => {
+                                  setNotificationsOpen(false);
+                                  if (notification.sender?._id) {
+                                    navigate(
+                                      `/users/${notification.sender._id}`
+                                    );
+                                  }
+                                }}
+                              >
+                                <div className="item-avatar">
+                                  {getAvatarUrl(notification.sender?.photos) ? (
+                                    <img
+                                      src={getAvatarUrl(
+                                        notification.sender.photos
+                                      )}
+                                      alt={notification.sender?.name}
+                                      className="item-avatar-img"
+                                    />
+                                  ) : (
+                                    <span>
+                                      {notification.sender?.name?.charAt(0) ||
+                                        "N"}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="item-content">
+                                  <p className="item-text">
+                                    <strong>{notification.sender?.name}</strong>{" "}
+                                    {notification.message}
+                                  </p>
+                                  {notification.createdAt && (
+                                    <span className="item-time">
+                                      {new Date(
+                                        notification.createdAt
+                                      ).toLocaleTimeString([], {
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                      })}
+                                    </span>
+                                  )}
+                                </div>
+                                {!notification.isRead && (
+                                  <span className="unread-dot"></span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
+                </>
+              )}
+              {/* 👆 END of chat + notifications (hidden for admins) */}
 
+              {/* Profile dropdown — visible for everyone */}
               <div className="navbar-profile" ref={profileRef}>
                 <button
                   type="button"
@@ -497,7 +572,7 @@ function Navbar() {
                   </div>
                   <div className="navbar-profile-name">
                     <strong>{user?.name || "My Profile"}</strong>
-                    <small>View profile</small>
+                    <small>{isAdmin ? "Administrator" : "View profile"}</small>
                   </div>
                   <i
                     className={`bi ${

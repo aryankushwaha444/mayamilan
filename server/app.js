@@ -14,6 +14,7 @@ import likeRoutes from "./routes/like.routes.js";
 import matchRoutes from "./routes/match.routes.js";
 import messageRoutes from "./routes/message.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
 
 const app = express();
 
@@ -74,5 +75,8 @@ app.use("/api/likes", likeRoutes);
 app.use("/api/matches", matchRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/notifications", notificationRoutes);
+
+// admin routes
+app.use("/api/admin", adminRoutes);
 
 export default app;

@@ -1,421 +1,306 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ChatInputBar from "./ChatInputBar.jsx";
 import MessageBubble from "./MessageBubble.jsx";
+import PhotoLightbox from "./PhotoLightbox.jsx";
 import {
   getMessages,
-  sendMessage as sendMessageApi,
+  sendChatMessage,
+  uploadChatAttachment,
+  reactToMessage,
+  deleteMessage,
+  markMessageAsRead,
 } from "../services/messageService.js";
 import { useSocket } from "../hooks/useSocket.js";
 
 function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
-  const { socket, connected } = useSocket();
-
+  const { socket } = useSocket();
   const [messages, setMessages] = useState([]);
-  const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [typing, setTyping] = useState(false);
-  const [userScrolled, setUserScrolled] = useState(false);
+  const [lightbox, setLightbox] = useState(null);
 
-  const [otherUserOnline, setOtherUserOnline] = useState(
-    Boolean(otherUser?.isOnline)
-  );
+  const scrollRef = useRef(null);
+  const isInitialLoad = useRef(true);
 
-  const typingTimeoutRef = useRef(null);
-  const messagesContainerRef = useRef(null);
-
-  /*
-   * ==========================================
-   * LOAD / RESYNC MESSAGE HISTORY
-   * ==========================================
-   */
-  const loadMessages = useCallback(async () => {
+  /* ==========================================
+     LOAD MESSAGES
+  ========================================== */
+  const loadMessages = async () => {
     try {
       const data = await getMessages(conversationId);
       setMessages(data.messages || []);
-    } catch (error) {
-      console.error("Load messages error:", error);
+    } catch (err) {
+      console.error("Load messages error:", err);
     } finally {
       setLoading(false);
-    }
-  }, [conversationId]);
-
-  useEffect(() => {
-    if (conversationId) {
-      setLoading(true);
-      loadMessages();
-    }
-  }, [conversationId, loadMessages]);
-
-  /*
-   * ==========================================
-   * SYNC ONLINE STATUS WHEN otherUser CHANGES
-   * ==========================================
-   */
-  useEffect(() => {
-    setOtherUserOnline(Boolean(otherUser?.isOnline));
-  }, [otherUser]);
-
-  /*
-   * ==========================================
-   * REAL-TIME ONLINE / OFFLINE PRESENCE
-   * ==========================================
-   */
-  useEffect(() => {
-    if (!socket) return;
-
-    const otherUserId = otherUser?._id?.toString();
-
-    const handleUserOnline = ({ userId }) => {
-      if (userId?.toString() === otherUserId) {
-        setOtherUserOnline(true);
-      }
-    };
-
-    const handleUserOffline = ({ userId }) => {
-      if (userId?.toString() === otherUserId) {
-        setOtherUserOnline(false);
-      }
-    };
-
-    socket.on("user_online", handleUserOnline);
-    socket.on("user_offline", handleUserOffline);
-
-    return () => {
-      socket.off("user_online", handleUserOnline);
-      socket.off("user_offline", handleUserOffline);
-    };
-  }, [socket, otherUser]);
-
-  /*
-   * ==========================================
-   * ASK SERVER FOR THE OTHER USER'S LIVE STATUS
-   * ==========================================
-   */
-  useEffect(() => {
-    if (!socket || !connected || !otherUser?._id) return;
-
-    const otherUserId = otherUser._id.toString();
-
-    const handlePresenceResult = ({ userId, isOnline }) => {
-      if (userId?.toString() === otherUserId) {
-        setOtherUserOnline(isOnline);
-      }
-    };
-
-    socket.on("presence_result", handlePresenceResult);
-    socket.emit("check_presence", { userId: otherUserId });
-
-    return () => {
-      socket.off("presence_result", handlePresenceResult);
-    };
-  }, [socket, connected, otherUser]);
-
-  /*
-   * ==========================================
-   * JOIN CONVERSATION + RESYNC MISSED MESSAGES
-   * 👇 Every time the socket (re)connects, re-join the
-   * room AND reload history so nothing stays missing.
-   * ==========================================
-   */
-  useEffect(() => {
-    if (!socket || !connected || !conversationId) return;
-
-    socket.emit("join_conversation", conversationId);
-
-    // Resync any messages missed while disconnected
-    loadMessages();
-
-    return () => {
-      socket.emit("leave_conversation", conversationId);
-    };
-  }, [socket, connected, conversationId, loadMessages]);
-
-  /*
-   * ==========================================
-   * REAL-TIME CHAT EVENTS
-   * ==========================================
-   */
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleNewMessage = (message) => {
-      if (message.conversation?.toString() !== conversationId?.toString()) {
-        return;
-      }
-
-      setMessages((currentMessages) => {
-        const alreadyExists = currentMessages.some(
-          (item) => item._id === message._id
-        );
-        if (alreadyExists) return currentMessages;
-        return [...currentMessages, message];
-      });
-
-      const receiverId = message.receiver?._id || message.receiver;
-      if (receiverId?.toString() === currentUserId?.toString()) {
-        socket.emit("mark_delivered", { messageId: message._id });
-      }
-    };
-
-    const handleMessageDelivered = ({ messageId }) => {
-      setMessages((currentMessages) =>
-        currentMessages.map((msg) =>
-          msg._id === messageId ? { ...msg, isDelivered: true } : msg
-        )
-      );
-    };
-
-    const handleMessageRead = ({ messageId }) => {
-      setMessages((currentMessages) =>
-        currentMessages.map((msg) =>
-          msg._id === messageId
-            ? { ...msg, isRead: true, isDelivered: true }
-            : msg
-        )
-      );
-    };
-
-    const handleTyping = ({ userId }) => {
-      if (userId?.toString() !== currentUserId?.toString()) setTyping(true);
-    };
-
-    const handleStopTyping = ({ userId }) => {
-      if (userId?.toString() !== currentUserId?.toString()) setTyping(false);
-    };
-
-    const handleChatError = ({ message }) => {
-      console.error("Chat error:", message);
-    };
-
-    socket.on("new_message", handleNewMessage);
-    socket.on("message_delivered", handleMessageDelivered);
-    socket.on("message_read", handleMessageRead);
-    socket.on("user_typing", handleTyping);
-    socket.on("user_stopped_typing", handleStopTyping);
-    socket.on("chat_error", handleChatError);
-
-    return () => {
-      socket.off("new_message", handleNewMessage);
-      socket.off("message_delivered", handleMessageDelivered);
-      socket.off("message_read", handleMessageRead);
-      socket.off("user_typing", handleTyping);
-      socket.off("user_stopped_typing", handleStopTyping);
-      socket.off("chat_error", handleChatError);
-    };
-  }, [socket, conversationId, currentUserId]);
-
-  /*
-   * ==========================================
-   * MARK MESSAGES AS READ
-   * ==========================================
-   */
-  useEffect(() => {
-    if (
-      !socket ||
-      !connected ||
-      !conversationId ||
-      messages.length === 0 ||
-      userScrolled
-    )
-      return;
-
-    messages.forEach((message) => {
-      const receiverId = message.receiver?._id || message.receiver;
-      if (
-        receiverId?.toString() === currentUserId?.toString() &&
-        !message.isRead
-      ) {
-        socket.emit("mark_read", { messageId: message._id });
-      }
-    });
-  }, [
-    messages,
-    socket,
-    connected,
-    conversationId,
-    currentUserId,
-    userScrolled,
-  ]);
-
-  /*
-   * ==========================================
-   * SMART AUTO SCROLL
-   * ==========================================
-   */
-  const scrollToBottom = (smooth = true) => {
-    if (messagesContainerRef.current) {
-      const container = messagesContainerRef.current;
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: smooth ? "smooth" : "auto",
-      });
     }
   };
 
   useEffect(() => {
-    if (!userScrolled) scrollToBottom(true);
-  }, [messages, typing, userScrolled]);
+    if (!conversationId) return;
+    isInitialLoad.current = true;
+    setMessages([]);
+    loadMessages();
+  }, [conversationId]);
 
+  /* ==========================================
+     AUTO-SCROLL
+  ========================================== */
   useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
+    if (!scrollRef.current || messages.length === 0) return;
 
-    const handleScroll = () => {
-      const isNearBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight <
-        100;
-      setUserScrolled(!isNearBottom);
+    if (isInitialLoad.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      isInitialLoad.current = false;
+    } else {
+      // smooth scroll for new messages
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    }
+  }, [messages]);
+
+  /* ==========================================
+     MARK AS READ
+  ========================================== */
+  useEffect(() => {
+    if (!socket || !conversationId || messages.length === 0) return;
+
+    const unreadMine = messages.filter(
+      (m) =>
+        m.receiver?._id === currentUserId && !m.isRead && !m.deletedForEveryone
+    );
+
+    unreadMine.forEach((m) => {
+      markMessageAsRead(m._id).catch(() => {});
+    });
+  }, [messages, conversationId, currentUserId, socket]);
+
+  /* ==========================================
+     SOCKET EVENTS
+  ========================================== */
+  useEffect(() => {
+    if (!socket || !conversationId) return;
+
+    socket.emit("join_conversation", conversationId);
+
+    const handleNewMessage = (msg) => {
+      if (msg.conversation !== conversationId) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m._id === msg._id)) return prev;
+        return [...prev, msg];
+      });
     };
 
-    container.addEventListener("scroll", handleScroll);
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, []);
+    const handleDelivered = ({ messageId }) => {
+      setMessages((prev) =>
+        prev.map((m) => (m._id === messageId ? { ...m, isDelivered: true } : m))
+      );
+    };
 
-  /*
-   * ==========================================
-   * SEND MESSAGE
-   * ==========================================
-   */
-  const handleSendMessage = async (event) => {
-    if (event) event.preventDefault();
+    const handleRead = ({ messageId }) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId ? { ...m, isRead: true, readAt: new Date() } : m
+        )
+      );
+    };
 
-    const cleanText = text.trim();
-    if (!cleanText || sending) return;
+    const handleReacted = ({ messageId, reactions }) => {
+      setMessages((prev) =>
+        prev.map((m) => (m._id === messageId ? { ...m, reactions } : m))
+      );
+    };
+
+    const handleDeleted = ({ messageId }) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId ? { ...m, deletedForEveryone: true } : m
+        )
+      );
+    };
+
+    socket.on("new_message", handleNewMessage);
+    socket.on("message_delivered", handleDelivered);
+    socket.on("message_read", handleRead);
+    socket.on("message_reacted", handleReacted);
+    socket.on("message_deleted", handleDeleted);
+
+    return () => {
+      socket.emit("leave_conversation", conversationId);
+      socket.off("new_message", handleNewMessage);
+      socket.off("message_delivered", handleDelivered);
+      socket.off("message_read", handleRead);
+      socket.off("message_reacted", handleReacted);
+      socket.off("message_deleted", handleDeleted);
+    };
+  }, [socket, conversationId]);
+
+  /* ==========================================
+     SEND MESSAGE (all types)
+  ========================================== */
+  const handleSend = async ({
+    type = "text",
+    text = "",
+    file = null,
+    attachment = null,
+  }) => {
+    // 1. Create a temporary message to show immediately
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMessage = {
+      _id: tempId,
+      text,
+      type,
+      attachment,
+      sender: currentUserId,
+      receiver: otherUser?._id,
+      createdAt: new Date(),
+      isDelivered: false,
+      isRead: false,
+      failed: false,
+    };
+
+    setMessages((prev) => [...prev, optimisticMessage]);
 
     try {
       setSending(true);
+      let att = attachment;
 
-      if (socket && connected) {
-        socket.emit("send_message", { conversationId, text: cleanText });
-        setText("");
-      } else {
-        // HTTP fallback — backend now broadcasts this too
-        const data = await sendMessageApi(conversationId, cleanText);
-        if (data.message) {
-          setMessages((currentMessages) => {
-            const alreadyExists = currentMessages.some(
-              (item) => item._id === data.message._id
-            );
-            if (alreadyExists) return currentMessages;
-            return [...currentMessages, data.message];
-          });
-        }
-        setText("");
+      if (file) {
+        const up = await uploadChatAttachment(file);
+        att = up.attachment;
       }
 
-      setTimeout(() => {
-        scrollToBottom(false);
-        setUserScrolled(false);
-      }, 50);
-    } catch (error) {
-      console.error("Send message error:", error);
+      await sendChatMessage(conversationId, { text, type, attachment: att });
+
+      // Success: Remove temp message (the real one will arrive via Socket)
+      setMessages((prev) => prev.filter((m) => m._id !== tempId));
+    } catch (err) {
+      console.error("Send error:", err);
+
+      // Failure: Mark the temporary message as failed (turns red)
+      setMessages((prev) =>
+        prev.map((m) => (m._id === tempId ? { ...m, failed: true } : m))
+      );
     } finally {
       setSending(false);
     }
   };
 
-  /*
-   * ==========================================
-   * TYPING
-   * ==========================================
-   */
-  const handleTyping = (event) => {
-    const value = event.target.value;
-    setText(value);
-
-    if (!socket || !connected) return;
-
-    socket.emit("typing", conversationId);
-    clearTimeout(typingTimeoutRef.current);
-
-    typingTimeoutRef.current = setTimeout(() => {
-      socket.emit("stop_typing", conversationId);
-    }, 700);
-  };
-
-  /*
-   * ==========================================
-   * ENTER TO SEND
-   * ==========================================
-   */
-  const handleKeyDown = (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      handleSendMessage(event);
+  /* ==========================================
+     REACTIONS & DELETE
+  ========================================== */
+  const handleReact = async (messageId, emoji) => {
+    try {
+      await reactToMessage(messageId, emoji);
+    } catch (e) {
+      console.error("React error:", e);
     }
   };
 
+  const handleDeleteMessage = async (messageId, scope) => {
+    try {
+      await deleteMessage(messageId, scope);
+      if (scope === "me") {
+        setMessages((prev) => prev.filter((m) => m._id !== messageId));
+      }
+      // "everyone" deletion is handled by socket event
+    } catch (e) {
+      alert(e.response?.data?.message || "Failed to delete");
+    }
+  };
+
+  /* ==========================================
+     LIGHTBOX HANDLER
+  ========================================== */
+  const handleImageClick = (url) => {
+    setLightbox({ photos: [url], index: 0 });
+  };
+
+  /* ==========================================
+     RENDER
+  ========================================== */
   return (
-    <section className="chat-window">
+    <div className="chat-window">
       {/* HEADER */}
-      <header className="chat-header">
-        <div className="chat-user-info">
-          <div className="chat-user-avatar">
+      <div className="chat-header">
+        <button className="chat-back-btn" onClick={onBack}>
+          <i className="bi bi-arrow-left"></i>
+        </button>
+
+        <div className="chat-header-user">
+          <div className="chat-header-avatar">
             {otherUser?.photos?.[0]?.url ? (
               <img src={otherUser.photos[0].url} alt={otherUser.name} />
             ) : (
-              <span>{otherUser?.name?.charAt(0)?.toUpperCase() || "?"}</span>
+              <span>{otherUser?.name?.charAt(0) || "?"}</span>
             )}
+            {otherUser?.isOnline && <span className="online-dot"></span>}
           </div>
           <div>
-            <h2>{otherUser?.name}</h2>
-            <p className={otherUserOnline ? "status-online" : "status-offline"}>
-              {typing ? "Typing..." : otherUserOnline ? "Online" : "Offline"}
-            </p>
+            <strong>{otherUser?.name}</strong>
+            <small>
+              {otherUser?.isOnline
+                ? "Active now"
+                : otherUser?.lastSeen
+                ? `Last seen ${new Date(otherUser.lastSeen).toLocaleTimeString(
+                    [],
+                    {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }
+                  )}`
+                : "Offline"}
+            </small>
           </div>
         </div>
-      </header>
+      </div>
 
       {/* MESSAGES */}
-      <div className="chat-messages" ref={messagesContainerRef}>
+      <div className="chat-messages" ref={scrollRef}>
         {loading ? (
-          <div className="chat-loading">Loading messages...</div>
+          <div className="chat-loading">
+            <div className="spinner-border spinner-border-sm text-primary"></div>
+          </div>
         ) : messages.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-icon">💬</div>
-            <h3>Start the conversation</h3>
-            <p>Say hello and see where it goes.</p>
+            <p>
+              Start your conversation with <strong>{otherUser?.name}</strong>
+            </p>
           </div>
         ) : (
-          <>
-            {messages.map((message) => (
+          messages
+            .filter((m) => !m.deletedFor?.includes(currentUserId))
+            .map((m) => (
               <MessageBubble
-                key={message._id}
-                message={message}
-                currentUserId={currentUserId}
+                key={m._id}
+                message={m}
+                isMine={
+                  (typeof m.sender === "string" ? m.sender : m.sender?._id) ===
+                  currentUserId
+                }
+                onReact={(emoji) => handleReact(m._id, emoji)}
+                onDelete={(scope) => handleDeleteMessage(m._id, scope)}
+                onImageClick={handleImageClick}
               />
-            ))}
-            {typing && (
-              <div className="typing-indicator">
-                <span />
-                <span />
-                <span />
-              </div>
-            )}
-          </>
+            ))
         )}
       </div>
 
       {/* INPUT */}
-      <form className="chat-input-area" onSubmit={handleSendMessage}>
-        <textarea
-          value={text}
-          onChange={handleTyping}
-          onKeyDown={handleKeyDown}
-          placeholder="Write a message..."
-          maxLength={2000}
-          rows={1}
-          disabled={sending}
+      <ChatInputBar onSend={handleSend} disabled={sending} />
+
+      {/* LIGHTBOX */}
+      {lightbox && (
+        <PhotoLightbox
+          photos={lightbox.photos}
+          initialIndex={lightbox.index}
+          onClose={() => setLightbox(null)}
         />
-        <button
-          type="submit"
-          disabled={!text.trim() || sending}
-          className="chat-send-btn"
-        >
-          {sending ? "..." : "➤"}
-        </button>
-      </form>
-    </section>
+      )}
+    </div>
   );
 }
 

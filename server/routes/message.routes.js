@@ -6,9 +6,13 @@ import {
   getMessages,
   sendMessage,
   markMessageAsRead,
-  markMessageAsDelivered, // 👈 ADD THIS IMPORT
+  markMessageAsDelivered,
   getUnreadMessageCount,
   getRecentConversations,
+  uploadMemory,
+  uploadChatAttachment,
+  reactToMessage,
+  deleteMessage,
 } from "../controllers/message.controller.js";
 
 import { protect } from "../middleware/auth.middleware.js";
@@ -17,44 +21,33 @@ const router = express.Router();
 
 /*
  * ==========================================
- * CONVERSATIONS
+ * SPECIFIC ROUTES FIRST (must come BEFORE parameterized routes)
  * ==========================================
  */
 
-// Create or get conversation from match
-router.post("/conversations/:matchId", protect, createOrGetConversation);
+// 👇 UPLOAD MUST BE FIRST — otherwise "/upload" is treated as a conversationId!
+router.post("/upload", protect, uploadMemory, uploadChatAttachment);
 
-// Get all conversations
+// Conversations
+router.post("/conversations/:matchId", protect, createOrGetConversation);
 router.get("/conversations", protect, getConversations);
 
-/*
- * ==========================================
- * SPECIFIC MESSAGE ROUTES (MUST BE ABOVE PARAMETERIZED ROUTES)
- * ==========================================
- */
-
-// Get unread message count
+// Navbar helpers
 router.get("/unread-count", protect, getUnreadMessageCount);
-
-// Get recent conversations for navbar dropdown
 router.get("/recent", protect, getRecentConversations);
 
 /*
  * ==========================================
- * PARAMETERIZED MESSAGE ROUTES
+ * PARAMETERIZED ROUTES LAST
  * ==========================================
  */
 
-// Get messages for a specific conversation
 router.get("/:conversationId", protect, getMessages);
-
-// Send message to a specific conversation
 router.post("/:conversationId", protect, sendMessage);
 
-// Mark message as delivered
-router.patch("/:messageId/delivered", protect, markMessageAsDelivered); // 👈 ADD THIS ROUTE
-
-// Mark message as read
+router.patch("/:messageId/delivered", protect, markMessageAsDelivered);
 router.patch("/:messageId/read", protect, markMessageAsRead);
+router.post("/:messageId/react", protect, reactToMessage);
+router.delete("/:messageId", protect, deleteMessage);
 
 export default router;

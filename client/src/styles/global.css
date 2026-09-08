@@ -639,7 +639,8 @@ img {
 html,
 body {
   width: 100%;
-  overflow-x: hidden; /* stop horizontal overflow */
+  overflow-x: hidden; /* only horizontal locked */
+  overflow-y: auto;
 }
 
 #root {
@@ -905,4 +906,26 @@ body {
     width: 40px;
     height: 40px;
   }
+}
+
+.report-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: lightboxFade 0.2s ease;
+}
+
+.report-modal {
+  width: 100%;
+  max-width: 460px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.3);
+  animation: lightboxZoom 0.25s ease;
 }

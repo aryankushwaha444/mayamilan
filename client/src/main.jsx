@@ -8,6 +8,7 @@ import "./styles/global.css";
 import "./styles/navbar.css";
 import "./styles/chat.css";
 import "./styles/footer.css";
+import "./styles/admin.css";
 
 import App from "./App.jsx";
 
