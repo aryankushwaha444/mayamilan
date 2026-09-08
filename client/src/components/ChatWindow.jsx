@@ -64,59 +64,111 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   /* ==========================================
      MARK AS READ
   ========================================== */
+  /* ==========================================
+     MARK AS READ (socket = real-time, HTTP = DB backup)
+  ========================================== */
   useEffect(() => {
     if (!socket || !conversationId || messages.length === 0) return;
 
-    const unreadMine = messages.filter(
-      (m) =>
-        m.receiver?._id === currentUserId && !m.isRead && !m.deletedForEveryone
-    );
+    const pending = messages.filter((m) => {
+      const receiverId =
+        typeof m.receiver === "string"
+          ? m.receiver
+          : m.receiver?._id?.toString?.();
 
-    unreadMine.forEach((m) => {
-      markMessageAsRead(m._id).catch(() => {});
+      return (
+        receiverId === currentUserId &&
+        !m.deletedForEveryone &&
+        (!m.isRead || !m.isDelivered)
+      );
+    });
+
+    pending.forEach((m) => {
+      const messageId = typeof m._id === "string" ? m._id : m._id?.toString?.();
+      console.log("📖 Marking as read:", messageId);
+
+      socket.emit("mark_read", { messageId }); // 👈 REAL-TIME PATH (was missing!)
+      markMessageAsRead(messageId).catch(() => {}); // DB backup
     });
   }, [messages, conversationId, currentUserId, socket]);
 
   /* ==========================================
      SOCKET EVENTS
   ========================================== */
+  /* ==========================================
+     SOCKET EVENTS (with bulletproof ID matching)
+  ========================================== */
   useEffect(() => {
     if (!socket || !conversationId) return;
 
     socket.emit("join_conversation", conversationId);
 
+    // 👇 Safe ID comparison for ALL types (string, ObjectId, nested _id)
+    const sameId = (a, b) => {
+      const idA =
+        typeof a === "string" ? a : a?._id?.toString?.() || a?.toString?.();
+      const idB =
+        typeof b === "string" ? b : b?._id?.toString?.() || b?.toString?.();
+      return idA === idB;
+    };
+
     const handleNewMessage = (msg) => {
-      if (msg.conversation !== conversationId) return;
+      const msgConvId =
+        typeof msg.conversation === "string"
+          ? msg.conversation
+          : msg.conversation?._id?.toString?.();
+
+      if (msgConvId !== conversationId) return;
+
       setMessages((prev) => {
-        if (prev.some((m) => m._id === msg._id)) return prev;
+        if (prev.some((m) => sameId(m._id, msg._id))) return prev;
         return [...prev, msg];
       });
+
+      // Auto-mark as read if chat is open
+      const receiverId =
+        typeof msg.receiver === "string"
+          ? msg.receiver
+          : msg.receiver?._id?.toString?.();
+
+      if (receiverId === currentUserId) {
+        const messageId =
+          typeof msg._id === "string" ? msg._id : msg._id?.toString?.();
+        socket.emit("mark_read", { messageId });
+        markMessageAsRead(msg._id).catch(() => {});
+      }
     };
 
     const handleDelivered = ({ messageId }) => {
+      console.log("📬 DELIVERED:", messageId);
       setMessages((prev) =>
-        prev.map((m) => (m._id === messageId ? { ...m, isDelivered: true } : m))
+        prev.map((m) =>
+          sameId(m._id, messageId) ? { ...m, isDelivered: true } : m
+        )
       );
     };
 
     const handleRead = ({ messageId }) => {
+      console.log("👁️ READ:", messageId);
       setMessages((prev) =>
         prev.map((m) =>
-          m._id === messageId ? { ...m, isRead: true, readAt: new Date() } : m
+          sameId(m._id, messageId)
+            ? { ...m, isRead: true, isDelivered: true, readAt: new Date() }
+            : m
         )
       );
     };
 
     const handleReacted = ({ messageId, reactions }) => {
       setMessages((prev) =>
-        prev.map((m) => (m._id === messageId ? { ...m, reactions } : m))
+        prev.map((m) => (sameId(m._id, messageId) ? { ...m, reactions } : m))
       );
     };
 
     const handleDeleted = ({ messageId }) => {
       setMessages((prev) =>
         prev.map((m) =>
-          m._id === messageId ? { ...m, deletedForEveryone: true } : m
+          sameId(m._id, messageId) ? { ...m, deletedForEveryone: true } : m
         )
       );
     };
@@ -135,7 +187,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       socket.off("message_reacted", handleReacted);
       socket.off("message_deleted", handleDeleted);
     };
-  }, [socket, conversationId]);
+  }, [socket, conversationId, currentUserId]);
 
   /* ==========================================
      SEND MESSAGE (all types)

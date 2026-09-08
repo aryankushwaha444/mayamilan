@@ -641,14 +641,6 @@
 }
 
 /* Message Status Indicators */
-.message-status {
-  margin-left: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  display: inline-block;
-  min-width: 16px;
-  text-align: center;
-}
 
 .message-status.sent {
   color: rgba(255, 255, 255, 0.7);
@@ -1128,22 +1120,6 @@
   max-width: 280px;
 }
 
-/* Message Status Checkmarks */
-.status-sent {
-  color: rgba(255, 255, 255, 0.6); /* Light gray for own messages */
-  font-size: 14px;
-}
-
-.status-delivered {
-  color: rgba(255, 255, 255, 0.9); /* White/Gray for delivered */
-  font-size: 14px;
-}
-
-.status-read {
-  color: #60a5fa; /* Blue for read */
-  font-size: 14px;
-}
-
 /* Failed Message Bubble */
 .failed-bubble {
   background: #fee2e2 !important;
@@ -1152,11 +1128,80 @@
 }
 
 .failed-bubble .message-time {
-  color: #dc2626 !important;
+  color: Blue !important;
   font-weight: 600;
 }
 
 .message-time {
   font-size: 12px;
   color: #94a3b8;
+}
+
+/* ============ MESSAGE BUBBLES (mine = pink, other = white) ============ */
+.message-bubble.mine {
+  border-radius: 20px 20px 6px 20px;
+  box-shadow: 0 4px 15px rgba(236, 72, 153, 0.2);
+}
+
+.message-bubble:not(.mine) {
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid #f1f5f9;
+  border-radius: 20px 20px 20px 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* Transparent bubbles for images / stickers / hearts / deleted / failed */
+.message-bubble.no-pad,
+.message-bubble.deleted-bubble,
+.message-bubble.failed-bubble {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.message-bubble.deleted-bubble {
+  background: #f1f5f9 !important;
+  border-radius: 16px;
+  padding: 10px 16px;
+}
+
+.message-bubble.failed-bubble {
+  background: #fee2e2 !important;
+  border: 1px solid #fca5a5 !important;
+  color: #991b1b !important;
+  border-radius: 16px;
+}
+
+/* ============ TIME + STATUS ICONS ============ */
+.message-time {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.message-bubble.failed-bubble .message-time {
+  color: #dc2626 !important;
+  font-weight: 600;
+}
+
+/* ✓ single = sent */
+.status-sent {
+  font-size: 15px;
+}
+
+/* ✓✓ double = delivered */
+.status-delivered {
+  font-size: 12px;
+}
+
+/* 🔵 small circle = read */
+.status-read {
+  color: #60a5fa;
+  font-size: 8px;
+  line-height: 1;
 }

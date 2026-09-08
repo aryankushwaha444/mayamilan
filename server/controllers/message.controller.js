@@ -572,18 +572,11 @@ export const getUnreadMessageCount = async (req, res, next) => {
   }
 };
 
-/*
- * ==========================================
- * MARK MESSAGE AS DELIVERED
- * ==========================================
- */
 export const markMessageAsDelivered = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
-    const { messageId } = req.params;
-
     const message = await Message.findOne({
-      _id: messageId,
+      _id: req.params.messageId,
       receiver: currentUserId,
     });
 
@@ -597,28 +590,28 @@ export const markMessageAsDelivered = async (req, res, next) => {
       message.isDelivered = true;
       message.deliveredAt = new Date();
       await message.save();
+
+      const io = getIO();
+      if (io) {
+        console.log("📬 Emitting message_delivered to sender");
+        io.to(`user:${message.sender.toString()}`).emit("message_delivered", {
+          messageId: message._id.toString(),
+          conversationId: message.conversation.toString(),
+        });
+      }
     }
 
-    res
-      .status(200)
-      .json({ success: true, message: "Message marked as delivered" });
+    res.status(200).json({ success: true });
   } catch (error) {
     next(error);
   }
 };
 
-/*
- * ==========================================
- * MARK MESSAGE AS READ
- * ==========================================
- */
 export const markMessageAsRead = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
-    const { messageId } = req.params;
-
     const message = await Message.findOne({
-      _id: messageId,
+      _id: req.params.messageId,
       receiver: currentUserId,
     });
 
@@ -628,13 +621,51 @@ export const markMessageAsRead = async (req, res, next) => {
         .json({ success: false, message: "Message not found" });
     }
 
+    let changed = false;
+
+    if (!message.isDelivered) {
+      message.isDelivered = true;
+      message.deliveredAt = new Date();
+      changed = true;
+    }
+
     if (!message.isRead) {
       message.isRead = true;
       message.readAt = new Date();
-      await message.save();
+      changed = true;
     }
 
-    res.status(200).json({ success: true, message: "Message marked as read" });
+    if (changed) {
+      await message.save();
+
+      const io = getIO();
+      if (io) {
+        const payload = {
+          messageId: message._id.toString(),
+          conversationId: message.conversation.toString(),
+        };
+
+        console.log("👁️ Emitting message_read + unread_updated");
+
+        // Sender: ✓ → ✓✓ → 🔵 live
+        io.to(`user:${message.sender.toString()}`).emit(
+          "message_delivered",
+          payload
+        );
+        io.to(`user:${message.sender.toString()}`).emit(
+          "message_read",
+          payload
+        );
+
+        // Reader: navbar badge clears live
+        io.to(`user:${currentUserId.toString()}`).emit(
+          "unread_updated",
+          payload
+        );
+      }
+    }
+
+    res.status(200).json({ success: true });
   } catch (error) {
     next(error);
   }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSocket } from "../hooks/useSocket.js";
 import { NavLink, useNavigate } from "react-router-dom";
 import { getMatches } from "../services/matchService.js";
+import { getAllReports } from "../services/adminService"; 
 import {
   getNotifications,
   markAllAsRead,

@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 
-const REACTIONS = ["❤️", "😂", "", "😢", "", "👍"];
+const REACTIONS = ["❤️", "😂", "😮", "😢", "😡", "👍"];
 
 function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
-  const [menu, setMenu] = useState(null); // "react" | "delete" | null
+  const [menu, setMenu] = useState(null);
 
-  // 👇 Close menus when clicking anywhere else on the page
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -16,7 +15,6 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
     };
   }, [menu]);
 
-  /* ---------- FAILED MESSAGE ---------- */
   if (message.failed) {
     return (
       <div className={`message-row ${isMine ? "mine" : ""}`}>
@@ -24,11 +22,9 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           <div
             className={`message-bubble ${isMine ? "mine" : ""} failed-bubble`}
           >
-            {message.type === "image" || message.type === "gif" ? (
-              <span>Failed to send image</span>
-            ) : (
-              <div className="message-text">{message.text}</div>
-            )}
+            <div className="message-text">
+              {message.text || "Failed to send"}
+            </div>
             <span className="message-time">
               Failed <i className="bi bi-exclamation-circle-fill ms-1"></i>
             </span>
@@ -38,7 +34,6 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
     );
   }
 
-  /* ---------- DELETED MESSAGE ---------- */
   if (message.deletedForEveryone) {
     return (
       <div className={`message-row ${isMine ? "mine" : ""}`}>
@@ -83,6 +78,26 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
     }
   };
 
+  /* 👇 THE TICK LOGIC — this was missing in your file */
+  const getStatusIcon = () => {
+    if (!isMine) return null;
+
+    if (message.isRead) {
+      return (
+        <i className="bi bi-circle-fill status-read ms-1" title="Read"></i>
+      );
+    }
+    if (message.isDelivered) {
+      return (
+        <i
+          className="bi bi-check2-all status-delivered ms-1"
+          title="Delivered"
+        ></i>
+      );
+    }
+    return <i className="bi bi-check2 status-sent ms-1" title="Sent"></i>;
+  };
+
   const reactionCounts = (message.reactions || []).reduce((acc, r) => {
     acc[r.emoji] = (acc[r.emoji] || 0) + 1;
     return acc;
@@ -90,23 +105,8 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
 
   const noPad = ["image", "gif", "sticker", "heart"].includes(message.type);
 
-  const getStatusIcon = () => {
-    if (!isMine) return null;
-    if (message.isRead)
-      return <i className="bi bi-check2-all status-read ms-1" title="Read"></i>;
-    if (message.isDelivered)
-      return (
-        <i
-          className="bi bi-check2-all status-delivered ms-1"
-          title="Delivered"
-        ></i>
-      );
-    return <i className="bi bi-check2 status-sent ms-1" title="Sent"></i>;
-  };
-
   return (
     <div className={`message-row ${isMine ? "mine" : ""}`}>
-      {/* 👇 menu-open class keeps buttons visible while a menu is open */}
       <div className={`message-bubble-wrap ${menu ? "menu-open" : ""}`}>
         <div
           className={`message-bubble ${isMine ? "mine" : ""} ${
@@ -125,7 +125,6 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           )}
         </div>
 
-        {/* Reaction chips */}
         {Object.keys(reactionCounts).length > 0 && (
           <div className="message-reactions">
             {Object.entries(reactionCounts).map(([emoji, count]) => (
@@ -137,7 +136,6 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           </div>
         )}
 
-        {/* 👇 HOVER ACTIONS — stopPropagation so outside-click closer doesn't fire */}
         <div className="message-actions" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
@@ -155,7 +153,6 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           </button>
         </div>
 
-        {/* React menu */}
         {menu === "react" && (
           <div
             className="message-menu react-menu"
@@ -176,7 +173,6 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           </div>
         )}
 
-        {/* Delete menu */}
         {menu === "delete" && (
           <div
             className="message-menu delete-menu"
