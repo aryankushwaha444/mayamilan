@@ -1,79 +1,137 @@
-import nodemailer from "nodemailer";
+import { BrevoClient } from "@getbrevo/brevo";
 
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD,
-  },
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000,
+const brevo = new BrevoClient({
+  apiKey: process.env.BREVO_API_KEY,
 });
 
-// test after remove
-transporter
-  .verify()
-  .then(() => {
-    console.log("✅ Gmail SMTP connection successful");
-  })
-  .catch((error) => {
-    console.error("❌ Gmail SMTP connection failed:", error);
-  });
-
 export const sendOTP = async (email, otp, userName) => {
-  const mailOptions = {
-    from: `"Maya~Milan" <${process.env.EMAIL_USER}>`,
-    to: email,
-    subject: "Verify Your Email - LoveConnect",
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: linear-gradient(135deg, #ec4899, #f43f5e); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-          <h1 style="color: white; margin: 0;">LoveConnect</h1>
-        </div>
-        
-        <div style="padding: 40px; background: #f9fafb; border-radius: 0 0 10px 10px;">
-          <h2 style="color: #1f2937; margin-top: 0;">Hi ${userName}! 👋</h2>
+  try {
+    const response = await brevo.transactionalEmails.sendTransacEmail({
+      sender: {
+        name: "LoveConnect",
+        email: process.env.BREVO_SENDER_EMAIL,
+      },
+
+      to: [
+        {
+          email: email,
+          name: userName,
+        },
+      ],
+
+      subject: "Verify Your Email - LoveConnect",
+
+      htmlContent: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           
-          <p style="color: #4b5563; font-size: 16px; line-height: 1.6;">
-            Thank you for signing up! To complete your registration, please verify your email address using the code below:
-          </p>
-          
-          <div style="background: white; padding: 30px; text-align: center; border-radius: 8px; margin: 30px 0; border: 2px dashed #ec4899;">
-            <p style="margin: 0 0 10px; color: #6b7280; font-size: 14px;">Your verification code:</p>
-            <h1 style="color: #ec4899; font-size: 48px; margin: 0; letter-spacing: 8px; font-weight: 700;">
-              ${otp}
+          <div style="
+            background: linear-gradient(135deg, #ec4899, #f43f5e);
+            padding: 30px;
+            text-align: center;
+            border-radius: 10px 10px 0 0;
+          ">
+            <h1 style="color: white; margin: 0;">
+              LoveConnect
             </h1>
           </div>
-          
-          <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
-            ⏰ This code will expire in <strong>10 minutes</strong>.
-          </p>
-          
-          <p style="color: #6b7280; font-size: 14px; line-height: 1.6;">
-            If you didn't request this code, please ignore this email or contact support if you have concerns.
-          </p>
-          
-          <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-            <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
-              This is an automated message, please do not reply to this email.
+
+          <div style="
+            padding: 40px;
+            background: #f9fafb;
+            border-radius: 0 0 10px 10px;
+          ">
+
+            <h2 style="color: #1f2937; margin-top: 0;">
+              Hi ${userName}! 👋
+            </h2>
+
+            <p style="
+              color: #4b5563;
+              font-size: 16px;
+              line-height: 1.6;
+            ">
+              Thank you for signing up! To complete your registration,
+              please verify your email address using the code below:
             </p>
+
+            <div style="
+              background: white;
+              padding: 30px;
+              text-align: center;
+              border-radius: 8px;
+              margin: 30px 0;
+              border: 2px dashed #ec4899;
+            ">
+
+              <p style="
+                margin: 0 0 10px;
+                color: #6b7280;
+                font-size: 14px;
+              ">
+                Your verification code:
+              </p>
+
+              <h1 style="
+                color: #ec4899;
+                font-size: 48px;
+                margin: 0;
+                letter-spacing: 8px;
+                font-weight: 700;
+              ">
+                ${otp}
+              </h1>
+
+            </div>
+
+            <p style="
+              color: #6b7280;
+              font-size: 14px;
+              line-height: 1.6;
+            ">
+              ⏰ This code will expire in
+              <strong>10 minutes</strong>.
+            </p>
+
+            <p style="
+              color: #6b7280;
+              font-size: 14px;
+              line-height: 1.6;
+            ">
+              If you didn't request this code, please ignore this email
+              or contact support if you have concerns.
+            </p>
+
+            <div style="
+              margin-top: 40px;
+              padding-top: 20px;
+              border-top: 1px solid #e5e7eb;
+            ">
+
+              <p style="
+                color: #9ca3af;
+                font-size: 12px;
+                text-align: center;
+                margin: 0;
+              ">
+                This is an automated message, please do not reply to this email.
+              </p>
+
+            </div>
+
           </div>
         </div>
-      </div>
-    `,
-  };
+      `,
+    });
 
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log("✅ OTP email sent:", info.messageId);
-    return { success: true, messageId: info.messageId };
+    console.log("✅ OTP email sent:", response.messageId);
+
+    return {
+      success: true,
+      messageId: response.messageId,
+    };
   } catch (error) {
-    console.error("❌ Email send error:", error);
+    console.error("❌ Brevo email error:", error);
+
     throw new Error("Failed to send verification email");
   }
 };
-
-export default transporter;
