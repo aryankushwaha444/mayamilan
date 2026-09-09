@@ -22,19 +22,21 @@ function SocketProvider({ children }) {
       return;
     }
 
+    // 👇 NEW: shows which URL the build is using (verifies env var applied)
+    const SOCKET_URL =
+      import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
+    console.log("🔌 Socket URL:", SOCKET_URL);
     console.log("🔌 Creating socket for user:", user.name);
 
-    const socketInstance = io(
-      import.meta.env.VITE_SOCKET_URL || "http://localhost:5000",
-      {
-        auth: { token: accessToken },
-        withCredentials: true,
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000,
-        timeout: 20000,
-      }
-    );
+    const socketInstance = io(SOCKET_URL, {
+      auth: { token: accessToken },
+      withCredentials: true,
+      transports: ["websocket", "polling"], // 👈 NEW: reliable on Render
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 20000,
+    });
 
     socketInstance.on("connect", () => {
       console.log("✅ Socket connected:", socketInstance.id);
