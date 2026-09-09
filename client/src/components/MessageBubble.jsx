@@ -78,7 +78,7 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
     }
   };
 
-  /* 👇 THE TICK LOGIC — this was missing in your file */
+  /* THE TICK LOGIC — this was missing in your file */
   const getStatusIcon = () => {
     if (!isMine) return null;
 

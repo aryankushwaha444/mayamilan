@@ -6,10 +6,7 @@ function Footer() {
   return (
     <footer className="site-footer">
       <div className="footer-container">
-        {/* ==================================
-            BRAND
-        ================================== */}
-
+        {/*  BRAND */}
         <div className="footer-brand-section">
           <NavLink to="/" className="navbar-brand-custom">
             <span className="brand-logo">
@@ -53,10 +50,7 @@ function Footer() {
           </div>
         </div>
 
-        {/* ==================================
-            DISCOVER
-        ================================== */}
-
+        {/* DISCOVER */}
         <div className="footer-column">
           <h3>Discover</h3>
 
@@ -81,10 +75,7 @@ function Footer() {
           </NavLink>
         </div>
 
-        {/* ==================================
-            ACCOUNT
-        ================================== */}
-
+        {/* ACCOUNT */}
         <div className="footer-column">
           <h3>Account</h3>
 

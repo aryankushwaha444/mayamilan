@@ -57,9 +57,7 @@ function ChatInputBar({ onSend, disabled }) {
   const fileRef = useRef(null);
   const composerRef = useRef(null);
 
-  /* ==========================================
-     CLOSE PANELS + PLUS MENU ON OUTSIDE CLICK
-  ========================================== */
+  //  CLOSE PANELS + PLUS MENU ON OUTSIDE CLICK
   useEffect(() => {
     if (!panel && !plusOpen) return;
 

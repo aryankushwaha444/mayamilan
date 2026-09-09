@@ -26,7 +26,7 @@ function AdminLayout() {
           </div>
           <div>
             <h5 className="mb-0 text-white">Admin Panel</h5>
-            <small className="text-secondary">LoveConnect</small>
+            <small className="text-secondary">Maya~Milan</small>
           </div>
         </div>
 

@@ -9,10 +9,7 @@ function MatchCard({ match, onUnmatch }) {
 
   if (!user) return null;
 
-  // ==============================
   // GET PROFILE PHOTO
-  // ==============================
-
   const getPhotoUrl = (photos) => {
     if (!Array.isArray(photos) || photos.length === 0) {
       return null;
@@ -20,7 +17,6 @@ function MatchCard({ match, onUnmatch }) {
 
     const firstPhoto = photos[0];
 
-    // photos: ["https://example.com/photo.jpg"]
     if (typeof firstPhoto === "string") {
       if (
         firstPhoto.startsWith("http://") ||
@@ -49,10 +45,7 @@ function MatchCard({ match, onUnmatch }) {
 
   const photo = getPhotoUrl(user.photos);
 
-  // ==============================
   // AGE
-  // ==============================
-
   const calculateAge = (dateOfBirth) => {
     if (!dateOfBirth) return null;
 
@@ -80,35 +73,23 @@ function MatchCard({ match, onUnmatch }) {
 
   const age = calculateAge(user.dateOfBirth);
 
-  // ==============================
   // LOCATION
-  // ==============================
-
   const location =
     typeof user.location === "object"
       ? [user.location?.city, user.location?.country].filter(Boolean).join(", ")
       : user.location || "";
 
-  // ==============================
   // VIEW PROFILE
-  // ==============================
-
   const handleViewProfile = () => {
     navigate(`/users/${user._id}`);
   };
 
-  // ==============================
   // CHAT
-  // ==============================
-
   const handleChat = () => {
     navigate(`/messages?matchId=${match._id}`);
   };
 
-  // ==============================
   // UNMATCH
-  // ==============================
-
   const handleUnmatch = async () => {
     const confirmed = window.confirm(
       `Are you sure you want to unmatch with ${user.name || "this person"}?`
@@ -128,9 +109,7 @@ function MatchCard({ match, onUnmatch }) {
 
   return (
     <article className="match-card">
-      {/* ==============================
-          PROFILE IMAGE
-      ============================== */}
+      {/* PROFILE IMAGE */}
 
       <div className="match-card-image-wrapper">
         {photo ? (
@@ -151,9 +130,7 @@ function MatchCard({ match, onUnmatch }) {
         ) : null}
       </div>
 
-      {/* ==============================
-          CONTENT
-      ============================== */}
+      {/* CONTENT */}
 
       <div className="match-card-content">
         <h3 className="match-card-name">

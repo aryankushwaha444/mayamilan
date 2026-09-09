@@ -71,9 +71,6 @@ function AdminDashboard() {
     <div className="admin-dashboard">
       <div className="mb-4">
         <h1 className="fw-bold">Dashboard</h1>
-        <p className="text-muted">
-          Welcome back, here's what's happening today.
-        </p>
       </div>
 
       <div className="row g-4 mb-4">

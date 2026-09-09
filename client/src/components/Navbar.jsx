@@ -61,9 +61,7 @@ function Navbar() {
     load();
   }, [user]);
 
-  /* ==========================================
-     OUTSIDE CLICK — now includes MOBILE MENU
-  ========================================== */
+  /* OUTSIDE CLICK — now includes MOBILE MENU*/
   useEffect(() => {
     const handleOutsideClick = (event) => {
       if (profileRef.current && !profileRef.current.contains(event.target)) {
@@ -79,7 +77,7 @@ function Navbar() {
         setNotificationsOpen(false);
       }
 
-      // 👇 NEW: close hamburger menu when clicking outside menu AND button
+      // NEW: close hamburger menu when clicking outside menu AND button
       if (
         mobileOpen &&
         mobileNavRef.current &&
@@ -94,9 +92,7 @@ function Navbar() {
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [mobileOpen]); // 👈 depends on mobileOpen so check runs correctly
 
-  /* ==========================================
-     ESC KEY closes everything (bonus for mobile)
-  ========================================== */
+  /* ESC KEY closes everything (bonus for mobile) */
   useEffect(() => {
     const handleEscape = (event) => {
       if (event.key === "Escape") {
@@ -303,7 +299,7 @@ function Navbar() {
 
         {user ? (
           <>
-            {/* 👇 REF ATTACHED to the mobile dropdown menu */}
+            {/* REF ATTACHED to the mobile dropdown menu */}
             <nav
               ref={mobileNavRef}
               className={`navbar-navigation ${
@@ -706,7 +702,7 @@ function Navbar() {
                 )}
               </div>
 
-              {/* 👇 REF ATTACHED to the hamburger button */}
+              {/* REF ATTACHED to the hamburger button */}
               <button
                 type="button"
                 ref={mobileButtonRef}

@@ -14,11 +14,7 @@ function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
     setIndex((i) => (i - 1 + count) % count);
   }, [count]);
 
-  /*
-   * ==========================================
-   * KEYBOARD CONTROLS (Esc / ← / →)
-   * ==========================================
-   */
+  /* KEYBOARD CONTROLS (Esc / ← / →) */
   useEffect(() => {
     const handleKey = (e) => {
       if (e.key === "Escape") onClose();
@@ -30,11 +26,7 @@ function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
     return () => window.removeEventListener("keydown", handleKey);
   }, [next, prev, onClose]);
 
-  /*
-   * ==========================================
-   * LOCK BODY SCROLL WHILE OPEN
-   * ==========================================
-   */
+  /* LOCK BODY SCROLL WHILE OPEN */
   useEffect(() => {
     document.body.style.overflow = "hidden";
     return () => {
