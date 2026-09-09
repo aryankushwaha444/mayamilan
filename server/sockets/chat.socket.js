@@ -198,32 +198,29 @@ const registerChatSocket = (io, socket) => {
     }
   });
 
-  /*
-   * ==========================================
-   * MARK MESSAGE AS READ (also sets delivered)
-   * ==========================================
-   */
   socket.on("mark_read", async ({ messageId }) => {
     try {
       if (!mongoose.Types.ObjectId.isValid(messageId)) return;
 
       const message = await Message.findById(messageId);
-      if (!message || message.isRead) return;
+      if (!message) return;
 
-      message.isRead = true;
-      message.isDelivered = true; // Read implies delivered
-      message.readAt = new Date();
-      await message.save();
+      if (!message.isRead) {
+        message.isRead = true;
+        message.isDelivered = true;
+        message.readAt = new Date();
+        await message.save();
 
-      // 1️⃣ Notify the SENDER → ticks turn into the read circle (●)
-      io.to(`user:${message.sender.toString()}`).emit("message_read", {
-        messageId: message._id,
-        conversationId: message.conversation,
-      });
+        // Sender: ticks → read circle
+        io.to(`user:${message.sender.toString()}`).emit("message_read", {
+          messageId: message._id.toString(),
+          conversationId: message.conversation.toString(),
+        });
+      }
 
-      // 2️⃣  NEW: Notify the READER → their navbar badge clears instantly
+      // 👇 ALWAYS notify reader's navbar (even if already read) — fixes the race
       io.to(`user:${message.receiver.toString()}`).emit("unread_updated", {
-        conversationId: message.conversation,
+        conversationId: message.conversation.toString(),
       });
     } catch (error) {
       console.error("Mark read error:", error);

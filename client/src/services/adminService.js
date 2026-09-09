@@ -50,3 +50,19 @@ export const getAllReports = async (params = {}) => {
   const response = await api.get("/admin/reports", { params });
   return response.data;
 };
+
+export const getSuggestions = async (filters = {}) => {
+  const params = new URLSearchParams(filters).toString();
+  const response = await api.get(`/suggestions?${params}`);
+  return response.data;
+};
+
+export const updateSuggestionStatus = async (id, status) => {
+  const response = await api.patch(`/suggestions/${id}`, { status });
+  return response.data;
+};
+
+export const deleteSuggestion = async (id) => {
+  const response = await api.delete(`/suggestions/${id}`);
+  return response.data;
+};

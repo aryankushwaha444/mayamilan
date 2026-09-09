@@ -1,0 +1,223 @@
+/* ==========================================
+   SUGGESTION PAGE
+========================================== */
+.suggestion-page {
+  min-height: calc(100vh - 76px);
+  background: linear-gradient(180deg, #fff5f9 0%, #fdf2f8 50%, #fff 100%);
+  padding: 60px 24px;
+  display: flex;
+  justify-content: center;
+}
+
+.suggestion-container {
+  width: 100%;
+  max-width: 720px;
+  background: #fff;
+  border-radius: 28px;
+  padding: 48px 44px;
+  box-shadow: 0 25px 60px rgba(219, 39, 119, 0.12);
+  border: 1px solid #fce7f3;
+}
+
+.suggestion-header {
+  text-align: center;
+  margin-bottom: 36px;
+}
+
+.suggestion-icon-wrap {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #fce7f3, #ede9fe);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  color: #db2777;
+  box-shadow: 0 10px 30px rgba(236, 72, 153, 0.25);
+}
+
+.suggestion-header h1 {
+  font-size: 32px;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0 0 10px;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.suggestion-header p {
+  color: #64748b;
+  font-size: 15px;
+  max-width: 460px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Form */
+.suggestion-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 6px;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  padding: 12px 16px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #f8fafc;
+  color: #0f172a;
+  transition: all 0.2s;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: #ec4899;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(236, 72, 153, 0.1);
+}
+
+.form-group textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+.form-error {
+  background: #fee2e2;
+  color: #b91c1c;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.submit-btn {
+  margin-top: 10px;
+  padding: 14px 24px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ec4899, #db2777);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 10px 26px rgba(236, 72, 153, 0.35);
+  transition: all 0.2s;
+}
+
+.submit-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 32px rgba(236, 72, 153, 0.45);
+}
+
+.submit-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Success state */
+.suggestion-success {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.success-icon {
+  font-size: 72px;
+  margin-bottom: 16px;
+  animation: bounceIn 0.6s ease;
+}
+
+@keyframes bounceIn {
+  0% {
+    transform: scale(0);
+  }
+  60% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.suggestion-success h2 {
+  color: #0f172a;
+  font-size: 28px;
+  margin: 0 0 8px;
+}
+
+.suggestion-success p {
+  color: #64748b;
+  margin: 4px 0;
+}
+
+.redirect-text {
+  font-size: 13px;
+  color: #94a3b8;
+  margin-top: 18px !important;
+}
+
+/* Responsive */
+@media (max-width: 575px) {
+  .suggestion-page {
+    padding: 30px 16px;
+  }
+  .suggestion-container {
+    padding: 32px 24px;
+    border-radius: 22px;
+  }
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+  .suggestion-header h1 {
+    font-size: 26px;
+  }
+}

@@ -5,15 +5,15 @@ const EMOJIS = [
   "😂",
   "😍",
   "🥰",
-  "😘",
   "😎",
   "🤔",
   "😢",
   "😡",
   "👍",
-  "🙏",
+  "💃",
+  "🌹",
   "🔥",
-  "💯",
+  "🐱",
   "🎉",
   "❤️",
   "💔",
@@ -21,22 +21,18 @@ const EMOJIS = [
   "👀",
 ];
 const STICKERS = [
-  "❤️",
   "😂",
   "😍",
   "🥳",
   "😭",
   "😡",
   "👍",
-  "🙌",
+  "✨",
+  "👀",
   "💃",
-  "🕺",
   "🌹",
-  "🍕",
   "🎂",
-  "🐶",
   "🐱",
-  "🦄",
 ];
 const GIFS = [
   "https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif",
@@ -50,6 +46,7 @@ const GIFS = [
 function ChatInputBar({ onSend, disabled }) {
   const [text, setText] = useState("");
   const [panel, setPanel] = useState(null); // "emoji" | "gif" | "sticker"
+  const [plusOpen, setPlusOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
 
@@ -58,6 +55,24 @@ function ChatInputBar({ onSend, disabled }) {
   const timerRef = useRef(null);
   const cancelRef = useRef(false);
   const fileRef = useRef(null);
+  const composerRef = useRef(null);
+
+  /* ==========================================
+     CLOSE PANELS + PLUS MENU ON OUTSIDE CLICK
+  ========================================== */
+  useEffect(() => {
+    if (!panel && !plusOpen) return;
+
+    const handleOutsideClick = (event) => {
+      if (composerRef.current && !composerRef.current.contains(event.target)) {
+        setPanel(null);
+        setPlusOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [panel, plusOpen]);
 
   useEffect(() => {
     return () => {
@@ -124,7 +139,7 @@ function ChatInputBar({ onSend, disabled }) {
   };
 
   return (
-    <div className="chat-composer">
+    <div className="chat-composer" ref={composerRef}>
       {recording ? (
         <div className="composer-recording">
           <span className="rec-dot"></span>
@@ -146,37 +161,50 @@ function ChatInputBar({ onSend, disabled }) {
         </div>
       ) : (
         <>
+          {/* MOBILE: + BUTTON (voice / photo / gif / sticker) */}
           <button
-            className="composer-icon"
-            onClick={startRecording}
-            title="Voice message"
+            type="button"
+            className={`composer-plus-btn ${plusOpen ? "active" : ""}`}
+            onClick={() => setPlusOpen((p) => !p)}
+            title="Attachments"
           >
-            <i className="bi bi-mic-fill"></i>
+            <i className="bi bi-plus-lg"></i>
           </button>
 
-          <button
-            className="composer-icon"
-            onClick={() => fileRef.current?.click()}
-            title="Send image"
-          >
-            <i className="bi bi-image-fill"></i>
-          </button>
+          {/* DESKTOP ICONS (hidden on mobile) */}
+          <div className="composer-desktop-icons">
+            <button
+              className="composer-icon"
+              onClick={startRecording}
+              title="Voice message"
+            >
+              <i className="bi bi-mic-fill"></i>
+            </button>
 
-          <button
-            className={`composer-icon ${panel === "sticker" ? "active" : ""}`}
-            onClick={() => setPanel(panel === "sticker" ? null : "sticker")}
-            title="Stickers"
-          >
-            <i className="bi bi-emoji-smile-upside-down-fill"></i>
-          </button>
+            <button
+              className="composer-icon"
+              onClick={() => fileRef.current?.click()}
+              title="Send image"
+            >
+              <i className="bi bi-image-fill"></i>
+            </button>
 
-          <button
-            className={`composer-icon ${panel === "gif" ? "active" : ""}`}
-            onClick={() => setPanel(panel === "gif" ? null : "gif")}
-            title="GIF"
-          >
-            <span className="composer-gif-label">GIF</span>
-          </button>
+            <button
+              className={`composer-icon ${panel === "sticker" ? "active" : ""}`}
+              onClick={() => setPanel(panel === "sticker" ? null : "sticker")}
+              title="Stickers"
+            >
+              <i className="bi bi-emoji-smile-upside-down-fill"></i>
+            </button>
+
+            <button
+              className={`composer-icon ${panel === "gif" ? "active" : ""}`}
+              onClick={() => setPanel(panel === "gif" ? null : "gif")}
+              title="GIF"
+            >
+              <span className="composer-gif-label">GIF</span>
+            </button>
+          </div>
 
           <input
             type="file"
@@ -199,6 +227,8 @@ function ChatInputBar({ onSend, disabled }) {
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submitText()}
             />
+
+            {/* 👇 EMOJI inside input — visible on BOTH desktop & mobile */}
             <button
               className={`composer-icon ${panel === "emoji" ? "active" : ""}`}
               onClick={() => setPanel(panel === "emoji" ? null : "emoji")}
@@ -208,7 +238,6 @@ function ChatInputBar({ onSend, disabled }) {
             </button>
           </div>
 
-          {/* 👇 HEART instead of like */}
           <button
             className="composer-heart"
             onClick={() => onSend({ type: "heart" })}
@@ -219,7 +248,56 @@ function ChatInputBar({ onSend, disabled }) {
         </>
       )}
 
-      {/* Panels */}
+      {/* 👇 + MENU: voice / photo / gif / STICKER (emoji removed — it's in the input) */}
+      {plusOpen && (
+        <div className="plus-menu">
+          <button
+            type="button"
+            onClick={() => {
+              setPlusOpen(false);
+              startRecording();
+            }}
+          >
+            <i className="bi bi-mic-fill"></i>
+            <span>Voice Message</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setPlusOpen(false);
+              fileRef.current?.click();
+            }}
+          >
+            <i className="bi bi-image-fill"></i>
+            <span>Photo</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setPlusOpen(false);
+              setPanel("gif");
+            }}
+          >
+            <span className="composer-gif-label plus-gif-label">GIF</span>
+            <span>GIF</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setPlusOpen(false);
+              setPanel("sticker");
+            }}
+          >
+            <i className="bi bi-emoji-smile-upside-down-fill"></i>
+            <span>Sticker</span>
+          </button>
+        </div>
+      )}
+
+      {/* Panels (emoji / sticker / gif) — shared by desktop & mobile */}
       {panel === "emoji" && (
         <div className="composer-panel emoji-panel">
           {EMOJIS.map((e) => (

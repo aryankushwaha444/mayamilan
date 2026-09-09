@@ -22,6 +22,8 @@ import UserProfile from "./pages/UserProfile";
 import Notifications from "./pages/Notifications";
 import ChangePassword from "./pages/ChangePassword";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
+import Suggestion from "./pages/Suggestion.jsx";
+import AdminSuggestions from "./pages/admin/AdminSuggestions.jsx";
 
 // Admin
 import AdminRoutes from "./pages/admin/AdminRoutes.jsx";
@@ -56,6 +58,7 @@ function App() {
       <Routes>
         {/* ============ PUBLIC ============ */}
         <Route path="/" element={<Home />} />
+        <Route path="/suggestion" element={<Suggestion />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -147,7 +150,15 @@ function App() {
           <Route path="/admin" element={<AdminDashboard />} />
           <Route path="/admin/users" element={<Users />} />
           <Route path="/admin/users/:userId" element={<UserDetails />} />
-          <Route path="/admin/reports" element={<AdminReports />} /> 
+          <Route path="/admin/reports" element={<AdminReports />} />
+          <Route
+            path="/admin/suggestions"
+            element={
+              <ProtectedRoute adminOnly>
+                <AdminSuggestions />
+              </ProtectedRoute>
+            }
+          />
         </Route>
 
         {/* ============ UNKNOWN ============ */}

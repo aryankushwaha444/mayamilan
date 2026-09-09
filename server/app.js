@@ -15,6 +15,8 @@ import matchRoutes from "./routes/match.routes.js";
 import messageRoutes from "./routes/message.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
+import suggestionRoutes from "./routes/suggestion.routes.js";
+
 
 const app = express();
 
@@ -68,6 +70,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // ROUTES
+app.use("/api/suggestions", suggestionRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/discovery", discoveryRoutes);

@@ -11,15 +11,13 @@ function Footer() {
         ================================== */}
 
         <div className="footer-brand-section">
-          <NavLink to="/" className="footer-brand">
-            <div className="footer-brand-icon">
-              <i className="bi bi-heart-fill"></i>
-            </div>
+          <NavLink to="/" className="navbar-brand-custom">
+            <span className="brand-logo">
+              <img src="./images/logo.png" alt="logo" />
+            </span>
 
             <div>
-              <span className="footer-brand-name">LoveConnect</span>
-
-              <span className="footer-brand-tagline">Find your connection</span>
+              <span className="footer-brand-name">Maya~Milan</span>
             </div>
           </NavLink>
 
@@ -29,19 +27,27 @@ function Footer() {
           </p>
 
           <div className="footer-socials">
-            <a href="#" aria-label="Instagram">
-              <i className="bi bi-instagram"></i>
+            <a
+              href="https://www.aaryankushawaha.com.np"
+              aria-label="website"
+              target="_blank"
+            >
+              <i className="bi bi-globe"></i>
             </a>
 
-            <a href="#" aria-label="Facebook">
+            <a
+              href="https://www.facebook.com/rupnarayan444/"
+              aria-label="Facebook"
+              target="_blank"
+            >
               <i className="bi bi-facebook"></i>
             </a>
 
-            <a href="#" aria-label="X">
-              <i className="bi bi-twitter-x"></i>
-            </a>
-
-            <a href="#" aria-label="LinkedIn">
+            <a
+              href="https://www.linkedin.com/in/aryan-kushwaha-47479033b/"
+              aria-label="LinkedIn"
+              target="_blank"
+            >
               <i className="bi bi-linkedin"></i>
             </a>
           </div>
@@ -92,66 +98,28 @@ function Footer() {
             Edit Profile
           </NavLink>
 
-          <NavLink to="/settings">
-            <i className="bi bi-gear"></i>
-            Settings
-          </NavLink>
-
           <NavLink to="/notifications">
             <i className="bi bi-bell"></i>
             Notifications
           </NavLink>
         </div>
 
-        {/* ==================================
-            SUPPORT
-        ================================== */}
+        {/*  SUPPORT */}
 
-        <div className="footer-column">
+        <div>
           <h3>Support</h3>
-
-          <NavLink to="/about">
-            <i className="bi bi-info-circle"></i>
-            About Us
-          </NavLink>
-
-          <NavLink to="/contact">
-            <i className="bi bi-envelope"></i>
-            Contact Us
-          </NavLink>
-
-          <NavLink to="/privacy">
-            <i className="bi bi-shield-check"></i>
-            Privacy Policy
-          </NavLink>
-
-          <NavLink to="/terms">
-            <i className="bi bi-file-earmark-text"></i>
-            Terms of Service
-          </NavLink>
+          <div className="footer-support-link">
+            <i className="bi bi-lightbulb"></i>
+            <NavLink to="/suggestion">Give us a Suggestion</NavLink>
+          </div>
         </div>
       </div>
 
-      {/* ==================================
-          BOTTOM
-      ================================== */}
+      {/* BOTTOM */}
 
       <div className="footer-bottom">
         <div className="footer-bottom-container">
-          <p>© {currentYear} LoveConnect. All rights reserved.</p>
-
-          <div className="footer-bottom-links">
-            <NavLink to="/privacy">Privacy</NavLink>
-
-            <span>•</span>
-
-            <NavLink to="/terms">Terms</NavLink>
-
-            <span>•</span>
-
-            <NavLink to="/contact">Help</NavLink>
-          </div>
-
+          <p>© {currentYear} Maya~Milan. All rights reserved.</p>
           <p className="footer-made-with">
             Made with
             <i className="bi bi-heart-fill"></i>

@@ -33,9 +33,6 @@ function AdminReports() {
     <div className="admin-reports">
       <div className="mb-4">
         <h1 className="fw-bold">User Reports</h1>
-        <p className="text-muted mb-0">
-          {pagination.total} total reports submitted by users
-        </p>
       </div>
 
       <div className="card border-0 shadow-sm">

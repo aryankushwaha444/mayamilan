@@ -549,14 +549,51 @@ export const deleteMessage = async (req, res, next) => {
 /*
  * ==========================================
  * GET UNREAD MESSAGE COUNT
+ * 👇 FIXED: only counts messages inside conversations
+ *    that actually exist AND are not block-hidden
  * ==========================================
  */
 export const getUnreadMessageCount = async (req, res, next) => {
   try {
+    const myId = req.user._id.toString();
+
+    // 1. My block list
+    const me = await User.findById(myId).select("blockedUsers");
+    const myBlockedIds = new Set(
+      (me?.blockedUsers || []).map((id) => id.toString())
+    );
+
+    // 2. Conversations I participate in (that still exist)
+    const conversations = await Conversation.find({
+      participants: myId,
+    }).populate("participants", "_id blockedUsers");
+
+    // 3. Keep only visible ones (same rule as getConversations / getRecentConversations)
+    const visibleConversationIds = conversations
+      .filter((conv) => {
+        const other = conv.participants.find((p) => p._id.toString() !== myId);
+        if (!other) return false;
+
+        const iBlocked = myBlockedIds.has(other._id.toString());
+        const blockedMe = (other.blockedUsers || []).some(
+          (id) => id.toString() === myId
+        );
+
+        return !iBlocked && !blockedMe;
+      })
+      .map((conv) => conv._id);
+
+    // No visible conversations → count is 0 (no phantom badges!)
+    if (visibleConversationIds.length === 0) {
+      return res.status(200).json({ success: true, count: 0 });
+    }
+
+    // 4. Count unread ONLY inside those conversations
     const unreadMessages = await Message.find({
-      receiver: req.user._id,
+      receiver: myId,
       isRead: false,
       deletedForEveryone: false,
+      conversation: { $in: visibleConversationIds }, // 👈 orphans excluded
     }).select("sender");
 
     const uniqueSenders = new Set(
@@ -657,11 +694,15 @@ export const markMessageAsRead = async (req, res, next) => {
           payload
         );
 
-        // Reader: navbar badge clears live
-        io.to(`user:${currentUserId.toString()}`).emit(
-          "unread_updated",
-          payload
-        );
+        // 👇 ALWAYS sync reader's badge (race-proof)
+        const io2 = getIO();
+        if (io2) {
+          io2.to(`user:${currentUserId.toString()}`).emit("unread_updated", {
+            conversationId: message.conversation.toString(),
+          });
+        }
+
+        res.status(200).json({ success: true });
       }
     }
 

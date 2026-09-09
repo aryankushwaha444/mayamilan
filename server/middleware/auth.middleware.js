@@ -14,10 +14,7 @@ export const protect = async (req, res, next) => {
 
     const token = authHeader.split(" ")[1];
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_ACCESS_SECRET
-    );
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
 
     if (decoded.type !== "access") {
       return res.status(401).json({
@@ -53,4 +50,13 @@ export const protect = async (req, res, next) => {
       message: "Invalid or expired token",
     });
   }
+};
+
+export const adminOnly = (req, res, next) => {
+  if (req.user?.role !== "admin") {
+    return res
+      .status(403)
+      .json({ success: false, message: "Admin access required" });
+  }
+  next();
 };

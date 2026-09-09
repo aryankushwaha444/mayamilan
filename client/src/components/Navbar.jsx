@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSocket } from "../hooks/useSocket.js";
 import { NavLink, useNavigate } from "react-router-dom";
 import { getMatches } from "../services/matchService.js";
-import { getAllReports } from "../services/adminService"; 
+import { getAllReports, getSuggestions } from "../services/adminService";
 import {
   getNotifications,
   markAllAsRead,
@@ -18,7 +18,6 @@ function Navbar() {
   const { user, logout } = useAuth();
   const { socket } = useSocket();
 
-  // 👇 Is the logged-in user an admin?
   const isAdmin = user?.role === "admin";
 
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -31,11 +30,15 @@ function Navbar() {
   const [messageCount, setMessageCount] = useState(0);
   const [recentChats, setRecentChats] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [pendingReports, setPendingReports] = useState(0);
+  const [pendingSuggestions, setPendingSuggestions] = useState(0);
 
   const profileRef = useRef(null);
   const chatRef = useRef(null);
   const notificationsRef = useRef(null);
-  const [pendingReports, setPendingReports] = useState(0);
+  const loadChatDataRef = useRef(null);
+  const mobileNavRef = useRef(null); // 👈 NEW: the dropdown menu
+  const mobileButtonRef = useRef(null); // 👈 NEW: the hamburger button
 
   const getAvatarUrl = (photos) => {
     if (!Array.isArray(photos) || photos.length === 0) return null;
@@ -43,6 +46,24 @@ function Navbar() {
     return primary?.url || primary?.secure_url || null;
   };
 
+  useEffect(() => {
+    if (!user || user.role !== "admin") return;
+
+    const load = async () => {
+      try {
+        const data = await getSuggestions({ status: "new" });
+        setPendingSuggestions(data.stats?.new || 0);
+      } catch (e) {
+        /* ignore */
+      }
+    };
+
+    load();
+  }, [user]);
+
+  /* ==========================================
+     OUTSIDE CLICK — now includes MOBILE MENU
+  ========================================== */
   useEffect(() => {
     const handleOutsideClick = (event) => {
       if (profileRef.current && !profileRef.current.contains(event.target)) {
@@ -57,9 +78,36 @@ function Navbar() {
       ) {
         setNotificationsOpen(false);
       }
+
+      // 👇 NEW: close hamburger menu when clicking outside menu AND button
+      if (
+        mobileOpen &&
+        mobileNavRef.current &&
+        !mobileNavRef.current.contains(event.target) &&
+        mobileButtonRef.current &&
+        !mobileButtonRef.current.contains(event.target)
+      ) {
+        setMobileOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [mobileOpen]); // 👈 depends on mobileOpen so check runs correctly
+
+  /* ==========================================
+     ESC KEY closes everything (bonus for mobile)
+  ========================================== */
+  useEffect(() => {
+    const handleEscape = (event) => {
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+        setProfileOpen(false);
+        setChatOpen(false);
+        setNotificationsOpen(false);
+      }
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
   }, []);
 
   useEffect(() => {
@@ -120,6 +168,19 @@ function Navbar() {
       setMessageCount(0);
     }
   }, [user]);
+
+  useEffect(() => {
+    loadChatDataRef.current = loadChatData;
+  }, [loadChatData]);
+
+  useEffect(() => {
+    const handleLocalRead = () => {
+      loadChatDataRef.current?.();
+    };
+    window.addEventListener("chat:messages-read", handleLocalRead);
+    return () =>
+      window.removeEventListener("chat:messages-read", handleLocalRead);
+  }, []);
 
   useEffect(() => {
     loadMatchCount();
@@ -198,7 +259,6 @@ function Navbar() {
 
   const profileInitial = user?.name?.charAt(0)?.toUpperCase() || "U";
 
-  // 👇 load pending report count for admins
   useEffect(() => {
     if (!user || user.role !== "admin") return;
 
@@ -217,7 +277,6 @@ function Navbar() {
   return (
     <header className="site-navbar">
       <div className="navbar-container">
-        {/* 👇 BRAND: Admin Panel for admins, LoveConnect for users */}
         {isAdmin ? (
           <NavLink
             to="/admin"
@@ -229,29 +288,28 @@ function Navbar() {
             </div>
             <div className="brand-text">
               <span className="brand-name">Admin Panel</span>
-              <span className="brand-tagline">LoveConnect Management</span>
             </div>
           </NavLink>
         ) : (
           <a href="/" className="navbar-brand-custom" onClick={closeMobileMenu}>
-            <div className="brand-icon">
-              <i className="bi bi-heart-fill"></i>
-            </div>
+            <span className="brand-logo">
+              <img src="./images/logo.png" alt="logo" />
+            </span>
             <div className="brand-text">
-              <span className="brand-name">LoveConnect</span>
-              <span className="brand-tagline">Find your connection</span>
+              <span className="brand-name">Maya~Milan</span>
             </div>
           </a>
         )}
 
         {user ? (
           <>
+            {/* 👇 REF ATTACHED to the mobile dropdown menu */}
             <nav
+              ref={mobileNavRef}
               className={`navbar-navigation ${
                 mobileOpen ? "navbar-navigation-open" : ""
               }`}
             >
-              {/* 👇 ADMIN: only "Users" link | NORMAL: Discover + Matches */}
               {isAdmin ? (
                 <>
                   <NavLink
@@ -265,7 +323,6 @@ function Navbar() {
                     <span>Users</span>
                   </NavLink>
 
-                  {/* 👇 REPORTS LINK — right of Users, admins only */}
                   <NavLink
                     to="/admin/reports"
                     onClick={closeMobileMenu}
@@ -278,6 +335,22 @@ function Navbar() {
                     {pendingReports > 0 && (
                       <span className="navbar-badge navbar-badge-pink">
                         {pendingReports}
+                      </span>
+                    )}
+                  </NavLink>
+
+                  <NavLink
+                    to="/admin/suggestions"
+                    onClick={closeMobileMenu}
+                    className={({ isActive }) =>
+                      `navbar-link ${isActive ? "navbar-link-active" : ""}`
+                    }
+                  >
+                    <i className="bi bi-lightbulb"></i>
+                    <span>Suggestions</span>
+                    {pendingSuggestions > 0 && (
+                      <span className="navbar-badge navbar-badge-pink">
+                        {pendingSuggestions}
                       </span>
                     )}
                   </NavLink>
@@ -312,10 +385,8 @@ function Navbar() {
             </nav>
 
             <div className="navbar-actions">
-              {/* 👇 CHAT + NOTIFICATIONS: hidden for admins */}
               {!isAdmin && (
                 <>
-                  {/* Chat dropdown */}
                   <div className="navbar-chat-dropdown" ref={chatRef}>
                     <button
                       type="button"
@@ -454,7 +525,6 @@ function Navbar() {
                     )}
                   </div>
 
-                  {/* Notifications dropdown */}
                   <div
                     className="navbar-notifications-dropdown"
                     ref={notificationsRef}
@@ -553,9 +623,7 @@ function Navbar() {
                   </div>
                 </>
               )}
-              {/* 👆 END of chat + notifications (hidden for admins) */}
 
-              {/* Profile dropdown — visible for everyone */}
               <div className="navbar-profile" ref={profileRef}>
                 <button
                   type="button"
@@ -638,8 +706,10 @@ function Navbar() {
                 )}
               </div>
 
+              {/* 👇 REF ATTACHED to the hamburger button */}
               <button
                 type="button"
+                ref={mobileButtonRef}
                 className="navbar-mobile-button"
                 onClick={() => setMobileOpen((current) => !current)}
                 aria-label="Toggle navigation"

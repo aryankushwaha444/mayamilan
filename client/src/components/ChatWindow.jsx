@@ -21,6 +21,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
   const scrollRef = useRef(null);
   const isInitialLoad = useRef(true);
+  const readRequestedRef = useRef(new Set()); // 👈 NEW: prevent infinite mark-read spam
 
   /* ==========================================
      LOAD MESSAGES
@@ -61,9 +62,11 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     }
   }, [messages]);
 
-  /* ==========================================
-     MARK AS READ
-  ========================================== */
+  // 👇 NEW: reset read-requested tracker when conversation changes
+  useEffect(() => {
+    readRequestedRef.current = new Set();
+  }, [conversationId]);
+
   /* ==========================================
      MARK AS READ (socket = real-time, HTTP = DB backup)
   ========================================== */
@@ -85,16 +88,22 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
     pending.forEach((m) => {
       const messageId = typeof m._id === "string" ? m._id : m._id?.toString?.();
-      console.log("📖 Marking as read:", messageId);
 
-      socket.emit("mark_read", { messageId }); // 👈 REAL-TIME PATH (was missing!)
-      markMessageAsRead(messageId).catch(() => {}); // DB backup
+      // 👇 NEW: guard to prevent infinite loop
+      if (readRequestedRef.current.has(messageId)) return;
+      readRequestedRef.current.add(messageId);
+
+      console.log("📖 Marking as read:", messageId);
+      socket.emit("mark_read", { messageId });
+      markMessageAsRead(messageId).catch(() => {});
     });
+
+    // 👇 NEW: tell Navbar to refresh badge instantly
+    if (pending.length > 0) {
+      window.dispatchEvent(new CustomEvent("chat:messages-read"));
+    }
   }, [messages, conversationId, currentUserId, socket]);
 
-  /* ==========================================
-     SOCKET EVENTS
-  ========================================== */
   /* ==========================================
      SOCKET EVENTS (with bulletproof ID matching)
   ========================================== */
@@ -134,8 +143,13 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       if (receiverId === currentUserId) {
         const messageId =
           typeof msg._id === "string" ? msg._id : msg._id?.toString?.();
-        socket.emit("mark_read", { messageId });
-        markMessageAsRead(msg._id).catch(() => {});
+
+        // 👇 NEW: guard here too
+        if (!readRequestedRef.current.has(messageId)) {
+          readRequestedRef.current.add(messageId);
+          socket.emit("mark_read", { messageId });
+          markMessageAsRead(msg._id).catch(() => {});
+        }
       }
     };
 
