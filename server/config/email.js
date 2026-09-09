@@ -8,7 +8,7 @@ export const sendOTP = async (email, otp, userName) => {
   try {
     const response = await brevo.transactionalEmails.sendTransacEmail({
       sender: {
-        name: "LoveConnect",
+        name: "Maya~Milan",
         email: process.env.BREVO_SENDER_EMAIL,
       },
 
@@ -19,7 +19,7 @@ export const sendOTP = async (email, otp, userName) => {
         },
       ],
 
-      subject: "Verify Your Email - LoveConnect",
+      subject: "Verify Your Email - Maya~Milan",
 
       htmlContent: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -31,7 +31,7 @@ export const sendOTP = async (email, otp, userName) => {
             border-radius: 10px 10px 0 0;
           ">
             <h1 style="color: white; margin: 0;">
-              LoveConnect
+              Maya~Milan
             </h1>
           </div>
 
