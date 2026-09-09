@@ -1,16 +1,31 @@
 import nodemailer from "nodemailer";
 
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASSWORD,
   },
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
 });
+
+// test after remove
+transporter
+  .verify()
+  .then(() => {
+    console.log("✅ Gmail SMTP connection successful");
+  })
+  .catch((error) => {
+    console.error("❌ Gmail SMTP connection failed:", error);
+  });
 
 export const sendOTP = async (email, otp, userName) => {
   const mailOptions = {
-    from: `"LoveConnect" <${process.env.EMAIL_USER}>`,
+    from: `"Maya~Milan" <${process.env.EMAIL_USER}>`,
     to: email,
     subject: "Verify Your Email - LoveConnect",
     html: `

@@ -30,6 +30,8 @@ app.use(
   })
 );
 
+app.set("trust proxy", 1);
+
 // SECURITY
 app.use(helmet());
 
