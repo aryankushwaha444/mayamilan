@@ -125,16 +125,6 @@ function Home() {
           </div>
         </div>
       </section>
-
-      {/*  BOTTOM CTA */}
-      {/* for future use */}
-      {/* <section className="home-cta-banner">
-        <h2>Ready to write your love story?</h2>
-        <p>Join thousands of hearts already connecting on Maya~Milan.</p>
-        <Link to={user ? "/discover" : "/register"} className="home-btn-light">
-          Get Started — It's Free <i className="bi bi-arrow-right"></i>
-        </Link>
-      </section> */}
     </main>
   );
 }

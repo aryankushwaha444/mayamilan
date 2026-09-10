@@ -19,9 +19,6 @@ const likeSchema = new mongoose.Schema(
   }
 );
 
-/*
- * A user can only like another user once.
- */
 likeSchema.index({ from: 1, to: 1 }, { unique: true });
 
 const Like = mongoose.model("Like", likeSchema);

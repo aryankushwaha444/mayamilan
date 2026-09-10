@@ -8,17 +8,13 @@ import Match from "../models/Match.js";
 import User from "../models/User.js";
 import { getIO } from "../sockets/socket.js";
 
-/*
- * ==========================================
- * CREATE / GET CONVERSATION FROM MATCH
- * ==========================================
- */
+// CREATE / GET CONVERSATION FROM MATCH
 export const createOrGetConversation = async (req, res) => {
   try {
     const currentUserId = req.user._id;
     const { matchId } = req.params;
 
-    // 1. Find match
+    // Find match
     const match = await Match.findOne({ _id: matchId, users: currentUserId });
     if (!match) {
       return res
@@ -26,7 +22,7 @@ export const createOrGetConversation = async (req, res) => {
         .json({ success: false, message: "Match not found" });
     }
 
-    // 2. Find other user
+    // Find other user
     const otherUserId = match.users.find(
       (id) => id.toString() !== currentUserId.toString()
     );
@@ -36,7 +32,7 @@ export const createOrGetConversation = async (req, res) => {
         .json({ success: false, message: "No other user in match" });
     }
 
-    // 3. Check blocks
+    // Check blocks
     const me = await User.findById(currentUserId).select(
       "blockedUsers isActive"
     );
@@ -70,7 +66,7 @@ export const createOrGetConversation = async (req, res) => {
       .sort()
       .join("_");
 
-    // 5. Find existing conversation (by key first, fallback to array query)
+    // Find existing conversation (by key first, fallback to array query)
     let conversation =
       (await Conversation.findOne({ participantsKey })) ||
       (await Conversation.findOne({
@@ -83,7 +79,7 @@ export const createOrGetConversation = async (req, res) => {
       await conversation.save();
     }
 
-    // 6. Create if not found, with race condition handling
+    // Create if not found, with race condition handling
     if (!conversation) {
       try {
         conversation = await Conversation.create({
@@ -100,7 +96,7 @@ export const createOrGetConversation = async (req, res) => {
       }
     }
 
-    // 7. Populate and return
+    // Populate and return
     conversation = await Conversation.findById(conversation._id)
       .populate("participants", "_id name photos isOnline lastSeen")
       .populate(
@@ -127,11 +123,7 @@ export const createOrGetConversation = async (req, res) => {
   }
 };
 
-/*
- * ==========================================
- * GET MY CONVERSATIONS
- * ==========================================
- */
+// GET MY CONVERSATIONS
 export const getConversations = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -189,11 +181,7 @@ export const getConversations = async (req, res, next) => {
   }
 };
 
-/*
- * ==========================================
- * GET MESSAGES
- * ==========================================
- */
+// GET MESSAGES
 export const getMessages = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -238,11 +226,7 @@ export const getMessages = async (req, res, next) => {
   }
 };
 
-/*
- * ==========================================
- * SEND MESSAGE (text, image, voice, gif, sticker, heart)
- * ==========================================
- */
+// SEND MESSAGE (text, image, voice, gif, sticker, heart)
 export const sendMessage = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -322,7 +306,7 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    // 👇 Create message with type and attachment support
+    // Create message with type and attachment support
     const message = await Message.create({
       conversation: conversationId,
       sender: currentUserId,
@@ -380,10 +364,8 @@ export const sendMessage = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * UPLOAD CHAT ATTACHMENT (image / voice / gif)
- * POST /api/messages/upload
- * ==========================================
+ UPLOAD CHAT ATTACHMENT (image / voice / gif)
+ POST /api/messages/upload
  */
 export const uploadMemory = multer({
   storage: multer.memoryStorage(),
@@ -398,11 +380,6 @@ export const uploadChatAttachment = async (req, res, next) => {
         .json({ success: false, message: "No file uploaded" });
     }
 
-    console.log("📤 Uploading file:", {
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-    });
-
     const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString(
       "base64"
     )}`;
@@ -411,8 +388,6 @@ export const uploadChatAttachment = async (req, res, next) => {
       resource_type: "auto",
       folder: "loveconnect/chat",
     });
-
-    console.log("✅ Upload success:", result.secure_url);
 
     res.status(200).json({
       success: true,
@@ -430,10 +405,8 @@ export const uploadChatAttachment = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * REACT TO MESSAGE
- * POST /api/messages/:messageId/react
- * ==========================================
+ REACT TO MESSAGE
+ POST /api/messages/:messageId/react
  */
 export const reactToMessage = async (req, res, next) => {
   try {
@@ -485,10 +458,8 @@ export const reactToMessage = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * DELETE MESSAGE (for me / for everyone)
- * DELETE /api/messages/:messageId?scope=me|everyone
- * ==========================================
+ DELETE MESSAGE (for me / for everyone)
+ DELETE /api/messages/:messageId?scope=me|everyone
  */
 export const deleteMessage = async (req, res, next) => {
   try {
@@ -547,28 +518,26 @@ export const deleteMessage = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * GET UNREAD MESSAGE COUNT
- * 👇 FIXED: only counts messages inside conversations
- *    that actually exist AND are not block-hidden
- * ==========================================
+ GET UNREAD MESSAGE COUNT
+ FIXED: only counts messages inside conversations
+ that actually exist AND are not block-hidden
  */
 export const getUnreadMessageCount = async (req, res, next) => {
   try {
     const myId = req.user._id.toString();
 
-    // 1. My block list
+    // My block list
     const me = await User.findById(myId).select("blockedUsers");
     const myBlockedIds = new Set(
       (me?.blockedUsers || []).map((id) => id.toString())
     );
 
-    // 2. Conversations I participate in (that still exist)
+    // Conversations I participate in (that still exist)
     const conversations = await Conversation.find({
       participants: myId,
     }).populate("participants", "_id blockedUsers");
 
-    // 3. Keep only visible ones (same rule as getConversations / getRecentConversations)
+    // Keep only visible ones (same rule as getConversations / getRecentConversations)
     const visibleConversationIds = conversations
       .filter((conv) => {
         const other = conv.participants.find((p) => p._id.toString() !== myId);
@@ -588,7 +557,7 @@ export const getUnreadMessageCount = async (req, res, next) => {
       return res.status(200).json({ success: true, count: 0 });
     }
 
-    // 4. Count unread ONLY inside those conversations
+    // Count unread ONLY inside those conversations
     const unreadMessages = await Message.find({
       receiver: myId,
       isRead: false,
@@ -630,7 +599,6 @@ export const markMessageAsDelivered = async (req, res, next) => {
 
       const io = getIO();
       if (io) {
-        console.log("📬 Emitting message_delivered to sender");
         io.to(`user:${message.sender.toString()}`).emit("message_delivered", {
           messageId: message._id.toString(),
           conversationId: message.conversation.toString(),
@@ -682,8 +650,6 @@ export const markMessageAsRead = async (req, res, next) => {
           conversationId: message.conversation.toString(),
         };
 
-        console.log("👁️ Emitting message_read + unread_updated");
-
         // Sender: ✓ → ✓✓ → 🔵 live
         io.to(`user:${message.sender.toString()}`).emit(
           "message_delivered",
@@ -694,7 +660,7 @@ export const markMessageAsRead = async (req, res, next) => {
           payload
         );
 
-        // 👇 ALWAYS sync reader's badge (race-proof)
+        // ALWAYS sync reader's badge (race-proof)
         const io2 = getIO();
         if (io2) {
           io2.to(`user:${currentUserId.toString()}`).emit("unread_updated", {

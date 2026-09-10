@@ -5,10 +5,7 @@
   color: #cbd5e1;
 }
 
-/* ==========================================
-     MAIN FOOTER
-  ========================================== */
-
+/* MAIN FOOTER */
 .footer-container {
   width: min(1400px, calc(100% - 40px));
 
@@ -25,10 +22,7 @@
   gap: 60px;
 }
 
-/* ==========================================
-     BRAND
-  ========================================== */
-
+/* BRAND */
 .footer-brand {
   display: inline-flex;
   align-items: center;
@@ -90,10 +84,7 @@
   line-height: 1.7;
 }
 
-/* ==========================================
-     SOCIAL ICONS
-  ========================================== */
-
+/* SOCIAL ICONS */
 .footer-socials {
   display: flex;
   align-items: center;
@@ -127,10 +118,7 @@
   color: white;
 }
 
-/* ==========================================
-     COLUMNS
-  ========================================== */
-
+/* COLUMNS */
 .footer-column {
   display: flex;
   flex-direction: column;
@@ -173,10 +161,7 @@
   font-size: 13px;
 }
 
-/* ==========================================
-     BOTTOM
-  ========================================== */
-
+/* BOTTOM */
 .footer-bottom {
   border-top: 1px solid #1e293b;
 }
@@ -237,10 +222,7 @@
   font-size: 11px;
 }
 
-/* ==========================================
-     TABLET
-  ========================================== */
-
+/* TABLET */
 @media (max-width: 991px) {
   .footer-container {
     grid-template-columns:
@@ -264,10 +246,7 @@
   }
 }
 
-/* ==========================================
-     MOBILE
-  ========================================== */
-
+/* MOBILE */
 @media (max-width: 575px) {
   .footer-container {
     width: calc(100% - 30px);

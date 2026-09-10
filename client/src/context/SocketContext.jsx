@@ -11,8 +11,6 @@ function SocketProvider({ children }) {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    // 👇 Read token directly from localStorage (not from state)
-    // This ensures we always have the current token
     const accessToken = localStorage.getItem("accessToken");
 
     // No user or no token → no socket
@@ -22,16 +20,13 @@ function SocketProvider({ children }) {
       return;
     }
 
-    // 👇 NEW: shows which URL the build is using (verifies env var applied)
+    // NEW: shows which URL the build is using (verifies env var applied)
     const SOCKET_URL =
       import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
-    console.log("🔌 Socket URL:", SOCKET_URL);
-    console.log("🔌 Creating socket for user:", user.name);
-
     const socketInstance = io(SOCKET_URL, {
       auth: { token: accessToken },
       withCredentials: true,
-      transports: ["websocket", "polling"], // 👈 NEW: reliable on Render
+      transports: ["websocket", "polling"], // NEW: reliable on Render
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
@@ -39,12 +34,10 @@ function SocketProvider({ children }) {
     });
 
     socketInstance.on("connect", () => {
-      console.log("✅ Socket connected:", socketInstance.id);
       setConnected(true);
     });
 
     socketInstance.on("disconnect", (reason) => {
-      console.log("Socket disconnected:", reason);
       setConnected(false);
     });
 
@@ -62,7 +55,7 @@ function SocketProvider({ children }) {
       setSocket(null);
       setConnected(false);
     };
-  }, [user?._id]); // 👈 Only reconnect when user ID changes, not on every user object update
+  }, [user?._id]); // Only reconnect when user ID changes, not on every user object update
 
   return (
     <SocketContext.Provider value={{ socket, connected }}>

@@ -3,11 +3,7 @@ import Match from "../models/Match.js";
 import Like from "../models/Like.js";
 import { getIO } from "../sockets/socket.js";
 
-/*
-|--------------------------------------------------------------------------
-| GET ALL MATCHES
-|--------------------------------------------------------------------------
-*/
+// GET ALL MATCHES
 export const getMatches = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -47,11 +43,7 @@ export const getMatches = async (req, res, next) => {
   }
 };
 
-/*
-|--------------------------------------------------------------------------
-| GET SINGLE MATCH
-|--------------------------------------------------------------------------
-*/
+// GET SINGLE MATCH
 export const getMatchById = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -100,11 +92,7 @@ export const getMatchById = async (req, res, next) => {
   }
 };
 
-/*
-|--------------------------------------------------------------------------
-| UNMATCH (DELETE MATCH)
-|--------------------------------------------------------------------------
-*/
+// UNMATCH (DELETE MATCH)
 export const deleteMatch = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -132,21 +120,16 @@ export const deleteMatch = async (req, res, next) => {
       (userId) => userId.toString() !== currentUserId.toString()
     );
 
-    // 1. Delete the match document
+    // Delete the match document
     await Match.deleteOne({ _id: matchId });
 
-    // 2. 👈 ONLY delete the current user's like.
-    // The other user's like remains intact in the database.
+    // ONLY delete the current user's like.
     await Like.deleteOne({
       from: currentUserId,
       to: otherUserId,
     });
 
-    console.log(
-      `MATCH DELETED & LIKE REMOVED: ${currentUserId} -> ${otherUserId} (Other user's like preserved)`
-    );
-
-    // 3. Emit real-time event to BOTH users
+    // Emit real-time event to BOTH users
     const io = getIO();
     if (io) {
       const payload = {

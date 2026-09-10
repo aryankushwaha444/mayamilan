@@ -8,10 +8,8 @@ import cloudinary from "../config/cloudinary.js";
 import Report from "../models/Report.js";
 
 /*
- * ==========================================
- * DASHBOARD STATS
- * GET /api/admin/stats
- * ==========================================
+DASHBOARD STATS
+GET /api/admin/stats
  */
 export const getDashboardStats = async (req, res, next) => {
   try {
@@ -76,10 +74,8 @@ export const getDashboardStats = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * GET ALL USERS (with pagination, search, filters)
- * GET /api/admin/users
- * ==========================================
+GET ALL USERS (with pagination, search, filters)
+GET /api/admin/users
  */
 export const getAllUsers = async (req, res, next) => {
   try {
@@ -131,10 +127,8 @@ export const getAllUsers = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * GET SINGLE USER
- * GET /api/admin/users/:id
- * ==========================================
+GET SINGLE USER
+GET /api/admin/users/:id
  */
 export const getUserById = async (req, res, next) => {
   try {
@@ -178,10 +172,8 @@ export const getUserById = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * UPDATE USER
- * PUT /api/admin/users/:id
- * ==========================================
+UPDATE USER
+PUT /api/admin/users/:id
  */
 export const updateUser = async (req, res, next) => {
   try {
@@ -234,10 +226,8 @@ export const updateUser = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * TOGGLE USER STATUS (Ban/Unban)
- * PATCH /api/admin/users/:id/toggle-status
- * ==========================================
+TOGGLE USER STATUS (Ban/Unban)
+PATCH /api/admin/users/:id/toggle-status
  */
 export const toggleUserStatus = async (req, res, next) => {
   try {
@@ -271,11 +261,9 @@ export const toggleUserStatus = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * DELETE USER (hard delete + photos from Cloudinary)
- * DELETE /api/admin/users/:id
- * ==========================================
- */
+DELETE USER (hard delete + photos from Cloudinary)
+DELETE /api/admin/users/:id
+*/
 export const deleteUser = async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id);
@@ -325,10 +313,8 @@ export const deleteUser = async (req, res, next) => {
 };
 
 /*
- * ==========================================
- * DELETE SPECIFIC PHOTO
- * DELETE /api/admin/users/:id/photos/:photoId
- * ==========================================
+DELETE SPECIFIC PHOTO
+DELETE /api/admin/users/:id/photos/:photoId
  */
 export const deleteUserPhoto = async (req, res, next) => {
   try {

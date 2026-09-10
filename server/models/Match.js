@@ -18,10 +18,6 @@ const matchSchema = new mongoose.Schema(
       },
     },
 
-    // Unique identifier for exactly two users
-    // Example:
-    // A + B = "A_B"
-    // A + C = "A_C"
     pairKey: {
       type: String,
       required: true,

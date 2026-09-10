@@ -25,11 +25,7 @@ function ChangePassword() {
     setError("");
   };
 
-  /*
-   * ==========================================
-   * PASSWORD STRENGTH METER
-   * ==========================================
-   */
+  // PASSWORD STRENGTH METER
   const getStrength = (password) => {
     let score = 0;
     if (password.length >= 6) score++;
@@ -58,11 +54,7 @@ function ChangePassword() {
     "#16a34a",
   ];
 
-  /*
-   * ==========================================
-   * SUBMIT
-   * ==========================================
-   */
+  // SUBMIT
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -107,21 +99,6 @@ function ChangePassword() {
           <div className="col-12 col-md-8 col-lg-6 col-xl-5">
             <div className="card border-0 shadow-lg auth-card">
               <div className="card-body p-4 p-md-5">
-                {/* Header */}
-                <div className="d-flex align-items-center mb-4">
-                  <button
-                    type="button"
-                    className="btn btn-light rounded-circle me-3"
-                    onClick={() => navigate(-1)}
-                    disabled={saving || success}
-                  >
-                    <i className="bi bi-arrow-left"></i>
-                  </button>
-                  <div className="auth-logo mb-0">
-                    <i className="bi bi-shield-lock"></i>
-                  </div>
-                </div>
-
                 <h2 className="fw-bold text-center mb-1">Change Password</h2>
                 <p className="text-muted text-center mb-4">
                   Keep your account secure with a strong password.

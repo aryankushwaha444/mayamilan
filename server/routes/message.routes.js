@@ -19,13 +19,7 @@ import { protect } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-/*
- * ==========================================
- * SPECIFIC ROUTES FIRST (must come BEFORE parameterized routes)
- * ==========================================
- */
-
-// 👇 UPLOAD MUST BE FIRST — otherwise "/upload" is treated as a conversationId!
+// UPLOAD MUST BE FIRST — otherwise "/upload" is treated as a conversationId!
 router.post("/upload", protect, uploadMemory, uploadChatAttachment);
 
 // Conversations
@@ -36,12 +30,7 @@ router.get("/conversations", protect, getConversations);
 router.get("/unread-count", protect, getUnreadMessageCount);
 router.get("/recent", protect, getRecentConversations);
 
-/*
- * ==========================================
- * PARAMETERIZED ROUTES LAST
- * ==========================================
- */
-
+// PARAMETERIZED ROUTES LAST
 router.get("/:conversationId", protect, getMessages);
 router.post("/:conversationId", protect, sendMessage);
 

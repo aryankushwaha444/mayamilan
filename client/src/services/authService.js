@@ -1,11 +1,6 @@
 import api from "../utils/api";
 
-/*
- * ==========================================
- * LOGIN / REGISTER
- * ==========================================
- */
-
+// LOGIN / REGISTER
 export const loginUser = async (credentials) => {
   const response = await api.post("/auth/login", credentials);
   return response.data;
@@ -31,23 +26,13 @@ export const refreshAccessToken = async () => {
   return response.data;
 };
 
-/*
- * ==========================================
- * CHANGE PASSWORD (logged in user)
- * ==========================================
- */
-
+//  CHANGE PASSWORD (logged in user)
 export const changePassword = async (data) => {
   const response = await api.put("/auth/change-password", data);
   return response.data;
 };
 
-/*
- * ==========================================
- * OTP (Registration)
- * ==========================================
- */
-
+//  OTP (Registration)
 export const sendOTP = async (email, name) => {
   const response = await api.post("/auth/send-otp", { email, name });
   return response.data;
@@ -58,12 +43,7 @@ export const verifyOTP = async (email, otp) => {
   return response.data;
 };
 
-/*
- * ==========================================
- * FORGOT PASSWORD
- * ==========================================
- */
-
+//  FORGOT PASSWORD
 export const forgotPassword = async (email) => {
   const response = await api.post("/auth/forgot-password", { email });
   return response.data;

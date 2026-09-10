@@ -166,7 +166,6 @@ function Profile() {
         <div className="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
           <div>
             <h1 className="fw-bold mb-1">My Profile</h1>
-            <p className="text-muted mb-0">Manage your profile and photos</p>
           </div>
 
           <button
@@ -225,7 +224,7 @@ function Profile() {
             {/* Photo Grid */}
             {profile.photos?.length > 0 ? (
               <div className="row g-3">
-                {/* 👇 FIXED: added `index` as second map parameter */}
+                {/* FIXED: added index as second map parameter */}
                 {profile.photos.map((photo, index) => (
                   <div className="col-6 col-md-4" key={photo._id}>
                     <div className="profile-photo-card position-relative">
@@ -369,7 +368,7 @@ function Profile() {
         </div>
       </div>
 
-      {/* 👇 FIXED: RENDER THE LIGHTBOX (was missing!) */}
+      {/* FIXED: RENDER THE LIGHTBOX (was missing!) */}
       {lightboxIndex !== null && (
         <PhotoLightbox
           photos={profile.photos}

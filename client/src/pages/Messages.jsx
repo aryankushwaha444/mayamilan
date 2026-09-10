@@ -29,9 +29,7 @@ function Messages() {
     conversationsRef.current = conversations;
   }, [conversations]);
 
-  /* ==========================================
-     LOAD CONVERSATIONS (sorted newest first)
-  ========================================== */
+  //  LOAD CONVERSATIONS (sorted newest first)
   const loadConversations = async () => {
     try {
       setLoading(true);
@@ -55,9 +53,7 @@ function Messages() {
     loadConversations();
   }, []);
 
-  /* ==========================================
-     MOVE CONVERSATION TO TOP (no side effects inside setState)
-  ========================================== */
+  //  MOVE CONVERSATION TO TOP (no side effects inside setState)
   const moveConversationToTop = (conversationId, message) => {
     if (!conversationId) return;
 
@@ -65,7 +61,7 @@ function Messages() {
       (c) => c._id === conversationId
     );
 
-    // New conversation we don't have yet → full reload (outside setState!)
+    // New conversation we don't have yet -> full reload (outside setState!)
     if (!exists) {
       loadConversations();
       return;
@@ -89,9 +85,7 @@ function Messages() {
     });
   };
 
-  /* ==========================================
-     AUTO-OPEN CHAT FROM ?matchId= URL
-  ========================================== */
+  //  AUTO-OPEN CHAT FROM ?matchId= URL
   useEffect(() => {
     const autoOpenChat = async () => {
       if (!matchIdFromUrl || !user) return;
@@ -130,9 +124,7 @@ function Messages() {
     autoOpenChat();
   }, [matchIdFromUrl, user, navigate]);
 
-  /* ==========================================
-     REAL-TIME: reorder on ANY new activity
-  ========================================== */
+  //  REAL-TIME: reorder on ANY new activity
   useEffect(() => {
     if (!socket) return;
 
@@ -140,7 +132,7 @@ function Messages() {
       moveConversationToTop(conversationId, message);
     };
 
-    // Backup: also reorder on raw new_message (covers sender side)
+    // Backup: also reorder on raw new message (covers sender side)
     const handleNewMessage = (msg) => {
       const convId =
         typeof msg.conversation === "string"
@@ -162,9 +154,6 @@ function Messages() {
     setSelectedConversation(conversation);
   };
 
-  /* ==========================================
-     RENDER
-  ========================================== */
   if (loading) {
     return (
       <main className="messages-page">

@@ -282,8 +282,6 @@ export const refreshAccessToken = async (req, res) => {
 
 export const changePassword = async (req, res, next) => {
   try {
-    console.log("🔐 Change password request for user:", req.user._id);
-
     const { currentPassword, newPassword } = req.body;
 
     if (!currentPassword || !newPassword) {
@@ -308,11 +306,7 @@ export const changePassword = async (req, res, next) => {
         message: "User not found.",
       });
     }
-
-    console.log("✅ User found:", user.email);
-
     const isMatch = await argon2.verify(user.password, currentPassword);
-    console.log("🔑 Password verification result:", isMatch);
 
     if (!isMatch) {
       return res.status(401).json({
@@ -331,15 +325,12 @@ export const changePassword = async (req, res, next) => {
     const hashedPassword = await argon2.hash(newPassword);
     user.password = hashedPassword;
     await user.save();
-
-    console.log("✅ Password changed successfully for:", user.email);
-
     res.status(200).json({
       success: true,
       message: "Password changed successfully.",
     });
   } catch (error) {
-    console.error("❌ Change password error:", error);
+    console.error("Change password error:", error);
     next(error);
   }
 };

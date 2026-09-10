@@ -16,7 +16,7 @@ const startServer = async () => {
 
     // Initialize Socket.io and store the io instance in the app
     const io = initializeSocket(server);
-    app.set("io", io); // 👈 ADD THIS LINE
+    app.set("io", io); // ADD THIS LINE
 
     server.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);

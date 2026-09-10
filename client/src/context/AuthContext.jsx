@@ -26,10 +26,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem("user", JSON.stringify(updatedUser));
   };
 
-  // ==============================
   // INITIALIZE AUTH
-  // ==============================
-
   useEffect(() => {
     const handleAuthLogout = () => {
       localStorage.removeItem("accessToken");
@@ -97,10 +94,7 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
-  // ==============================
   // REGISTER
-  // ==============================
-
   const register = async (userData) => {
     const response = await registerUser(userData);
 
@@ -118,10 +112,7 @@ export const AuthProvider = ({ children }) => {
     return response;
   };
 
-  // ==============================
   // LOGIN
-  // ==============================
-
   const login = async (credentials) => {
     const response = await loginUser(credentials);
 
@@ -130,19 +121,12 @@ export const AuthProvider = ({ children }) => {
 
       localStorage.setItem("accessToken", newToken);
       setAccessToken(newToken);
-
-      // 👇 ALWAYS fetch the freshest user data from /auth/me
-      // This guarantees role and other fields are up-to-date
       try {
         const freshData = await getCurrentUser();
         if (freshData.success && freshData.user) {
           const freshUser = freshData.user;
           localStorage.setItem("user", JSON.stringify(freshUser));
           setUser(freshUser);
-          console.log(
-            "✅ Fresh user loaded after login, role:",
-            freshUser.role
-          );
           return { ...response, user: freshUser };
         }
       } catch (err) {
@@ -157,10 +141,7 @@ export const AuthProvider = ({ children }) => {
     return response;
   };
 
-  // ==============================
   // LOGOUT
-  // ==============================
-
   const logout = async () => {
     try {
       await logoutUser();

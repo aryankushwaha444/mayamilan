@@ -23,10 +23,10 @@ function Notifications() {
   };
 
   useEffect(() => {
-    // 1. Fetch the notifications
+    // Fetch the notifications
     fetchNotifications();
 
-    // 2. 👇 TELL THE BACKEND TO MARK THEM AS READ IN THE DATABASE
+    // TELL THE BACKEND TO MARK THEM AS READ IN THE DATABASE
     const clearUnreadCount = async () => {
       try {
         await markAllAsRead();

@@ -282,7 +282,7 @@ function UserDetails() {
 
               {user.photos?.length > 0 ? (
                 <div className="row g-3">
-                  {user.photos.map((photo,index) => (
+                  {user.photos.map((photo, index) => (
                     <div key={photo._id} className="col-6 col-md-4">
                       <div className="photo-card position-relative">
                         <img

@@ -56,14 +56,14 @@ function App() {
     <BrowserRouter>
       <Navbar />
       <Routes>
-        {/* ============ PUBLIC ============ */}
+        {/* PUBLIC */}
         <Route path="/" element={<Home />} />
         <Route path="/suggestion" element={<Suggestion />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
 
-        {/* ============ PROTECTED (any logged-in user) ============ */}
+        {/* PROTECTED (any logged-in user) */}
         <Route
           path="/profile"
           element={
@@ -145,7 +145,7 @@ function App() {
           }
         />
 
-        {/* ============ ADMIN ONLY (role protected) ============ */}
+        {/* ADMIN ONLY (role protected) */}
         <Route element={<AdminRoutes />}>
           <Route path="/admin" element={<AdminDashboard />} />
           <Route path="/admin/users" element={<Users />} />
@@ -161,7 +161,7 @@ function App() {
           />
         </Route>
 
-        {/* ============ UNKNOWN ============ */}
+        {/* UNKNOWN */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Footer />

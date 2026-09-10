@@ -30,9 +30,7 @@ export const submitSuggestion = async (req, res, next) => {
   }
 };
 
-/* ==========================================
-   ADMIN: GET ALL SUGGESTIONS (with filters + stats)
-========================================== */
+// ADMIN: GET ALL SUGGESTIONS (with filters + stats)
 export const getSuggestions = async (req, res, next) => {
   try {
     const { status, category, page = 1, limit = 20 } = req.query;
@@ -76,9 +74,7 @@ export const getSuggestions = async (req, res, next) => {
   }
 };
 
-/* ==========================================
-   ADMIN: UPDATE STATUS (new / reviewed / resolved)
-========================================== */
+// ADMIN: UPDATE STATUS (new / reviewed / resolved)
 export const updateSuggestionStatus = async (req, res, next) => {
   try {
     const { status } = req.body;
@@ -110,9 +106,7 @@ export const updateSuggestionStatus = async (req, res, next) => {
   }
 };
 
-/* ==========================================
-   ADMIN: DELETE SUGGESTION
-========================================== */
+// ADMIN: DELETE SUGGESTION
 export const deleteSuggestion = async (req, res, next) => {
   try {
     const suggestion = await Suggestion.findByIdAndDelete(req.params.id);

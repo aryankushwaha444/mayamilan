@@ -1,20 +1,17 @@
-/* ==========================================
-   NAVBAR
-========================================== */
-
+/* NAVBAR */
 body {
-  padding-top: 76px; /* desktop navbar height */
-  overflow-y: auto; /* guarantee page scrolling */
+  padding-top: 76px;
+  overflow-y: auto;
 }
 
 @media (max-width: 991px) {
   body {
-    padding-top: 68px; /* mobile navbar height */
+    padding-top: 68px;
   }
 }
 
 .site-navbar {
-  position: fixed; /* 👈 was sticky */
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
@@ -35,10 +32,7 @@ body {
   gap: 35px;
 }
 
-/* ==========================================
-     BRAND
-  ========================================== */
-
+/* BRAND */
 .navbar-brand-custom {
   flex-shrink: 0;
   display: flex;
@@ -83,10 +77,7 @@ body {
   color: #94a3b8;
 }
 
-/* ==========================================
-     NAVIGATION
-  ========================================== */
-
+/* NAVIGATION */
 .navbar-navigation {
   flex: 1;
   display: flex;
@@ -136,10 +127,7 @@ body {
   background: #ec4899;
 }
 
-/* ==========================================
-     NAV BADGE
-  ========================================== */
-
+/* NAV BADGE */
 .navbar-badge {
   min-width: 19px;
   height: 19px;
@@ -159,20 +147,14 @@ body {
   color: #db2777;
 }
 
-/* ==========================================
-     RIGHT ACTIONS
-  ========================================== */
-
+/* RIGHT ACTIONS */
 .navbar-actions {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-/* ==========================================
-     ICON BUTTON (Chat & Notifications)
-  ========================================== */
-
+/* ICON BUTTON (Chat & Notifications) */
 .navbar-icon-button {
   position: relative;
   width: 42px;
@@ -219,10 +201,7 @@ body {
   line-height: 1;
 }
 
-/* ==========================================
-     FACEBOOK-STYLE DROPDOWNS (CHAT & NOTIFICATIONS)
-  ========================================== */
-
+/* FACEBOOK-STYLE DROPDOWNS (CHAT & NOTIFICATIONS) */
 .navbar-chat-dropdown,
 .navbar-notifications-dropdown {
   position: relative;
@@ -314,19 +293,15 @@ body {
   background-color: #fdf2f8;
 }
 
-/* ==========================================
-   DROPDOWN AVATAR FIX (Chats & Notifications)
-   Must be at the END of navbar.css
-========================================== */
-
+/* DROPDOWN AVATAR FIX (Chats & Notifications) */
 .item-avatar {
   position: relative;
   width: 52px;
   height: 52px;
   flex-shrink: 0;
   border-radius: 50%;
-  overflow: hidden; /* clip photo to the circle */
-  background: #ffffff; /* clean base for light/transparent photos */
+  overflow: hidden;
+  background: #ffffff;
   border: 1px solid #f1f5f9;
 }
 
@@ -334,7 +309,7 @@ body {
   width: 100% !important;
   height: 100% !important;
   max-width: 100% !important;
-  object-fit: cover !important; /* fill circle, crop edges */
+  object-fit: cover !important;
   object-position: center !important;
   display: block !important;
   border-radius: 50%;
@@ -416,10 +391,7 @@ body {
   margin-top: 6px;
 }
 
-/* ==========================================
-     PROFILE
-  ========================================== */
-
+/* PROFILE */
 .navbar-profile {
   position: relative;
 }
@@ -504,10 +476,7 @@ body {
   font-size: 11px;
 }
 
-/* ==========================================
-     PROFILE DROPDOWN
-  ========================================== */
-
+/* PROFILE DROPDOWN */
 .profile-dropdown {
   position: absolute;
   top: calc(100% + 10px);
@@ -614,10 +583,7 @@ body {
   background: #fef2f2;
 }
 
-/* ==========================================
-     MOBILE BUTTON
-  ========================================== */
-
+/* MOBILE BUTTON */
 .navbar-mobile-button {
   display: none;
   width: 42px;
@@ -633,10 +599,7 @@ body {
   flex-shrink: 0;
 }
 
-/* ==========================================
-     TABLET
-  ========================================== */
-
+/* TABLET */
 @media (max-width: 1100px) {
   .navbar-container {
     gap: 15px;
@@ -651,10 +614,7 @@ body {
   }
 }
 
-/* ==========================================
-     MOBILE
-  ========================================== */
-
+/* MOBILE */
 @media (max-width: 991px) {
   .navbar-container {
     position: relative;
@@ -681,7 +641,7 @@ body {
     background: white;
     box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
 
-    /* 👇 ADDED: scroll when menu is taller than screen */
+    /* ADDED: scroll when menu is taller than screen */
     max-height: calc(100vh - 110px);
     overflow-y: auto;
   }
@@ -722,10 +682,7 @@ body {
   }
 }
 
-/* ==========================================
-     SMALL MOBILE
-  ========================================== */
-
+/* SMALL MOBILE */
 @media (max-width: 575px) {
   .navbar-container {
     width: calc(100% - 20px);
@@ -756,10 +713,7 @@ body {
   }
 }
 
-/* ==========================================
-     LOGGED OUT NAVBAR
-  ========================================== */
-
+/* LOGGED OUT NAVBAR */
 .navbar-auth-buttons {
   margin-left: auto !important;
   display: flex !important;
@@ -865,10 +819,10 @@ body {
   }
 }
 
-/* ==========================================
-     SMALL PHONES (≤480px)
-     Shrink everything so the hamburger always fits
-  ========================================== */
+/* 
+  SMALL PHONES (≤480px)
+  Shrink everything so the hamburger always fits
+   */
 @media (max-width: 480px) {
   .navbar-container {
     width: calc(100% - 16px);
@@ -934,13 +888,13 @@ body {
   }
 }
 
-/* ==========================================
-       EXTRA SMALL (≤360px)
-       Hide brand text so everything fits
-    ========================================== */
+/*
+  EXTRA SMALL (≤360px)
+  Hide brand text so everything fits
+    */
 @media (max-width: 360px) {
   .brand-text {
-    display: none; /* only the heart logo remains */
+    display: none;
   }
 
   .navbar-container {

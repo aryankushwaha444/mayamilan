@@ -116,9 +116,6 @@ function EditProfile() {
       };
 
       const response = await updateMyProfile(updateData);
-
-      // 👇 FIXED: Backend returns { message, user } — NOT { success }
-      // If we reach here without error, it was successful
       const updatedUser = response?.user;
 
       if (updatedUser) {
@@ -137,7 +134,6 @@ function EditProfile() {
       console.error(err);
       setError(err.response?.data?.message || "Failed to update your profile.");
     } finally {
-      // 👇 ALWAYS stop the spinner, regardless of success or failure
       setSaving(false);
     }
   };
@@ -159,15 +155,6 @@ function EditProfile() {
               <div className="card-body p-4 p-md-5">
                 {/* Header */}
                 <div className="d-flex align-items-center mb-4">
-                  <button
-                    type="button"
-                    className="btn btn-light rounded-circle me-3"
-                    onClick={() => navigate("/profile")}
-                    disabled={saving || success}
-                  >
-                    <i className="bi bi-arrow-left"></i>
-                  </button>
-
                   <div>
                     <h2 className="fw-bold mb-1">Edit Profile</h2>
                     <p className="text-muted mb-0">

@@ -5,11 +5,7 @@ import Message from "../models/Message.js";
 const registerChatSocket = (io, socket) => {
   const currentUserId = socket.user._id.toString();
 
-  /*
-   * ==========================================
-   * JOIN CONVERSATION
-   * ==========================================
-   */
+// JOIN CONVERSATION
   socket.on("join_conversation", async (conversationId) => {
     try {
       if (!mongoose.Types.ObjectId.isValid(conversationId)) return;
@@ -25,26 +21,17 @@ const registerChatSocket = (io, socket) => {
       }
 
       socket.join(`conversation:${conversationId}`);
-      console.log(`${socket.user.name} joined conversation ${conversationId}`);
     } catch (error) {
       console.error("Join conversation error:", error);
     }
   });
 
-  /*
-   * ==========================================
-   * LEAVE CONVERSATION
-   * ==========================================
-   */
+// LEAVE CONVERSATION
   socket.on("leave_conversation", (conversationId) => {
     socket.leave(`conversation:${conversationId}`);
   });
 
-  /*
-   * ==========================================
-   * TYPING
-   * ==========================================
-   */
+// TYPING
   socket.on("typing", async (conversationId) => {
     try {
       const conversation = await Conversation.findOne({
@@ -61,11 +48,7 @@ const registerChatSocket = (io, socket) => {
     }
   });
 
-  /*
-   * ==========================================
-   * STOP TYPING
-   * ==========================================
-   */
+// STOP TYPING
   socket.on("stop_typing", async (conversationId) => {
     try {
       const conversation = await Conversation.findOne({
@@ -82,11 +65,7 @@ const registerChatSocket = (io, socket) => {
     }
   });
 
-  /*
-   * ==========================================
-   * SEND REAL-TIME MESSAGE (WITH AUTO-DELIVERY)
-   * ==========================================
-   */
+// SEND REAL-TIME MESSAGE (WITH AUTO-DELIVERY)
   socket.on("send_message", async ({ conversationId, text }) => {
     try {
       if (!mongoose.Types.ObjectId.isValid(conversationId)) {
@@ -173,11 +152,7 @@ const registerChatSocket = (io, socket) => {
     }
   });
 
-  /*
-   * ==========================================
-   * MARK MESSAGE AS DELIVERED (frontend ack)
-   * ==========================================
-   */
+// MARK MESSAGE AS DELIVERED (frontend ack)
   socket.on("mark_delivered", async ({ messageId }) => {
     try {
       if (!mongoose.Types.ObjectId.isValid(messageId)) return;
@@ -218,7 +193,7 @@ const registerChatSocket = (io, socket) => {
         });
       }
 
-      // 👇 ALWAYS notify reader's navbar (even if already read) — fixes the race
+      // ALWAYS notify reader's navbar (even if already read) — fixes the race
       io.to(`user:${message.receiver.toString()}`).emit("unread_updated", {
         conversationId: message.conversation.toString(),
       });
@@ -227,11 +202,7 @@ const registerChatSocket = (io, socket) => {
     }
   });
 
-  /*
-   * ==========================================
-   * CHECK LIVE PRESENCE (Is the user actually connected right now?)
-   * ==========================================
-   */
+// CHECK LIVE PRESENCE (Is the user actually connected right now?)
   socket.on("check_presence", async ({ userId }) => {
     try {
       const activeSockets = await io.in(`user:${userId}`).fetchSockets();

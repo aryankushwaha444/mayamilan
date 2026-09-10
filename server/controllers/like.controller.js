@@ -5,11 +5,8 @@ import Match from "../models/Match.js";
 import { getIO } from "../sockets/socket.js";
 import Notification from "../models/Notification.js";
 
-// ==========================================
 // LIKE USER
 // POST /api/likes/:userId
-// ==========================================
-
 export const likeUser = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -80,8 +77,6 @@ export const likeUser = async (req, res, next) => {
       });
     }
 
-    console.log(`LIKE CREATED: ${currentUserId} -> ${targetUserId}`);
-
     // Check reciprocal like
     const mutualLike = await Like.findOne({
       from: targetUserId,
@@ -99,8 +94,6 @@ export const likeUser = async (req, res, next) => {
       });
     }
 
-    console.log(`MUTUAL LIKE FOUND: ${targetUserId} -> ${currentUserId}`);
-
     // Create a unique pair key
     const sortedIds = [
       currentUserId.toString(),
@@ -108,8 +101,6 @@ export const likeUser = async (req, res, next) => {
     ].sort();
     const pairKey = `${sortedIds[0]}_${sortedIds[1]}`;
     const userIds = sortedIds.map((id) => new mongoose.Types.ObjectId(id));
-
-    console.log("PAIR KEY:", pairKey);
 
     // Find existing match
     let match = await Match.findOne({ pairKey });
@@ -124,10 +115,7 @@ export const likeUser = async (req, res, next) => {
       });
 
       newMatch = true;
-
-      console.log(`MATCH CREATED: ${sortedIds[0]} <-> ${sortedIds[1]}`);
-
-      // 👇 EMIT REAL-TIME EVENT TO BOTH USERS
+      // EMIT REAL-TIME EVENT TO BOTH USERS
       const io = getIO();
       if (io) {
         io.to(`user:${currentUserId}`).emit("new_match", {
@@ -135,8 +123,6 @@ export const likeUser = async (req, res, next) => {
         });
         io.to(`user:${targetUserId}`).emit("new_match", { matchId: match._id });
       }
-    } else {
-      console.log(`MATCH ALREADY EXISTS: ${sortedIds[0]} <-> ${sortedIds[1]}`);
     }
 
     // Populate users
@@ -161,11 +147,8 @@ export const likeUser = async (req, res, next) => {
   }
 };
 
-// ==========================================
 // UNLIKE USER
 // DELETE /api/likes/:userId
-// ==========================================
-
 export const unlikeUser = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -184,12 +167,6 @@ export const unlikeUser = async (req, res, next) => {
       from: currentUserId,
       to: targetUserId,
     });
-
-    console.log("UNLIKE REQUEST");
-    console.log("From:", currentUserId.toString());
-    console.log("To:", targetUserId.toString());
-    console.log("Deleted Like:", deletedLike);
-
     if (!deletedLike) {
       return res.status(404).json({
         success: false,
@@ -204,19 +181,14 @@ export const unlikeUser = async (req, res, next) => {
     ].sort();
     const pairKey = `${sortedIds[0]}_${sortedIds[1]}`;
 
-    console.log("PAIR KEY:", pairKey);
-
     // Find match
     const match = await Match.findOne({ pairKey });
-    console.log("MATCH FOUND:", match);
 
     // Delete match immediately
     if (match) {
       await Match.deleteOne({ _id: match._id });
 
-      console.log(`MATCH DELETED: ${sortedIds[0]} <-> ${sortedIds[1]}`);
-
-      // 👇 EMIT REAL-TIME EVENT TO BOTH USERS
+      // EMIT REAL-TIME EVENT TO BOTH USERS
       const io = getIO();
       if (io) {
         io.to(`user:${currentUserId}`).emit("match_removed", {
@@ -242,11 +214,8 @@ export const unlikeUser = async (req, res, next) => {
   }
 };
 
-// ==========================================
 // GET SENT LIKES
 // GET /api/likes/sent
-// ==========================================
-
 export const getSentLikes = async (req, res, next) => {
   try {
     const likes = await Like.find({ from: req.user._id })
@@ -263,11 +232,8 @@ export const getSentLikes = async (req, res, next) => {
   }
 };
 
-// ==========================================
 // GET RECEIVED LIKES
 // GET /api/likes/received
-// ==========================================
-
 export const getReceivedLikes = async (req, res, next) => {
   try {
     const likes = await Like.find({ to: req.user._id })

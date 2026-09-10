@@ -14,11 +14,7 @@ function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  /*
-   * ==========================================
-   * PASSWORD STRENGTH CALCULATOR
-   * ==========================================
-   */
+  // PASSWORD STRENGTH CALCULATOR
   const getStrength = (pwd) => {
     let score = 0;
     if (pwd.length >= 6) score++;

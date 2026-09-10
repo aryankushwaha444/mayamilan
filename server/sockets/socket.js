@@ -21,11 +21,7 @@ const initializeSocket = (server) => {
     },
   });
 
-  /*
-   * ==========================================
-   * SOCKET AUTHENTICATION
-   * ==========================================
-   */
+  // SOCKET AUTHENTICATION
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth?.token;
@@ -52,15 +48,9 @@ const initializeSocket = (server) => {
     }
   });
 
-  /*
-   * ==========================================
-   * CONNECTION
-   * ==========================================
-   */
+  // CONNECTION
   io.on("connection", async (socket) => {
     const userId = socket.user._id.toString();
-
-    console.log(`Socket connected: ${socket.user.name} (${userId})`);
 
     // Join personal room
     socket.join(`user:${userId}`);
@@ -72,12 +62,8 @@ const initializeSocket = (server) => {
     registerChatSocket(io, socket);
     registerNotificationSocket(io, socket);
 
-    /*
-     * ==========================================
-     * DISCONNECT (RACE-SAFE)
-     * Only mark offline if NO other socket exists for this user
-     * ==========================================
-     */
+    /* DISCONNECT (RACE-SAFE)
+     Only mark offline if NO other socket exists for this user */
     socket.on("disconnect", async () => {
       console.log(`Socket disconnected: ${socket.user.name}`);
 

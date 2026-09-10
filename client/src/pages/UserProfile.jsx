@@ -28,9 +28,7 @@ function UserProfile() {
   });
   const [blocking, setBlocking] = useState(false);
 
-  // ==========================================
   // FETCH USER PROFILE + BLOCK STATUS
-  // ==========================================
   useEffect(() => {
     const fetchProfile = async () => {
       try {
@@ -66,9 +64,7 @@ function UserProfile() {
     fetchProfile();
   }, [userId]);
 
-  // ==========================================
   // LIKE / UNLIKE
-  // ==========================================
   const handleLike = async () => {
     if (!profile) return;
 
@@ -101,9 +97,7 @@ function UserProfile() {
     }
   };
 
-  // ==========================================
   // REPORT HANDLER
-  // ==========================================
   const handleReport = async () => {
     if (!reportMessage.trim()) {
       alert("Please write a reason for reporting.");
@@ -122,9 +116,7 @@ function UserProfile() {
     }
   };
 
-  // ==========================================
   // BLOCK / UNBLOCK HANDLER
-  // ==========================================
   const handleBlock = async () => {
     try {
       setBlocking(true);
@@ -137,9 +129,7 @@ function UserProfile() {
     }
   };
 
-  // ==========================================
   // HELPERS
-  // ==========================================
   const calculateAge = (dateOfBirth) => {
     if (!dateOfBirth) return null;
     const birthDate = new Date(dateOfBirth);
@@ -179,9 +169,7 @@ function UserProfile() {
     return location;
   };
 
-  // ==========================================
   // RENDER
-  // ==========================================
   if (loading) {
     return (
       <div className="container py-5 text-center">
@@ -330,7 +318,7 @@ function UserProfile() {
 
               <hr />
 
-              {/* 👇 BLOCK BANNERS */}
+              {/* BLOCK BANNERS */}
               {blockStatus.iBlocked && (
                 <div className="alert alert-warning mt-3 mb-2 py-2">
                   <i className="bi bi-slash-circle me-2"></i>
@@ -374,7 +362,7 @@ function UserProfile() {
                   )}
               </div>
 
-              {/* 👇 REPORT + BLOCK BUTTONS */}
+              {/* REPORT + BLOCK BUTTONS */}
               <div className="d-flex gap-2 mt-2">
                 <button
                   className="btn btn-outline-warning flex-fill"
@@ -445,7 +433,7 @@ function UserProfile() {
         />
       )}
 
-      {/* 👇 REPORT MODAL */}
+      {/* REPORT MODAL */}
       {reportOpen && (
         <div
           className="report-modal-overlay"

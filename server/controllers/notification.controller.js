@@ -1,11 +1,7 @@
 import Notification from "../models/Notification.js";
 import { getIO } from "../sockets/socket.js"; // 👈 ADD THIS
 
-/*
- * ==========================================
- * GET ALL NOTIFICATIONS
- * ==========================================
- */
+// GET ALL NOTIFICATIONS
 export const getNotifications = async (req, res, next) => {
   try {
     const notifications = await Notification.find({
@@ -30,11 +26,7 @@ export const getNotifications = async (req, res, next) => {
   }
 };
 
-/*
- * ==========================================
- * MARK ALL NOTIFICATIONS AS READ
- * ==========================================
- */
+// MARK ALL NOTIFICATIONS AS READ
 export const markAllAsRead = async (req, res, next) => {
   try {
     await Notification.updateMany(
@@ -42,7 +34,7 @@ export const markAllAsRead = async (req, res, next) => {
       { isRead: true }
     );
 
-    // 👇 Tell this user's navbar to refresh the badge instantly
+    // Tell this user's navbar to refresh the badge instantly
     const io = getIO();
     if (io) {
       io.to(`user:${req.user._id.toString()}`).emit(

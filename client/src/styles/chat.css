@@ -1,7 +1,4 @@
-/* ==========================================
-   MESSAGES PAGE LAYOUT
-========================================== */
-
+/* MESSAGES PAGE LAYOUT */
 .messages-page {
   min-height: calc(100vh - 76px);
   padding: 24px;
@@ -46,10 +43,7 @@
   background: #94a3b8;
 }
 
-/* ==========================================
-   SIDEBAR (CONVERSATION LIST)
-========================================== */
-
+/* SIDEBAR (CONVERSATION LIST) */
 .conversation-sidebar {
   border-right: 1px solid #f1f5f9;
   background: #ffffff;
@@ -183,10 +177,7 @@
   font-size: 13px;
 }
 
-/* ==========================================
-   CHAT WINDOW & HEADER
-========================================== */
-
+/* CHAT WINDOW & HEADER */
 .messages-chat-area {
   min-width: 0;
   display: flex;
@@ -283,10 +274,7 @@
   display: inline-block;
 }
 
-/* ==========================================
-   MESSAGES AREA - FIXED SCROLLING
-========================================== */
-
+/* MESSAGES AREA  */
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -296,7 +284,7 @@
   gap: 16px;
   background-color: #f8fafc;
   scroll-behavior: smooth;
-  min-height: 0; /* CRITICAL: Allows flex child to scroll */
+  min-height: 0;
 }
 
 .message-row {
@@ -356,10 +344,7 @@
   font-weight: 700;
 }
 
-/* ==========================================
-   TYPING INDICATOR
-========================================== */
-
+/* TYPING INDICATOR */
 .typing-indicator {
   display: flex;
   gap: 5px;
@@ -401,9 +386,7 @@
   }
 }
 
-/* ==========================================
-   INPUT AREA
-========================================== */
+/* INPUT AREA */
 
 .chat-input-area {
   min-height: 76px;
@@ -475,10 +458,7 @@
   cursor: not-allowed;
 }
 
-/* ==========================================
-   EMPTY STATES
-========================================== */
-
+/* EMPTY STATES */
 .select-chat,
 .no-conversations,
 .chat-empty,
@@ -558,10 +538,7 @@
   background: #db2777;
 }
 
-/* ==========================================
-   MOBILE RESPONSIVENESS
-========================================== */
-
+/* MOBILE RESPONSIVENESS */
 @media (max-width: 900px) {
   .messages-page {
     padding: 0;
@@ -678,7 +655,7 @@
   background: #94a3b8;
 }
 
-/* ============ MESSENGER COMPOSER ============ */
+/* MESSENGER COMPOSER */
 .chat-composer {
   position: relative;
   display: flex;
@@ -846,7 +823,7 @@
   opacity: 0.85;
 }
 
-/* ============ MESSAGE BUBBLE TYPES ============ */
+/* MESSAGE BUBBLE TYPES */
 .message-bubble.no-pad {
   padding: 4px;
   background: transparent;
@@ -889,7 +866,7 @@
   background: #f8fafc !important;
 }
 
-/* ============ HOVER ACTIONS + MENUS ============ */
+/* HOVER ACTIONS + MENUS */
 .message-bubble-wrap {
   position: relative;
   display: inline-block;
@@ -904,7 +881,7 @@
   justify-content: flex-end;
 }
 
-/* 👇 Buttons ALWAYS clickable — never pointer-events: none */
+/* Buttons ALWAYS clickable — never pointer-events: none */
 .message-actions {
   position: absolute;
   top: 50%;
@@ -924,7 +901,7 @@
   right: calc(100% + 8px);
 }
 
-/* 👇 Hover the ROW (not just the bubble) → buttons visible */
+/* Hover the ROW (not just the bubble) -> buttons visible */
 @media (hover: hover) and (min-width: 992px) {
   .message-row:hover .message-actions,
   .message-row:focus-within .message-actions,
@@ -1138,7 +1115,7 @@
   color: #94a3b8;
 }
 
-/* ============ MESSAGE BUBBLES (mine = pink, other = white) ============ */
+/* MESSAGE BUBBLES (mine = pink, other = white) */
 .message-bubble.mine {
   border-radius: 20px 20px 6px 20px;
   box-shadow: 0 4px 15px rgba(236, 72, 153, 0.2);
@@ -1174,7 +1151,7 @@
   border-radius: 16px;
 }
 
-/* ============ TIME + STATUS ICONS ============ */
+/* TIME + STATUS ICONS */
 .message-time {
   display: inline-flex;
   align-items: center;
@@ -1190,7 +1167,7 @@
   font-weight: 600;
 }
 
-/* ✓ single = sent */
+/* single = sent */
 .status-sent {
   font-size: 15px;
 }
@@ -1200,16 +1177,16 @@
   font-size: 12px;
 }
 
-/* 🔵 small circle = read */
+/* small circle = read */
 .status-read {
   color: #60a5fa;
   font-size: 8px;
   line-height: 1;
 }
 
-/* ============ MOBILE "+" ATTACHMENTS MENU ============ */
+/* MOBILE "+" ATTACHMENTS MENU */
 .composer-plus-btn {
-  display: none; /* hidden on desktop */
+  display: none;
   width: 40px;
   height: 40px;
   flex-shrink: 0;
@@ -1226,13 +1203,13 @@
 }
 
 .composer-plus-btn.active {
-  transform: rotate(45deg); /* + becomes × */
+  transform: rotate(45deg);
   background: #ec4899;
   color: #fff;
 }
 
 .composer-desktop-icons {
-  display: contents; /* children behave as flex items */
+  display: contents;
 }
 
 .plus-menu {
@@ -1287,7 +1264,7 @@
   font-weight: 800 !important;
 }
 
-/* 👇 MOBILE SWITCH: hide inline icons, show + button */
+/* MOBILE SWITCH: hide inline icons, show + button */
 @media (max-width: 991px) {
   .composer-desktop-icons {
     display: none;

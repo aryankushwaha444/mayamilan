@@ -2,16 +2,12 @@
   --primary-color: #e85d75;
   --primary-dark: #d94a63;
   --secondary-color: #8e6cef;
-
   --dark-color: #202124;
   --text-color: #5f6368;
   --muted-color: #888;
-
   --background-color: #fff;
   --light-background: #fff7f9;
-
   --border-color: #eeeeee;
-
   --shadow-sm: 0 4px 15px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.1);
 }
@@ -235,7 +231,6 @@ img {
 }
 
 /* MOBILE */
-
 @media (max-width: 576px) {
   .auth-page {
     align-items: flex-start;
@@ -276,7 +271,6 @@ img {
 }
 
 /* PROFILE */
-
 .profile-avatar {
   width: 100px;
   height: 100px;
@@ -309,7 +303,6 @@ img {
 }
 
 /* EDIT PROFILE */
-
 .profile-edit-card {
   border-radius: 24px;
 }
@@ -354,10 +347,7 @@ img {
   }
 }
 
-/* ==============================
-   PROFILE PHOTOS
-============================== */
-
+/* PROFILE PHOTOS */
 .profile-photo-card {
   height: 280px;
   overflow: hidden;
@@ -406,7 +396,6 @@ img {
 }
 
 /* Profile avatar image */
-
 .profile-avatar {
   width: 72px;
   height: 72px;
@@ -427,7 +416,6 @@ img {
 }
 
 /* Mobile */
-
 @media (max-width: 575.98px) {
   .profile-photo-card {
     height: 220px;
@@ -441,17 +429,13 @@ img {
 }
 
 /* Tablet */
-
 @media (min-width: 576px) and (max-width: 991.98px) {
   .profile-photo-card {
     height: 250px;
   }
 }
 
-/* =========================================
-   DISCOVERY
-========================================= */
-
+/* DISCOVERY */
 .profile-discovery-card {
   border-radius: 18px;
   overflow: hidden;
@@ -632,32 +616,29 @@ img {
   padding: 60px 20px;
 }
 
-/* ==========================================
-   MOBILE FULL-WIDTH FIX (removes right gap)
-========================================== */
-
+/* MOBILE FULL-WIDTH FIX (removes right gap) */
 html,
 body {
   width: 100%;
-  overflow-x: hidden; /* only horizontal locked */
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
 #root {
   width: 100%;
   min-height: 100vh;
-  overflow-x: clip; /* clip anything that tries to overflow */
+  overflow-x: clip;
 }
 
 /* Make the scrollbar invisible on phones (app-like feel) */
 @media (max-width: 575px) {
   html {
-    scrollbar-width: none; /* Firefox */
+    scrollbar-width: none;
   }
 
   body::-webkit-scrollbar {
     width: 0;
-    height: 0; /* Chrome / Safari / emulator */
+    height: 0;
   }
 }
 
@@ -708,9 +689,7 @@ body {
   transition: width 0.3s ease, background-color 0.3s ease;
 }
 
-/* ==========================================
-   PHOTO LIGHTBOX (Fullscreen Viewer)
-========================================== */
+/* PHOTO LIGHTBOX (Fullscreen Viewer) */
 
 .lightbox-overlay {
   position: fixed;
@@ -930,9 +909,8 @@ body {
   animation: lightboxZoom 0.25s ease;
 }
 
-
-/* ============ NAVBAR LOGO IMAGE ============ */
-.navbar-brand-custom .brand-logo  {
+/* NAVBAR LOGO IMAGE */
+.navbar-brand-custom .brand-logo {
   width: 46px;
   height: 46px;
   flex-shrink: 0;
@@ -941,13 +919,13 @@ body {
   justify-content: center;
   overflow: hidden;
   border-radius: 12px;
-  background: #fff;              /* optional: white bg behind transparent logos */
+  background: #fff;
 }
 
 .navbar-brand-custom .brand-logo img {
   width: 100%;
   height: 100%;
-  object-fit: contain;           /* whole logo visible, no cropping */
+  object-fit: contain;
   display: block;
 }
 

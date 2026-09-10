@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { discoverUsers } from "../services/userService";
 import ProfileCard from "../components/ProfileCard";
 import { likeUser, unlikeUser } from "../services/matchService";
-import { useSocket } from "../hooks/useSocket"; // 👈 ADD THIS IMPORT
+import { useSocket } from "../hooks/useSocket";
 
 function Discover() {
-  const { socket } = useSocket(); // 👈 ADD THIS HOOK
+  const { socket } = useSocket();
 
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -63,11 +63,7 @@ function Discover() {
     fetchUsers();
   }, []);
 
-  /*
-   * ==========================================
-   * SOCKET LISTENER FOR REAL-TIME UNMATCH 👈 ADD THIS BLOCK
-   * ==========================================
-   */
+  // SOCKET LISTENER FOR REAL-TIME UNMATCH
   useEffect(() => {
     if (!socket) return;
 
@@ -165,9 +161,6 @@ function Discover() {
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-4">
         <div>
           <h1 className="fw-bold mb-1">Discover</h1>
-          <p className="text-muted mb-0">
-            Find people who could be a great match for you.
-          </p>
         </div>
         {pagination.total > 0 && (
           <span className="text-muted mt-2 mt-md-0">
@@ -280,23 +273,6 @@ function Discover() {
                 >
                   <i className="bi bi-x-lg"></i>
                 </button>
-              </div>
-              <div className="col-12">
-                <label htmlFor="interests" className="form-label">
-                  Interests
-                </label>
-                <input
-                  id="interests"
-                  name="interests"
-                  type="text"
-                  className="form-control"
-                  value={filters.interests}
-                  onChange={handleFilterChange}
-                  placeholder="music, travel, coding"
-                />
-                <small className="text-muted">
-                  Separate multiple interests with commas.
-                </small>
               </div>
             </div>
           </form>

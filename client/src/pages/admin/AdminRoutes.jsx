@@ -52,8 +52,6 @@ function AdminRoutes() {
     return <Navigate to="/" replace />;
   }
 
-  // 👇 CHANGED: no AdminLayout → no sidebar, no duplicate topbar.
-  // Admin pages now render inside the normal app shell (main Navbar only).
   return <Outlet />;
 }
 
