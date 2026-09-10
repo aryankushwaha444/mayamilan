@@ -16,6 +16,7 @@ import messageRoutes from "./routes/message.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import suggestionRoutes from "./routes/suggestion.routes.js";
+import passport from "./config/passport.js";
 
 
 const app = express();
@@ -37,10 +38,12 @@ app.use(helmet());
 
 // BODY PARSER
 app.use(express.json());
+app.use(passport.initialize());
 app.use(express.urlencoded({ extended: true }));
 
 // COOKIE
 app.use(cookieParser());
+
 
 // RATE LIMIT
 const limiter = rateLimit({

@@ -24,6 +24,7 @@ import ChangePassword from "./pages/ChangePassword";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
 import Suggestion from "./pages/Suggestion.jsx";
 import AdminSuggestions from "./pages/admin/AdminSuggestions.jsx";
+import OAuthSuccess from "./pages/OAuthSuccess.jsx";
 
 // Admin
 import AdminRoutes from "./pages/admin/AdminRoutes.jsx";
@@ -62,6 +63,7 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/oauth-success" element={<OAuthSuccess />} />
 
         {/* PROTECTED (any logged-in user) */}
         <Route

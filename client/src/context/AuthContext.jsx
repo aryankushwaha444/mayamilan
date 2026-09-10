@@ -38,42 +38,35 @@ export const AuthProvider = ({ children }) => {
     window.addEventListener("auth:logout", handleAuthLogout);
 
     const initializeAuth = async () => {
+      // NUCLEAR: If we're on OAuth success page, DO NOTHING
+      if (window.location.pathname === "/oauth-success") {
+        setLoading(false);
+        return;
+      }
+
+      const storedToken = localStorage.getItem("accessToken");
+
+      // If no token, just bail out silently — don't try to refresh
+      if (!storedToken) {
+        setLoading(false);
+        return;
+      }
+
       try {
-        const storedToken = localStorage.getItem("accessToken");
+        setAccessToken(storedToken);
+        const response = await getCurrentUser();
 
-        if (storedToken) {
-          setAccessToken(storedToken);
-
-          const response = await getCurrentUser();
-
-          if (response.success) {
-            setUser(response.user);
-          }
-
-          return;
-        }
-
-        const refreshResponse = await refreshAccessToken();
-
-        if (refreshResponse.success) {
-          const newToken = refreshResponse.accessToken;
-
-          localStorage.setItem("accessToken", newToken);
-
-          setAccessToken(newToken);
-
-          const response = await getCurrentUser();
-
-          if (response.success) {
-            setUser(response.user);
-          }
+        if (response.success) {
+          setUser(response.user);
+        } else {
+          // Token invalid — clean up
+          localStorage.removeItem("accessToken");
+          localStorage.removeItem("user");
+          setAccessToken(null);
+          setUser(null);
         }
       } catch (error) {
-        console.log(
-          "Authentication initialization:",
-          error.response?.data?.message || error.message
-        );
-
+        // SILENT: Don't log 401 errors during init, just clean up
         const status = error.response?.status;
 
         if (status === 401 || status === 403) {

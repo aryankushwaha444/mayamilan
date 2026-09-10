@@ -18,9 +18,22 @@ const userSchema = new mongoose.Schema(
 
     password: {
       type: String,
-      required: true,
-      select: false,
+      // required ONLY for normal (local) signups
+      required: [
+        function () {
+          return this.oauthProvider === "local";
+        },
+        "Password is required",
+      ],
     },
+
+    // ADD these two fields
+    oauthProvider: {
+      type: String,
+      enum: ["local", "google"],
+      default: "local",
+    },
+    oauthId: { type: String, default: null },
 
     dateOfBirth: {
       type: Date,
