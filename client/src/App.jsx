@@ -55,6 +55,17 @@ function ProtectedRoute({ children }) {
 function App() {
   return (
     <BrowserRouter>
+      <AppContent />
+    </BrowserRouter>
+  );
+}
+
+function AppContent() {
+  const location = useLocation();
+  const hideFooter = location.pathname.startsWith("/messages");
+
+  return (
+    <>
       <Navbar />
       <Routes>
         {/* PUBLIC */}
@@ -166,8 +177,8 @@ function App() {
         {/* UNKNOWN */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <Footer />
-    </BrowserRouter>
+      {!hideFooter && <Footer />}
+    </>
   );
 }
 

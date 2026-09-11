@@ -23,6 +23,7 @@ function Footer() {
             and find someone special.
           </p>
 
+          {/* SOCIALS 
           <div className="footer-socials">
             <a
               href="https://www.aaryankushawaha.com.np"
@@ -48,6 +49,8 @@ function Footer() {
               <i className="bi bi-linkedin"></i>
             </a>
           </div>
+          */}
+          
         </div>
 
         {/* DISCOVER */}
@@ -87,11 +90,6 @@ function Footer() {
           <NavLink to="/edit-profile">
             <i className="bi bi-pencil-square"></i>
             Edit Profile
-          </NavLink>
-
-          <NavLink to="/notifications">
-            <i className="bi bi-bell"></i>
-            Notifications
           </NavLink>
         </div>
 

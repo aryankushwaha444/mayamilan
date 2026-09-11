@@ -711,7 +711,8 @@
   padding: 8px 0;
 }
 
-.composer-heart {
+.composer-heart,
+.message-heart i {
   width: 42px;
   height: 42px;
   flex-shrink: 0;
@@ -850,14 +851,6 @@
   font-size: 64px;
   line-height: 1;
   padding: 8px;
-}
-
-.message-heart i {
-  font-size: 42px;
-  background: linear-gradient(135deg, #ec4899, #f43f5e);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
 }
 
 .deleted-bubble {
