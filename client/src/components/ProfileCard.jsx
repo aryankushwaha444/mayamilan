@@ -51,12 +51,12 @@ function ProfileCard({ user, onLike, onPass }) {
         )}
 
         {/* Verification */}
-        {user.isVerified && (
+        {/* {user.isVerified && (
           <span className="position-absolute bottom-0 start-0 m-3 badge rounded-pill bg-primary">
             <i className="bi bi-patch-check-fill me-1"></i>
             Verified
           </span>
-        )}
+        )} */}
       </div>
 
       <div className="card-body d-flex flex-column p-4">

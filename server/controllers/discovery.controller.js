@@ -21,83 +21,59 @@ export const discoverUsers = async (req, res, next) => {
     const limitNumber = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
     const skip = (pageNumber - 1) * limitNumber;
 
-// GET CURRENT USER'S BLOCKED USERS (with fresh fetch)
+    // BLOCKED USERS (both directions)
     const me = await User.findById(currentUser._id).select("blockedUsers");
     const iBlockedIds = (me?.blockedUsers || []).map((id) => id.toString());
 
-    // Get users who have blocked the current user
-    const blockedMeIds = await User.find({
-      blockedUsers: currentUser._id,
-      isActive: true,
-    })
+    const blockedMe = await User.find({ blockedUsers: currentUser._id })
       .select("_id")
       .lean();
+    const blockedMeIds = blockedMe.map((u) => u._id.toString());
 
-    const blockedMeIdStrings = blockedMeIds.map((u) => u._id.toString());
-
-// GET CURRENT USER'S MATCHES & LIKES
-    const matches = await Match.find({
-      users: currentUser._id,
-    })
+    // 👇 MATCHES ONLY — per your requirement: ONLY matched users are hidden
+    const matches = await Match.find({ users: currentUser._id })
       .select("users")
       .lean();
 
     const matchedUserIds = new Set();
     matches.forEach((match) => {
-      match.users.forEach((userId) => {
-        if (userId.toString() !== currentUser._id.toString()) {
-          matchedUserIds.add(userId.toString());
+      match.users.forEach((id) => {
+        if (id.toString() !== currentUser._id.toString()) {
+          matchedUserIds.add(id.toString());
         }
       });
     });
 
-    const sentLikes = await Like.find({
-      from: currentUser._id,
-    })
+    // 👇 Sent likes: NOT excluded anymore — only used to mark cards as "Liked"
+    const sentLikes = await Like.find({ from: currentUser._id })
       .select("to")
       .lean();
+    const likedUserIds = new Set(sentLikes.map((l) => l.to.toString()));
 
-    const likedUserIds = new Set(sentLikes.map((like) => like.to.toString()));
+    // 👇 EXCLUDE ONLY: self + matched + blocked (NO likes!)
+    const excludeUserIds = Array.from(
+      new Set([
+        currentUser._id.toString(),
+        ...matchedUserIds,
+        ...iBlockedIds,
+        ...blockedMeIds,
+      ])
+    );
 
-// COMBINE ALL EXCLUDED IDS (includes blocked users)
-    const excludeUserIds = [
-      currentUser._id.toString(),
-      ...Array.from(matchedUserIds),
-      ...Array.from(likedUserIds),
-      ...iBlockedIds,
-      ...blockedMeIdStrings,
-    ];
-
-    // Remove duplicates
-    const uniqueExcludeIds = Array.from(new Set(excludeUserIds));
-
-// BUILD USER QUERY
+    // BUILD QUERY
     const query = {
-      _id: {
-        $nin: uniqueExcludeIds,
-      },
+      _id: { $nin: excludeUserIds },
       isActive: true,
     };
 
-    // Gender
-    if (gender) {
-      query.gender = gender;
-    }
+    if (gender) query.gender = gender;
 
-    // City
     if (city) {
-      query["location.city"] = {
-        $regex: city,
-        $options: "i",
-      };
+      query["location.city"] = { $regex: city, $options: "i" };
     }
 
-    // Relationship goal
-    if (relationshipGoal) {
-      query.relationshipGoal = relationshipGoal;
-    }
+    if (relationshipGoal) query.relationshipGoal = relationshipGoal;
 
-    // Age
     if (minAge || maxAge) {
       const today = new Date();
       query.dateOfBirth = {};
@@ -115,17 +91,14 @@ export const discoverUsers = async (req, res, next) => {
       }
     }
 
-    // Interests
     if (interests) {
       const interestList = interests
         .split(",")
-        .map((interest) => interest.trim())
+        .map((i) => i.trim())
         .filter(Boolean);
 
       if (interestList.length > 0) {
-        query.interests = {
-          $in: interestList,
-        };
+        query.interests = { $in: interestList };
       }
     }
 
@@ -134,11 +107,7 @@ export const discoverUsers = async (req, res, next) => {
         .select(
           "name dateOfBirth gender bio photos location occupation education interests relationshipGoal isVerified isOnline lastSeen"
         )
-        .sort({
-          isOnline: -1,
-          lastSeen: -1,
-          createdAt: -1,
-        })
+        .sort({ isOnline: -1, lastSeen: -1, createdAt: -1 })
         .skip(skip)
         .limit(limitNumber)
         .lean(),
@@ -146,14 +115,13 @@ export const discoverUsers = async (req, res, next) => {
       User.countDocuments(query),
     ]);
 
-    // FORMAT RESPONSE
+    // 👇 Mark liked users so frontend can show "Liked ✓" state
     const formattedUsers = users.map((user) => ({
       ...user,
-      isLiked: false,
+      isLiked: likedUserIds.has(user._id.toString()),
       isMatched: false,
     }));
 
-// RESPONSE
     res.status(200).json({
       success: true,
       users: formattedUsers,
