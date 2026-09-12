@@ -1,17 +1,23 @@
-import { useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import Loader from "../components/Loader.jsx";
 
 function OAuthSuccess() {
-  const navigate = useNavigate();
   const [params] = useSearchParams();
+  const handled = useRef(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (handled.current) return;
+    handled.current = true;
+
     const token = params.get("token");
     const userB64 = params.get("user");
 
     if (!token || !userB64) {
       console.error("Missing token or user data");
-      navigate("/register");
+      setFailed(true);
+      setTimeout(() => window.location.replace("/register"), 1500);
       return;
     }
 
@@ -27,31 +33,36 @@ function OAuthSuccess() {
       // Dispatch event so AuthContext picks it up
       window.dispatchEvent(new Event("auth:login"));
 
-      // Redirect to discover
-      navigate("/discover");
+      // 👇 HARD REDIRECT — forces full page reload so AuthContext
+      //    re-initializes WITH the token before ProtectedRoute checks
+      setTimeout(() => {
+        window.location.replace("/discover");
+      }, 1200);
     } catch (error) {
       console.error("OAuth success error:", error);
-      navigate("/register");
+      setFailed(true);
+      setTimeout(() => window.location.replace("/register"), 1500);
     }
-  }, [params, navigate]);
+  }, [params]);
+
+  if (failed) {
+    return (
+      <Loader
+        full
+        text="Sign-in failed"
+        subtitle="Redirecting you back..."
+        icon="x-circle-fill"
+      />
+    );
+  }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        gap: "16px",
-      }}
-    >
-      <div
-        className="spinner-border text-primary"
-        style={{ width: "3rem", height: "3rem" }}
-      ></div>
-      <p className="text-muted">Completing your sign-up...</p>
-    </div>
+    <Loader
+      full
+      text="Welcome Maya~Milan 💕"
+      subtitle="Setting up your session..."
+      icon="heart-fill"
+    />
   );
 }
 

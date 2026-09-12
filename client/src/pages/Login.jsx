@@ -1,14 +1,13 @@
 import { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, Navigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import SEO from "../components/SEO";
-import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import { useAlert } from "../context/AlertContext";
 
 function Login() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login } = useAuth();
-  const toast = useAlert(); // 👈 ADD
+  const { login, isAuthenticated, loading: authLoading } = useAuth();  const toast = useAlert();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -16,6 +15,10 @@ function Login() {
 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  if (!authLoading && isAuthenticated) {
+    return <Navigate to="/discover" replace />;
+  }
 
   // PASSWORD STRENGTH CALCULATOR
   const getStrength = (pwd) => {
@@ -63,7 +66,7 @@ function Login() {
           `Welcome back, ${response.user?.name || "there"}! 👋`,
           "Login successful",
           3000
-        ); // 👈 ADD
+        );
         window.location.href =
           response.user?.role === "admin" ? "/admin" : "/discover";
       } else {
