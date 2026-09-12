@@ -1,75 +1,69 @@
 import Redis from "ioredis";
 
-// ============ SINGLETON PATTERN ============
-// Ensures only ONE Redis connection exists per process
-let redisInstance = null;
+// ============ GLOBAL SINGLETON ============
+if (!globalThis.__REDIS_INSTANCE__) {
+  if (process.env.REDIS_URL) {
+    console.log("🔌 Creating Redis connection (singleton)...");
 
-function getRedis() {
-  if (!process.env.REDIS_URL) {
-    return null; // No Redis URL = skip caching entirely
-  }
-
-  if (!redisInstance) {
-    redisInstance = new Redis(process.env.REDIS_URL, {
+    globalThis.__REDIS_INSTANCE__ = new Redis(process.env.REDIS_URL, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
-      retryStrategy: (times) => {
-        // Exponential backoff: 50ms, 100ms, 200ms, 400ms... max 2s
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-      reconnectOnError: (err) => {
-        const targetError = "READONLY";
-        if (err.message.includes(targetError)) {
-          return true; // Reconnect on read-only errors
-        }
-        return false;
-      },
-      // TLS for Upstash
+      retryStrategy: (times) => Math.min(times * 50, 2000),
+      reconnectOnError: () => false, // Don't auto-reconnect on error
       tls: process.env.REDIS_URL.startsWith("rediss://") ? {} : undefined,
-      // Connection timeout
       connectTimeout: 10000,
-      // Keep alive
       keepAlive: true,
-      // Don't auto-subscribe (saves resources)
+      family: 4,
       lazyConnect: false,
     });
 
-    // Connection event handlers
-    redisInstance.on("connect", () => {
-      console.log("✅ Redis connected");
+    // Track connection state globally
+    globalThis.__REDIS_HAS_CONNECTED__ = false;
+
+    globalThis.__REDIS_INSTANCE__.on("connect", () => {
+      if (!globalThis.__REDIS_HAS_CONNECTED__) {
+        console.log("✅ Redis connected");
+        globalThis.__REDIS_HAS_CONNECTED__ = true;
+      }
+      // Silent on reconnects
     });
 
-    redisInstance.on("error", (err) => {
-      // Only log real errors, not transient disconnects
-      if (err.message && !err.message.includes("ECONNRESET")) {
-        console.warn("⚠️ Redis error:", err.message);
+    globalThis.__REDIS_INSTANCE__.on("error", (err) => {
+      // Only log non-transient errors
+      const msg = err?.message || String(err);
+      if (
+        !msg.includes("ECONNRESET") &&
+        !msg.includes("ETIMEDOUT") &&
+        !msg.includes("ECONNREFUSED")
+      ) {
+        console.warn("⚠️ Redis error:", msg);
       }
     });
 
-    redisInstance.on("close", () => {
-      // Silent reconnect (ioredis handles it automatically)
+    globalThis.__REDIS_INSTANCE__.on("close", () => {
+      // Silent - ioredis will auto-reconnect
     });
 
-    redisInstance.on("reconnecting", () => {
-      // Silent reconnect
+    globalThis.__REDIS_INSTANCE__.on("reconnecting", () => {
+      // Silent
     });
+
+    globalThis.__REDIS_INSTANCE__.on("end", () => {
+      // Silent
+    });
+  } else {
+    console.log("ℹ️  Redis: no REDIS_URL, caching disabled");
+    globalThis.__REDIS_INSTANCE__ = null;
   }
-
-  return redisInstance;
 }
 
-// Get the singleton instance
-const redis = getRedis();
+const redis = globalThis.__REDIS_INSTANCE__;
 
 // ============ CACHING FUNCTIONS ============
 
-/**
- * Caches the JSON response of a route for `ttl` seconds.
- */
 export const cached = (prefix, ttl = 60) => {
   return async (req, res, next) => {
-    if (!redis) return next(); // Redis unavailable → skip cache
+    if (!redis) return next();
 
     try {
       const userId = req.user?._id?.toString() || "guest";
@@ -81,7 +75,6 @@ export const cached = (prefix, ttl = 60) => {
         return res.json(JSON.parse(cachedData));
       }
 
-      // Intercept res.json to cache the response
       const originalJson = res.json.bind(res);
       res.json = (data) => {
         if (res.statusCode < 400) {
@@ -92,15 +85,11 @@ export const cached = (prefix, ttl = 60) => {
 
       next();
     } catch (err) {
-      console.warn("Cache middleware error:", err.message);
-      next(); // Fail open
+      next();
     }
   };
 };
 
-/**
- * Invalidate cache entries matching a pattern.
- */
 export const invalidateCache = async (pattern) => {
   if (!redis) return;
   try {
@@ -114,18 +103,13 @@ export const invalidateCache = async (pattern) => {
         100
       );
       cursor = nextCursor;
-      if (keys.length > 0) {
-        await redis.del(...keys);
-      }
+      if (keys.length > 0) await redis.del(...keys);
     } while (cursor !== "0");
   } catch (err) {
     console.warn("Cache invalidation error:", err.message);
   }
 };
 
-/**
- * Invalidate cache for a specific user across multiple prefixes.
- */
 export const invalidateUserCache = async (userId, prefixes = []) => {
   if (!redis || !userId) return;
   const id = userId.toString();
@@ -134,17 +118,7 @@ export const invalidateUserCache = async (userId, prefixes = []) => {
   );
 };
 
-// Graceful shutdown
-process.on("SIGTERM", () => {
-  if (redis) {
-    redis.quit().catch(() => {});
-  }
-});
-
-process.on("SIGINT", () => {
-  if (redis) {
-    redis.quit().catch(() => {});
-  }
-});
+process.on("SIGTERM", () => redis?.quit().catch(() => {}));
+process.on("SIGINT", () => redis?.quit().catch(() => {}));
 
 export default redis;
