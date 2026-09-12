@@ -1,23 +1,71 @@
 import Redis from "ioredis";
 
-// Connect to Redis (falls back gracefully if unavailable)
-const redis = process.env.REDIS_URL
-  ? new Redis(process.env.REDIS_URL, {
-      maxRetriesPerRequest: 3,
-      retryStrategy: (times) => Math.min(times * 50, 2000),
-      tls: process.env.REDIS_URL.startsWith("rediss://") ? {} : undefined,
-    })
-  : null;
+// ============ SINGLETON PATTERN ============
+// Ensures only ONE Redis connection exists per process
+let redisInstance = null;
 
-// Handle connection errors silently (don't crash the app)
-if (redis) {
-  redis.on("error", (err) => console.warn("Redis error:", err.message));
-  redis.on("connect", () => console.log("✅ Redis connected"));
+function getRedis() {
+  if (!process.env.REDIS_URL) {
+    return null; // No Redis URL = skip caching entirely
+  }
+
+  if (!redisInstance) {
+    redisInstance = new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true,
+      retryStrategy: (times) => {
+        // Exponential backoff: 50ms, 100ms, 200ms, 400ms... max 2s
+        const delay = Math.min(times * 50, 2000);
+        return delay;
+      },
+      reconnectOnError: (err) => {
+        const targetError = "READONLY";
+        if (err.message.includes(targetError)) {
+          return true; // Reconnect on read-only errors
+        }
+        return false;
+      },
+      // TLS for Upstash
+      tls: process.env.REDIS_URL.startsWith("rediss://") ? {} : undefined,
+      // Connection timeout
+      connectTimeout: 10000,
+      // Keep alive
+      keepAlive: true,
+      // Don't auto-subscribe (saves resources)
+      lazyConnect: false,
+    });
+
+    // Connection event handlers
+    redisInstance.on("connect", () => {
+      console.log("✅ Redis connected");
+    });
+
+    redisInstance.on("error", (err) => {
+      // Only log real errors, not transient disconnects
+      if (err.message && !err.message.includes("ECONNRESET")) {
+        console.warn("⚠️ Redis error:", err.message);
+      }
+    });
+
+    redisInstance.on("close", () => {
+      // Silent reconnect (ioredis handles it automatically)
+    });
+
+    redisInstance.on("reconnecting", () => {
+      // Silent reconnect
+    });
+  }
+
+  return redisInstance;
 }
+
+// Get the singleton instance
+const redis = getRedis();
+
+// ============ CACHING FUNCTIONS ============
 
 /**
  * Caches the JSON response of a route for `ttl` seconds.
- * Cache key is built from: prefix + user ID + query params.
  */
 export const cached = (prefix, ttl = 60) => {
   return async (req, res, next) => {
@@ -33,10 +81,9 @@ export const cached = (prefix, ttl = 60) => {
         return res.json(JSON.parse(cachedData));
       }
 
-      // Intercept res.json to cache the response before sending
+      // Intercept res.json to cache the response
       const originalJson = res.json.bind(res);
       res.json = (data) => {
-        // Only cache successful responses
         if (res.statusCode < 400) {
           redis.setex(cacheKey, ttl, JSON.stringify(data)).catch(() => {});
         }
@@ -45,20 +92,18 @@ export const cached = (prefix, ttl = 60) => {
 
       next();
     } catch (err) {
-      console.warn("Cache error, falling back to DB:", err.message);
-      next(); // Fail open — always serve data, even without cache
+      console.warn("Cache middleware error:", err.message);
+      next(); // Fail open
     }
   };
 };
 
 /**
  * Invalidate cache entries matching a pattern.
- * Use after mutations (post, like, match, etc.)
  */
 export const invalidateCache = async (pattern) => {
   if (!redis) return;
   try {
-    // Use SCAN instead of KEYS (non-blocking, production-safe)
     let cursor = "0";
     do {
       const [nextCursor, keys] = await redis.scan(
@@ -80,7 +125,6 @@ export const invalidateCache = async (pattern) => {
 
 /**
  * Invalidate cache for a specific user across multiple prefixes.
- * Most common use case: when a user posts/likes/matches.
  */
 export const invalidateUserCache = async (userId, prefixes = []) => {
   if (!redis || !userId) return;
@@ -89,5 +133,18 @@ export const invalidateUserCache = async (userId, prefixes = []) => {
     prefixes.map((prefix) => invalidateCache(`${prefix}:${id}:*`))
   );
 };
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  if (redis) {
+    redis.quit().catch(() => {});
+  }
+});
+
+process.on("SIGINT", () => {
+  if (redis) {
+    redis.quit().catch(() => {});
+  }
+});
 
 export default redis;
