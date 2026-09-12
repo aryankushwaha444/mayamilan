@@ -4,9 +4,13 @@ import {
   getNotifications,
   markAllAsRead,
 } from "../services/notificationService";
+import Loader from "../components/Loader.jsx"; // 👈 ADD
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import { avatarImg } from "../utils/cloudinary"; // 👈 ADD
 
 function Notifications() {
   const navigate = useNavigate();
+  const toast = useAlert(); // 👈 ADD
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -17,13 +21,13 @@ function Notifications() {
       setNotifications(data.notifications || []);
     } catch (error) {
       console.error("Fetch notifications error:", error);
+      toast.error("Failed to load notifications"); // 👈 ADD
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    // Fetch the notifications
     fetchNotifications();
 
     // TELL THE BACKEND TO MARK THEM AS READ IN THE DATABASE
@@ -42,14 +46,15 @@ function Notifications() {
     navigate(`/users/${notification.sender._id}`);
   };
 
+  // 👇 BRANDED LOADER — same style as Feed, Saved, Profile
   if (loading) {
     return (
-      <div className="container py-5 text-center">
-        <div className="spinner-border text-primary" role="status">
-          <span className="visually-hidden">Loading...</span>
-        </div>
-        <p className="text-muted mt-3">Loading notifications...</p>
-      </div>
+      <Loader
+        full
+        text="Loading your notifications"
+        subtitle="Fetching your latest activity"
+        icon="bell-fill"
+      />
     );
   }
 
@@ -82,7 +87,7 @@ function Notifications() {
               <div className="position-relative">
                 {notification.sender?.photos?.[0]?.url ? (
                   <img
-                    src={notification.sender.photos[0].url}
+                    src={avatarImg(notification.sender.photos[0].url)} // 👈 OPTIMIZED
                     alt={notification.sender.name}
                     className="rounded-circle"
                     style={{

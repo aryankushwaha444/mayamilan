@@ -2,8 +2,11 @@ import { useState, useEffect } from "react";
 import { postService } from "../services/postService";
 import PostCard from "../components/PostCard";
 import SEO from "../components/SEO";
+import Loader from "../components/Loader.jsx";
+import { useAlert } from "../context/AlertContext"; // 👈 ADD for error toasts
 
 function SavedPosts() {
+  const toast = useAlert(); // 👈 ADD
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -14,6 +17,7 @@ function SavedPosts() {
         setPosts(res.posts);
       } catch (err) {
         console.error(err);
+        toast.error("Failed to load saved posts"); // 👈 ADD error toast
       } finally {
         setLoading(false);
       }
@@ -47,10 +51,14 @@ function SavedPosts() {
             <i className="bi bi-bookmark-fill"></i> Saved Posts
           </h2>
 
-          {loading && (
-            <div className="feed-loader">
-              <div className="spinner-border text-primary"></div>
-            </div>
+          {/* 👇 BRANDED LOADER — replaces generic spinner */}
+          {loading && posts.length === 0 && (
+            <Loader
+              full
+              text="Loading your saved posts"
+              subtitle="Fetching your favorites"
+              icon="bookmark-fill"
+            />
           )}
 
           {!loading && posts.length === 0 && (

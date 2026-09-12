@@ -1,4 +1,4 @@
-import { useState, memo } from "react"; // 👈 ADD memo to import
+import { useState, memo } from "react";
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
 import CommentItem from "./CommentItem.jsx";
@@ -6,6 +6,7 @@ import ShareModal from "./ShareModal.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 import { useAlert } from "../context/AlertContext";
 import { avatarImg, postImg } from "../utils/cloudinary";
+import PhotoLightbox from "./PhotoLightbox.jsx";
 
 function PostCard({ post, onUpdate }) {
   const toast = useAlert();
@@ -19,6 +20,7 @@ function PostCard({ post, onUpdate }) {
   const [editText, setEditText] = useState(post.content);
   const [showShare, setShowShare] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(null);
 
   const authorPhoto = avatarImg(
     post.author?.photos?.find((p) => p.isPrimary)?.url ||
@@ -218,6 +220,8 @@ function PostCard({ post, onUpdate }) {
                 src={postImg(img.url)}
                 alt={`Post ${i + 1}`}
                 loading="lazy"
+                className="post-image-clickable"
+                onClick={() => setLightboxIndex(i)}
               />
             ))}
           </div>
@@ -338,6 +342,13 @@ function PostCard({ post, onUpdate }) {
           handleDelete();
         }}
       />
+      {lightboxIndex !== null && post.images?.length > 0 && (
+        <PhotoLightbox
+          photos={post.images}
+          initialIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+        />
+      )}
     </article>
   );
 }

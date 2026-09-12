@@ -16,7 +16,7 @@ import {
 } from "../services/userService";
 
 function Profile() {
-  const { user: authUser } = useAuth();
+  const { user: authUser, updateUser } = useAuth();
   const navigate = useNavigate();
   const toast = useAlert();
 
@@ -33,6 +33,12 @@ function Profile() {
   useEffect(() => {
     loadProfile();
   }, []);
+
+  useEffect(() => {
+    if (!success) return;
+    const timer = setTimeout(() => setSuccess(""), 2000);
+    return () => clearTimeout(timer);
+  }, [success]);
 
   const loadProfile = async () => {
     try {
@@ -98,6 +104,7 @@ function Profile() {
         photos: data.photos,
       }));
 
+      updateUser({ ...authUser, photos: data.photos });
       setSuccess("Photo uploaded successfully.");
       toast.success("Photo uploaded successfully! 📸");
     } catch (error) {
@@ -124,8 +131,9 @@ function Profile() {
         photos: data.photos,
       }));
 
+      updateUser({ ...authUser, photos: data.photos });
       setSuccess("Photo deleted successfully.");
-      toast.success("Photo deleted 🗑️"); // 👈 ADD
+      toast.success("Photo deleted 🗑️");
     } catch (error) {
       console.error(error);
       const msg = error.response?.data?.message || "Failed to delete photo.";
@@ -148,6 +156,7 @@ function Profile() {
         photos: data.photos,
       }));
 
+      updateUser({ ...authUser, photos: data.photos });
       setSuccess("Primary photo updated.");
       toast.success("Primary photo updated! ⭐");
     } catch (error) {
