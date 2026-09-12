@@ -1,15 +1,19 @@
 import Redis from "ioredis";
 
-// ============ GLOBAL SINGLETON ============
-if (!globalThis.__REDIS_INSTANCE__) {
+// ============ SUPER-SINGLETON ============
+// Use globalThis + a flag that persists across hot reloads and module re-evaluations
+const REDIS_GLOBAL_KEY = "__MAYA_MILAN_REDIS__";
+const CONNECTED_FLAG_KEY = "__MAYA_MILAN_REDIS_CONNECTED__";
+
+if (!globalThis[REDIS_GLOBAL_KEY]) {
   if (process.env.REDIS_URL) {
     console.log("🔌 Creating Redis connection (singleton)...");
 
-    globalThis.__REDIS_INSTANCE__ = new Redis(process.env.REDIS_URL, {
+    const instance = new Redis(process.env.REDIS_URL, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       retryStrategy: (times) => Math.min(times * 50, 2000),
-      reconnectOnError: () => false, // Don't auto-reconnect on error
+      reconnectOnError: () => false,
       tls: process.env.REDIS_URL.startsWith("rediss://") ? {} : undefined,
       connectTimeout: 10000,
       keepAlive: true,
@@ -17,49 +21,46 @@ if (!globalThis.__REDIS_INSTANCE__) {
       lazyConnect: false,
     });
 
-    // Track connection state globally
-    globalThis.__REDIS_HAS_CONNECTED__ = false;
-
-    globalThis.__REDIS_INSTANCE__.on("connect", () => {
-      if (!globalThis.__REDIS_HAS_CONNECTED__) {
-        console.log("✅ Redis connected");
-        globalThis.__REDIS_HAS_CONNECTED__ = true;
+    // Log FIRST connect only (across all processes sharing this global)
+    instance.on("connect", () => {
+      if (!globalThis[CONNECTED_FLAG_KEY]) {
+        console.log("✅ Redis connected (singleton)");
+        globalThis[CONNECTED_FLAG_KEY] = true;
       }
-      // Silent on reconnects
     });
 
-    globalThis.__REDIS_INSTANCE__.on("error", (err) => {
-      // Only log non-transient errors
+    // Only log REAL errors (not disconnects/reconnects)
+    instance.on("error", (err) => {
       const msg = err?.message || String(err);
-      if (
-        !msg.includes("ECONNRESET") &&
-        !msg.includes("ETIMEDOUT") &&
-        !msg.includes("ECONNREFUSED")
-      ) {
-        console.warn("⚠️ Redis error:", msg);
+      // Silently ignore transient network errors
+      const transientErrors = [
+        "ECONNRESET",
+        "ETIMEDOUT",
+        "EPIPE",
+        "ECONNREFUSED",
+        "Connection is closed",
+      ];
+      if (transientErrors.some((e) => msg.includes(e))) {
+        return; // Silent - ioredis handles these automatically
       }
+      console.warn("⚠️ Redis error:", msg);
     });
 
-    globalThis.__REDIS_INSTANCE__.on("close", () => {
-      // Silent - ioredis will auto-reconnect
-    });
+    // All these are silent - ioredis reconnects automatically
+    instance.on("close", () => {});
+    instance.on("reconnecting", () => {});
+    instance.on("end", () => {});
 
-    globalThis.__REDIS_INSTANCE__.on("reconnecting", () => {
-      // Silent
-    });
-
-    globalThis.__REDIS_INSTANCE__.on("end", () => {
-      // Silent
-    });
+    globalThis[REDIS_GLOBAL_KEY] = instance;
   } else {
     console.log("ℹ️  Redis: no REDIS_URL, caching disabled");
-    globalThis.__REDIS_INSTANCE__ = null;
+    globalThis[REDIS_GLOBAL_KEY] = null;
   }
 }
 
-const redis = globalThis.__REDIS_INSTANCE__;
+const redis = globalThis[REDIS_GLOBAL_KEY];
 
-// ============ CACHING FUNCTIONS ============
+// ============ CACHING FUNCTIONS (unchanged) ============
 
 export const cached = (prefix, ttl = 60) => {
   return async (req, res, next) => {
