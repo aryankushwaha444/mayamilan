@@ -5,6 +5,8 @@ import CreatePost from "../components/CreatePost";
 import PostCard from "../components/PostCard";
 import SEO from "../components/SEO";
 import { useSocket } from "../hooks/useSocket.js";
+import Loader from "../components/Loader.jsx";
+import { useAlert } from "../context/AlertContext";
 
 function Feed() {
   const { user } = useAuth();
@@ -13,6 +15,7 @@ function Feed() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const { socket } = useSocket();
+  const toast = useAlert();
 
   const loadFeed = async (pageNum = 1, append = false) => {
     setLoading(true);
@@ -27,6 +30,7 @@ function Feed() {
       setPage(pageNum);
     } catch (err) {
       console.error(err);
+      toast.error("Failed to load feed");
     } finally {
       setLoading(false);
     }
@@ -51,6 +55,7 @@ function Feed() {
 
   const handlePostCreated = (newPost) => {
     setPosts([newPost, ...posts]);
+    toast.success("Post shared with your community !");
   };
 
   const handleUpdate = (index, updated) => {
@@ -60,6 +65,8 @@ function Feed() {
       setPosts(posts.map((p, i) => (i === index ? updated : p)));
     }
   };
+
+  const isInitialLoad = loading && posts.length === 0;
 
   return (
     <>
@@ -74,6 +81,14 @@ function Feed() {
           <CreatePost user={user} onPostCreated={handlePostCreated} />
 
           <div className="posts-list">
+            {isInitialLoad && (
+              <Loader
+                full
+                text="Loading your feed"
+                subtitle="Fetching latest posts"
+                icon="house-door-fill"
+              />
+            )}
             {posts.length === 0 && !loading && (
               <div className="empty-state">
                 <i className="bi bi-inbox"></i>
@@ -89,10 +104,8 @@ function Feed() {
               />
             ))}
 
-            {loading && (
-              <div className="feed-loader">
-                <div className="spinner-border text-primary"></div>
-              </div>
+            {loading && !isInitialLoad && (
+              <Loader full={false} text="Loading more" icon="arrow-clockwise" />
             )}
 
             {hasMore && !loading && (

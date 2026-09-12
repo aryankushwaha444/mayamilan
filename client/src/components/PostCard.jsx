@@ -3,8 +3,12 @@ import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
 import CommentItem from "./CommentItem.jsx";
 import ShareModal from "./ShareModal.jsx";
+import ConfirmDialog from "./ConfirmDialog.jsx"; // 👈 ADD
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 function PostCard({ post, onUpdate }) {
+  const toast = useAlert(); // 👈 ADD
+
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
   const [commentText, setCommentText] = useState("");
@@ -13,6 +17,7 @@ function PostCard({ post, onUpdate }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(post.content);
   const [showShare, setShowShare] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false); // 👈 ADD
 
   const authorPhoto =
     post.author?.photos?.find((p) => p.isPrimary)?.url ||
@@ -38,6 +43,7 @@ function PostCard({ post, onUpdate }) {
       });
     } catch (err) {
       console.error(err);
+      toast.error("Failed to update like"); // 👈 ADD
     }
   };
 
@@ -45,8 +51,10 @@ function PostCard({ post, onUpdate }) {
     try {
       const res = await postService.toggleSave(post._id);
       onUpdate({ ...post, isSaved: res.isSaved });
+      toast.success(res.isSaved ? "Post saved! 📌" : "Removed from saved"); // 👈 ADD
     } catch (err) {
       console.error(err);
+      toast.error("Failed to save post"); // 👈 ADD
     }
   };
 
@@ -57,6 +65,7 @@ function PostCard({ post, onUpdate }) {
         setComments(res.comments || []);
       } catch (err) {
         console.error(err);
+        toast.error("Failed to load comments"); // 👈 ADD
       }
     }
     setShowComments(!showComments);
@@ -73,18 +82,21 @@ function PostCard({ post, onUpdate }) {
       setCommentText("");
     } catch (err) {
       console.error(err);
+      toast.error("Failed to post comment"); // 👈 ADD
     } finally {
       setSubmittingComment(false);
     }
   };
 
+  // 👇 UPDATED: no longer uses window.confirm
   const handleDelete = async () => {
-    if (!window.confirm("Delete this post?")) return;
     try {
       await postService.deletePost(post._id);
       onUpdate(null);
+      toast.success("Post deleted successfully 🗑️"); // 👈 UPDATED
     } catch (err) {
-      alert("Failed to delete post");
+      console.error(err);
+      toast.error("Failed to delete post"); // 👈 UPDATED (was alert)
     }
   };
 
@@ -95,8 +107,10 @@ function PostCard({ post, onUpdate }) {
       const res = await postService.editPost(post._id, editText);
       onUpdate({ ...post, ...res.post, content: editText, isEdited: true });
       setEditing(false);
+      toast.success("Post updated successfully ✏️"); // 👈 ADD
     } catch (err) {
-      alert("Failed to update post");
+      console.error(err);
+      toast.error("Failed to update post"); // 👈 UPDATED (was alert)
     }
   };
 
@@ -149,7 +163,14 @@ function PostCard({ post, onUpdate }) {
                 >
                   <i className="bi bi-pencil"></i> Edit
                 </button>
-                <button onClick={handleDelete} className="delete-action">
+                {/* 👇 UPDATED: opens confirm dialog instead of window.confirm */}
+                <button
+                  onClick={() => {
+                    setShowDeleteConfirm(true);
+                    setShowMenu(false);
+                  }}
+                  className="delete-action"
+                >
                   <i className="bi bi-trash"></i> Delete
                 </button>
               </div>
@@ -287,6 +308,7 @@ function PostCard({ post, onUpdate }) {
           </div>
         </div>
       )}
+
       {showShare && (
         <ShareModal
           post={post}
@@ -296,6 +318,22 @@ function PostCard({ post, onUpdate }) {
           }
         />
       )}
+
+      {/* 👇 NEW: Delete confirmation dialog */}
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete this post?"
+        message="This post and all its comments will be permanently removed. This action cannot be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        danger
+        icon="bi-trash-fill"
+        onCancel={() => setShowDeleteConfirm(false)}
+        onConfirm={() => {
+          setShowDeleteConfirm(false);
+          handleDelete();
+        }}
+      />
     </article>
   );
 }

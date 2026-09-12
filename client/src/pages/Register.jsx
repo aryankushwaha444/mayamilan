@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { sendOTP, verifyOTP } from "../services/authService";
 import SEO from "../components/SEO";
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 function Register() {
   const navigate = useNavigate();
   const { register } = useAuth();
+  const toast = useAlert(); // 👈 ADD
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -72,6 +74,7 @@ function Register() {
 
     if (!formData.email) {
       setError("Please enter your email");
+      toast.warning("Please enter your email"); // 👈 ADD
       return;
     }
 
@@ -81,6 +84,7 @@ function Register() {
       await sendOTP(formData.email, formData.name);
       setOtpSent(true);
       setSuccess("OTP sent to your email!");
+      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000); // 👈 ADD
       setResendTimer(60);
 
       // Countdown timer
@@ -94,7 +98,9 @@ function Register() {
         });
       }, 1000);
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to send OTP");
+      const msg = err.response?.data?.message || "Failed to send OTP";
+      setError(msg);
+      toast.error(msg, "Error", 5000); // 👈 ADD
     } finally {
       setOtpLoading(false);
     }
@@ -106,6 +112,7 @@ function Register() {
 
     if (!otp || otp.length !== 6) {
       setError("Please enter a valid 6-digit OTP");
+      toast.warning("Please enter the complete 6-digit code"); // 👈 ADD
       return;
     }
 
@@ -114,11 +121,14 @@ function Register() {
     try {
       await verifyOTP(formData.email, otp);
       setSuccess("Email verified successfully!");
+      toast.success("Email verified! ✅", "Almost done", 3000); // 👈 ADD
 
       // Now complete registration
       await handleCompleteRegistration();
     } catch (err) {
-      setError(err.response?.data?.message || "Invalid OTP");
+      const msg = err.response?.data?.message || "Invalid OTP";
+      setError(msg);
+      toast.error(msg, "Verification failed", 5000); // 👈 ADD
     } finally {
       setOtpLoading(false);
     }
@@ -137,13 +147,19 @@ function Register() {
         relationshipGoal: formData.relationshipGoal,
       });
 
-      window.location.href = "/";
+      toast.success(
+        `Welcome to Maya Milan, ${formData.name}! 🎉`,
+        "Account created",
+        4000
+      ); // 👈 ADD
+      window.location.href = "/discover";
     } catch (err) {
-      setError(
+      const msg =
         err.response?.data?.message ||
-          err.response?.data?.errors?.[0]?.message ||
-          "Registration failed. Please try again."
-      );
+        err.response?.data?.errors?.[0]?.message ||
+        "Registration failed. Please try again.";
+      setError(msg);
+      toast.error(msg, "Registration failed", 6000); // 👈 ADD
     } finally {
       setLoading(false);
     }
@@ -156,26 +172,31 @@ function Register() {
     if (step === 1) {
       if (!formData.name.trim()) {
         setError("Please enter your name.");
+        toast.warning("Please enter your name"); // 👈 ADD
         return;
       }
 
       if (!formData.email.trim()) {
         setError("Please enter your email.");
+        toast.warning("Please enter your email"); // 👈 ADD
         return;
       }
 
       if (!formData.password) {
         setError("Please enter a password.");
+        toast.warning("Please enter a password"); // 👈 ADD
         return;
       }
 
       if (formData.password.length < 8) {
         setError("Password must be at least 8 characters.");
+        toast.warning("Password must be at least 8 characters"); // 👈 ADD
         return;
       }
 
       if (formData.password !== formData.confirmPassword) {
         setError("Passwords do not match.");
+        toast.warning("Passwords do not match"); // 👈 ADD
         return;
       }
     }
@@ -183,11 +204,13 @@ function Register() {
     if (step === 2) {
       if (!formData.dateOfBirth) {
         setError("Please select your date of birth.");
+        toast.warning("Please select your date of birth"); // 👈 ADD
         return;
       }
 
       if (!formData.gender) {
         setError("Please select your gender.");
+        toast.warning("Please select your gender"); // 👈 ADD
         return;
       }
     }
@@ -195,6 +218,7 @@ function Register() {
     if (step === 3) {
       if (!formData.relationshipGoal) {
         setError("Please select your relationship goal.");
+        toast.warning("Please select your relationship goal"); // 👈 ADD
         return;
       }
 

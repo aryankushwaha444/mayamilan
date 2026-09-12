@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import PhotoLightbox from "../components/PhotoLightbox.jsx";
+import ConfirmDialog from "../components/ConfirmDialog.jsx";
+import { useAlert } from "../context/AlertContext";
+import Loader from "../components/Loader.jsx";
 
 import {
   getMyProfile,
@@ -13,6 +16,7 @@ import {
 function Profile() {
   const { user: authUser } = useAuth();
   const navigate = useNavigate();
+  const toast = useAlert();
 
   const fileInputRef = useRef(null);
 
@@ -22,6 +26,7 @@ function Profile() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState(null);
+  const [photoToDelete, setPhotoToDelete] = useState(null); // 👈 ADD
 
   useEffect(() => {
     loadProfile();
@@ -36,8 +41,9 @@ function Profile() {
       setProfile(data.user);
     } catch (error) {
       console.error(error);
-
-      setError(error.response?.data?.message || "Failed to load profile");
+      const msg = error.response?.data?.message || "Failed to load profile";
+      setError(msg);
+      toast.error(msg); // 👈 ADD
     } finally {
       setLoading(false);
     }
@@ -46,6 +52,7 @@ function Profile() {
   const handleSelectPhoto = () => {
     if (profile?.photos?.length >= 6) {
       setError("You can upload a maximum of 6 photos.");
+      toast.warning("You can upload a maximum of 6 photos"); // 👈 ADD
       return;
     }
 
@@ -62,12 +69,14 @@ function Profile() {
 
     if (!file.type.startsWith("image/")) {
       setError("Please select an image file.");
+      toast.warning("Please select an image file"); // 👈 ADD
       event.target.value = "";
       return;
     }
 
     if (file.size > 5 * 1024 * 1024) {
       setError("Image size must be less than 5 MB.");
+      toast.warning("Image size must be less than 5 MB"); // 👈 ADD
       event.target.value = "";
       return;
     }
@@ -83,23 +92,20 @@ function Profile() {
       }));
 
       setSuccess("Photo uploaded successfully.");
+      toast.success("Photo uploaded successfully! 📸"); // 👈 ADD
     } catch (error) {
       console.error(error);
-
-      setError(error.response?.data?.message || "Failed to upload photo.");
+      const msg = error.response?.data?.message || "Failed to upload photo.";
+      setError(msg);
+      toast.error(msg); // 👈 ADD
     } finally {
       setUploading(false);
       event.target.value = "";
     }
   };
 
+  // 👇 UPDATED: opens confirm dialog instead of window.confirm
   const handleDeletePhoto = async (photoId) => {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this photo?"
-    );
-
-    if (!confirmed) return;
-
     try {
       setError("");
       setSuccess("");
@@ -112,10 +118,14 @@ function Profile() {
       }));
 
       setSuccess("Photo deleted successfully.");
+      toast.success("Photo deleted 🗑️"); // 👈 ADD
     } catch (error) {
       console.error(error);
-
-      setError(error.response?.data?.message || "Failed to delete photo.");
+      const msg = error.response?.data?.message || "Failed to delete photo.";
+      setError(msg);
+      toast.error(msg); // 👈 ADD
+    } finally {
+      setPhotoToDelete(null); // 👈 close dialog
     }
   };
 
@@ -132,21 +142,18 @@ function Profile() {
       }));
 
       setSuccess("Primary photo updated.");
+      toast.success("Primary photo updated! ⭐");
     } catch (error) {
       console.error(error);
-
-      setError(
-        error.response?.data?.message || "Failed to update primary photo."
-      );
+      const msg =
+        error.response?.data?.message || "Failed to update primary photo.";
+      setError(msg);
+      toast.error(msg);
     }
   };
 
   if (loading) {
-    return (
-      <div className="min-vh-100 d-flex justify-content-center align-items-center">
-        <div className="spinner-border text-primary" />
-      </div>
-    );
+    return <Loader full text="Loading your profile" icon="person-fill" />;
   }
 
   if (!profile) {
@@ -224,7 +231,6 @@ function Profile() {
             {/* Photo Grid */}
             {profile.photos?.length > 0 ? (
               <div className="row g-3">
-                {/* FIXED: added index as second map parameter */}
                 {profile.photos.map((photo, index) => (
                   <div className="col-6 col-md-4" key={photo._id}>
                     <div className="profile-photo-card position-relative">
@@ -232,7 +238,7 @@ function Profile() {
                         src={photo.url}
                         alt={`${profile.name} profile`}
                         className="profile-photo"
-                        onClick={() => setLightboxIndex(index)} // 👈 now works
+                        onClick={() => setLightboxIndex(index)}
                       />
 
                       {/* Primary badge */}
@@ -256,10 +262,11 @@ function Profile() {
                           </button>
                         )}
 
+                        {/* 👇 UPDATED: opens confirm dialog instead of calling handleDeletePhoto directly */}
                         <button
                           type="button"
                           className="btn btn-danger btn-sm"
-                          onClick={() => handleDeletePhoto(photo._id)}
+                          onClick={() => setPhotoToDelete(photo._id)}
                           title="Delete photo"
                         >
                           <i className="bi bi-trash"></i>
@@ -368,7 +375,7 @@ function Profile() {
         </div>
       </div>
 
-      {/* FIXED: RENDER THE LIGHTBOX (was missing!) */}
+      {/* Lightbox */}
       {lightboxIndex !== null && (
         <PhotoLightbox
           photos={profile.photos}
@@ -376,6 +383,19 @@ function Profile() {
           onClose={() => setLightboxIndex(null)}
         />
       )}
+
+      {/* 👇 NEW: Delete photo confirmation dialog */}
+      <ConfirmDialog
+        open={photoToDelete !== null}
+        title="Delete this photo?"
+        message="This photo will be permanently removed from your profile. This action cannot be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        danger
+        icon="bi-trash-fill"
+        onCancel={() => setPhotoToDelete(null)}
+        onConfirm={() => handleDeletePhoto(photoToDelete)}
+      />
     </div>
   );
 }

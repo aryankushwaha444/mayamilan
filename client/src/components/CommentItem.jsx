@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
+import ConfirmDialog from "./ConfirmDialog.jsx"; // 👈 ADD
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 const EMOJIS = ["❤️", "😂", "", "👍", "🔥", "", "😢", ""];
 
 function CommentItem({ comment, postId, isReply = false, onDeleted }) {
+  const toast = useAlert(); // 👈 ADD
+
   const [showPicker, setShowPicker] = useState(false);
   const [reactions, setReactions] = useState(comment.reactionSummary || []);
   const [replying, setReplying] = useState(false);
@@ -13,6 +17,7 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
   const [showReplies, setShowReplies] = useState(false);
   const [repliesCount, setRepliesCount] = useState(comment.repliesCount || 0);
   const [loadingReplies, setLoadingReplies] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false); // 👈 ADD
 
   const avatar =
     comment.author?.photos?.find((p) => p.isPrimary)?.url ||
@@ -34,6 +39,7 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
       setReactions(res.reactionSummary);
     } catch (err) {
       console.error(err);
+      toast.error("Failed to react"); // 👈 ADD
     }
   };
 
@@ -45,6 +51,7 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
         setReplies(res.replies || []);
       } catch (err) {
         console.error(err);
+        toast.error("Failed to load replies"); // 👈 ADD
       }
       setLoadingReplies(false);
     }
@@ -61,18 +68,22 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
       setShowReplies(true);
       setReplyText("");
       setReplying(false);
+      toast.success("Reply added 💬"); // 👈 ADD
     } catch (err) {
       console.error(err);
+      toast.error("Failed to post reply"); // 👈 ADD
     }
   };
 
+  // 👇 UPDATED: no longer uses window.confirm
   const handleDelete = async () => {
-    if (!window.confirm("Delete this comment?")) return;
     try {
       await postService.deleteComment(postId, comment._id);
       onDeleted?.(comment._id);
+      toast.success("Comment deleted 🗑️"); // 👈 UPDATED (was alert)
     } catch (err) {
-      alert("Failed to delete comment");
+      console.error(err);
+      toast.error("Failed to delete comment"); // 👈 UPDATED (was alert)
     }
   };
 
@@ -109,16 +120,26 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
 
         <div className="comment-actions">
           <div className="comment-react-wrap">
-            <button className="comment-action-link" onClick={() => setShowPicker(!showPicker)}>
+            <button
+              className="comment-action-link"
+              onClick={() => setShowPicker(!showPicker)}
+            >
               <i className="bi bi-emoji-smile"></i> React
             </button>
 
             {showPicker && (
               <>
-                <div className="picker-backdrop" onClick={() => setShowPicker(false)} />
+                <div
+                  className="picker-backdrop"
+                  onClick={() => setShowPicker(false)}
+                />
                 <div className="emoji-picker">
                   {EMOJIS.map((e) => (
-                    <button key={e} type="button" onClick={() => handleReact(e)}>
+                    <button
+                      key={e}
+                      type="button"
+                      onClick={() => handleReact(e)}
+                    >
                       {e}
                     </button>
                   ))}
@@ -128,23 +149,35 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
           </div>
 
           {!isReply && (
-            <button className="comment-action-link" onClick={() => setReplying(!replying)}>
+            <button
+              className="comment-action-link"
+              onClick={() => setReplying(!replying)}
+            >
               <i className="bi bi-reply"></i> Reply
             </button>
           )}
 
           {!isReply && repliesCount > 0 && (
-            <button className="comment-action-link replies-toggle" onClick={toggleReplies}>
+            <button
+              className="comment-action-link replies-toggle"
+              onClick={toggleReplies}
+            >
               {loadingReplies
                 ? "Loading…"
                 : showReplies
                 ? "Hide replies"
-                : `View ${repliesCount} ${repliesCount === 1 ? "reply" : "replies"}`}
+                : `View ${repliesCount} ${
+                    repliesCount === 1 ? "reply" : "replies"
+                  }`}
             </button>
           )}
 
           {comment.isMine && (
-            <button className="comment-action-link danger" onClick={handleDelete}>
+            // 👇 UPDATED: opens confirm dialog instead of calling handleDelete directly
+            <button
+              className="comment-action-link danger"
+              onClick={() => setShowDeleteConfirm(true)}
+            >
               <i className="bi bi-trash"></i> Delete
             </button>
           )}
@@ -181,6 +214,22 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
             ))}
           </div>
         )}
+
+        {/* 👇 NEW: Delete confirmation dialog */}
+        <ConfirmDialog
+          open={showDeleteConfirm}
+          title="Delete this comment?"
+          message="This comment will be permanently removed. This action cannot be undone."
+          confirmText="Delete"
+          cancelText="Cancel"
+          danger
+          icon="bi-trash-fill"
+          onCancel={() => setShowDeleteConfirm(false)}
+          onConfirm={() => {
+            setShowDeleteConfirm(false);
+            handleDelete();
+          }}
+        />
       </div>
     </div>
   );

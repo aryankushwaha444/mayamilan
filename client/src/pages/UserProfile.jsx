@@ -8,10 +8,14 @@ import {
 } from "../services/userService";
 import { likeUser, unlikeUser } from "../services/matchService";
 import PhotoLightbox from "../components/PhotoLightbox.jsx";
+import ConfirmDialog from "../components/ConfirmDialog.jsx";
+import { useAlert } from "../context/AlertContext";
+import Loader from "../components/Loader.jsx";
 
 function UserProfile() {
   const { userId } = useParams();
   const navigate = useNavigate();
+  const toast = useAlert();
 
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -27,6 +31,7 @@ function UserProfile() {
     blockedMe: false,
   });
   const [blocking, setBlocking] = useState(false);
+  const [showBlockConfirm, setShowBlockConfirm] = useState(false); // 👈 ADD
 
   // FETCH USER PROFILE + BLOCK STATUS
   useEffect(() => {
@@ -40,7 +45,6 @@ function UserProfile() {
         if (data.success) {
           setProfile(data.user);
 
-          // Load block status after profile loads
           try {
             const bs = await getBlockStatus(userId);
             setBlockStatus({
@@ -52,10 +56,13 @@ function UserProfile() {
           }
         } else {
           setError(data.message || "User not found");
+          toast.error(data.message || "User not found"); // 👈 ADD
         }
       } catch (err) {
         console.error("Fetch profile error:", err);
-        setError(err.response?.data?.message || "Unable to load profile");
+        const msg = err.response?.data?.message || "Unable to load profile";
+        setError(msg);
+        toast.error(msg); // 👈 ADD
       } finally {
         setLoading(false);
       }
@@ -77,6 +84,7 @@ function UserProfile() {
             isLiked: false,
             isMatched: false,
           }));
+          toast.info("Like removed"); // 👈 ADD
         }
       } else {
         const response = await likeUser(profile._id);
@@ -88,29 +96,41 @@ function UserProfile() {
           }));
 
           if (response.matched) {
-            alert("❤️ It's a Match!");
+            toast.success(
+              "It's a Match! 💕",
+              `You and ${profile.name} liked each other`,
+              5000
+            ); // 👈 REPLACE alert
+          } else {
+            toast.success(`Like sent to ${profile.name}! ❤️`); // 👈 ADD
           }
         }
       }
     } catch (err) {
       console.error("Like/unlike error:", err);
+      toast.error(err.response?.data?.message || "Action failed"); // 👈 ADD
     }
   };
 
   // REPORT HANDLER
   const handleReport = async () => {
     if (!reportMessage.trim()) {
-      alert("Please write a reason for reporting.");
+      toast.warning("Please write a reason for reporting"); // 👈 REPLACE alert
       return;
     }
     try {
       setReporting(true);
       const res = await reportUser(profile._id, reportMessage);
-      alert(res.message || "Report submitted");
+      toast.success(
+        res.message || "Report submitted successfully 🚩",
+        "Thank you",
+        4000
+      ); // 👈 REPLACE alert
       setReportOpen(false);
       setReportMessage("");
     } catch (err) {
-      alert(err.response?.data?.message || "Failed to submit report");
+      const msg = err.response?.data?.message || "Failed to submit report";
+      toast.error(msg); // 👈 REPLACE alert
     } finally {
       setReporting(false);
     }
@@ -122,10 +142,22 @@ function UserProfile() {
       setBlocking(true);
       const res = await toggleBlockUser(profile._id);
       setBlockStatus((prev) => ({ ...prev, iBlocked: res.blocked }));
+
+      if (res.blocked) {
+        toast.warning(
+          `${profile.name} has been blocked 🚫`,
+          "User blocked",
+          4000
+        ); // 👈 ADD
+      } else {
+        toast.success(`${profile.name} has been unblocked`); // 👈 ADD
+      }
     } catch (err) {
-      alert(err.response?.data?.message || "Failed to update block");
+      const msg = err.response?.data?.message || "Failed to update block";
+      toast.error(msg); // 👈 REPLACE alert
     } finally {
       setBlocking(false);
+      setShowBlockConfirm(false); // 👈 close dialog
     }
   };
 
@@ -172,12 +204,12 @@ function UserProfile() {
   // RENDER
   if (loading) {
     return (
-      <div className="container py-5 text-center">
-        <div className="spinner-border text-primary" role="status">
-          <span className="visually-hidden">Loading...</span>
-        </div>
-        <p className="text-muted mt-3">Loading profile...</p>
-      </div>
+      <Loader
+        full
+        text="Loading profile"
+        subtitle="Fetching details..."
+        icon="person-fill"
+      />
     );
   }
 
@@ -372,13 +404,14 @@ function UserProfile() {
                   Report
                 </button>
 
+                {/* 👇 UPDATED: opens confirm dialog instead of calling handleBlock directly */}
                 <button
                   className={`btn flex-fill ${
                     blockStatus.iBlocked
                       ? "btn-outline-secondary"
                       : "btn-outline-danger"
                   }`}
-                  onClick={handleBlock}
+                  onClick={() => setShowBlockConfirm(true)}
                   disabled={blocking}
                 >
                   <i
@@ -433,7 +466,7 @@ function UserProfile() {
         />
       )}
 
-      {/* REPORT MODAL */}
+      {/* REPORT MODAL (unchanged) */}
       {reportOpen && (
         <div
           className="report-modal-overlay"
@@ -494,6 +527,27 @@ function UserProfile() {
           </div>
         </div>
       )}
+
+      {/* 👇 NEW: Block confirmation dialog */}
+      <ConfirmDialog
+        open={showBlockConfirm}
+        title={
+          blockStatus.iBlocked
+            ? `Unblock ${profile.name}?`
+            : `Block ${profile.name}?`
+        }
+        message={
+          blockStatus.iBlocked
+            ? "They will be able to see your profile and send you messages again."
+            : "They won't be able to see your profile, send you messages, or match with you. You can unblock them anytime."
+        }
+        confirmText={blockStatus.iBlocked ? "Unblock" : "Block"}
+        cancelText="Cancel"
+        danger={!blockStatus.iBlocked}
+        icon={blockStatus.iBlocked ? "bi-unlock-fill" : "bi-slash-circle-fill"}
+        onCancel={() => setShowBlockConfirm(false)}
+        onConfirm={handleBlock}
+      />
     </div>
   );
 }

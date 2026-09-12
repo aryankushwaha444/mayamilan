@@ -3,9 +3,12 @@ import { discoverUsers } from "../services/userService";
 import ProfileCard from "../components/ProfileCard";
 import { likeUser, unlikeUser } from "../services/matchService";
 import { useSocket } from "../hooks/useSocket";
+import { useAlert } from "../context/AlertContext";
+import Loader from "../components/Loader.jsx";
 
 function Discover() {
   const { socket } = useSocket();
+  const toast = useAlert();
 
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -54,6 +57,7 @@ function Discover() {
     } catch (error) {
       console.error("Discovery error:", error);
       setError(error.response?.data?.message || "Unable to load profiles");
+      toast.error("Failed to load profiles"); // 👈 ADD
     } finally {
       setLoading(false);
     }
@@ -125,6 +129,7 @@ function Discover() {
 
         if (response.success) {
           await fetchUsers(filters, pagination.page);
+          toast.info("Removed like"); // 👈 ADD
         }
         return;
       }
@@ -136,11 +141,14 @@ function Discover() {
       if (response.success) {
         await fetchUsers(filters, pagination.page);
         if (response.matched) {
-          alert("❤️ It's a Match!");
+          toast.success("It's a Match! 💕", "New Match", 5000); // 👈 REPLACE alert with toast
+        } else {
+          toast.success("Like sent! ❤️"); // 👈 ADD
         }
       }
     } catch (error) {
       console.error("Like/unlike error:", error.response?.data || error);
+      toast.error(error.response?.data?.message || "Failed to like user"); // 👈 ADD
     }
   };
 
@@ -282,12 +290,12 @@ function Discover() {
       {error && <div className="alert alert-danger">{error}</div>}
 
       {loading ? (
-        <div className="text-center py-5">
-          <div className="spinner-border text-primary" role="status">
-            <span className="visually-hidden">Loading...</span>
-          </div>
-          <p className="text-muted mt-3">Finding profiles...</p>
-        </div>
+        <Loader
+          full
+          text="Discovering people near you"
+          subtitle="Matching interests, location & goals"
+          icon="compass"
+        />
       ) : users.length === 0 ? (
         <div className="text-center py-5">
           <div className="display-4 text-muted mb-3">

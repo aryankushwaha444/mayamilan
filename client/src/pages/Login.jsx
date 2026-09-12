@@ -2,11 +2,13 @@ import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import SEO from "../components/SEO";
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
+  const toast = useAlert(); // 👈 ADD
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,12 +59,22 @@ function Login() {
       });
 
       if (response.success) {
-        window.location.href = response.user?.role === "admin" ? "/admin" : "/discover";
+        toast.success(
+          `Welcome back, ${response.user?.name || "there"}! 👋`,
+          "Login successful",
+          3000
+        ); // 👈 ADD
+        window.location.href =
+          response.user?.role === "admin" ? "/admin" : "/discover";
       } else {
-        setError(response.message || "Login failed");
+        const msg = response.message || "Login failed";
+        setError(msg);
+        toast.error(msg, "Login failed", 5000); // 👈 ADD
       }
     } catch (error) {
-      setError(error.response?.data?.message || "Unable to login");
+      const msg = error.response?.data?.message || "Unable to login";
+      setError(msg);
+      toast.error(msg, "Error", 5000); // 👈 ADD
     } finally {
       setLoading(false);
     }

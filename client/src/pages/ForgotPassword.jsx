@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { forgotPassword, resetPassword } from "../services/authService";
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 function ForgotPassword() {
   const navigate = useNavigate();
+  const toast = useAlert(); // 👈 ADD
 
   const [step, setStep] = useState(1);
   const [email, setEmail] = useState("");
@@ -52,6 +54,7 @@ function ForgotPassword() {
 
     if (!email) {
       setError("Please enter your email");
+      toast.warning("Please enter your email"); // 👈 ADD
       return;
     }
 
@@ -60,6 +63,7 @@ function ForgotPassword() {
     try {
       await forgotPassword(email);
       setSuccess("OTP sent to your email!");
+      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000); // 👈 ADD
       setStep(2);
       setResendTimer(60);
 
@@ -73,7 +77,9 @@ function ForgotPassword() {
         });
       }, 1000);
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to send OTP");
+      const msg = err.response?.data?.message || "Failed to send OTP";
+      setError(msg);
+      toast.error(msg, "Error", 5000); // 👈 ADD
     } finally {
       setLoading(false);
     }
@@ -84,6 +90,7 @@ function ForgotPassword() {
     setSuccess("");
     if (otp.length !== 6) {
       setError("Please enter the 6-digit code");
+      toast.warning("Please enter the complete 6-digit code"); // 👈 ADD
       return;
     }
     setStep(3);
@@ -95,11 +102,13 @@ function ForgotPassword() {
 
     if (!newPassword || newPassword.length < 8) {
       setError("Password must be at least 8 characters");
+      toast.warning("Password must be at least 8 characters"); // 👈 ADD
       return;
     }
 
     if (newPassword !== confirmPassword) {
       setError("Passwords do not match");
+      toast.warning("Passwords do not match"); // 👈 ADD
       return;
     }
 
@@ -108,12 +117,15 @@ function ForgotPassword() {
     try {
       await resetPassword(email, otp, newPassword);
       setSuccess("Password reset successfully! Redirecting to login...");
+      toast.success("Password reset successfully! 🔐", "All done", 4000); // 👈 ADD
 
       setTimeout(() => {
         navigate("/login");
       }, 2000);
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to reset password");
+      const msg = err.response?.data?.message || "Failed to reset password";
+      setError(msg);
+      toast.error(msg, "Error", 5000); // 👈 ADD
     } finally {
       setLoading(false);
     }

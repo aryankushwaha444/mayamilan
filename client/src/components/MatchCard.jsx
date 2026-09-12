@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import ConfirmDialog from "./ConfirmDialog.jsx";
 
 function MatchCard({ match, onUnmatch }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const user = match?.user;
 
@@ -25,7 +27,6 @@ function MatchCard({ match, onUnmatch }) {
         return firstPhoto;
       }
 
-      // If backend stores something like /uploads/photo.jpg
       const apiBaseUrl =
         import.meta.env.VITE_API_URL || "http://localhost:5000";
 
@@ -35,7 +36,6 @@ function MatchCard({ match, onUnmatch }) {
       )}`;
     }
 
-    // photos: [{ url: "https://example.com/photo.jpg" }]
     if (typeof firstPhoto === "object") {
       return firstPhoto.url || firstPhoto.secure_url || firstPhoto.path || null;
     }
@@ -91,12 +91,6 @@ function MatchCard({ match, onUnmatch }) {
 
   // UNMATCH
   const handleUnmatch = async () => {
-    const confirmed = window.confirm(
-      `Are you sure you want to unmatch with ${user.name || "this person"}?`
-    );
-
-    if (!confirmed) return;
-
     try {
       setLoading(true);
       await onUnmatch(match._id);
@@ -110,7 +104,6 @@ function MatchCard({ match, onUnmatch }) {
   return (
     <article className="match-card">
       {/* PROFILE IMAGE */}
-
       <div className="match-card-image-wrapper">
         {photo ? (
           <img
@@ -119,9 +112,7 @@ function MatchCard({ match, onUnmatch }) {
             className="match-card-image"
             onError={(event) => {
               console.error("Failed to load profile image:", photo);
-
               event.currentTarget.style.display = "none";
-
               event.currentTarget.parentElement
                 .querySelector(".match-card-placeholder")
                 ?.classList.remove("hidden");
@@ -131,11 +122,9 @@ function MatchCard({ match, onUnmatch }) {
       </div>
 
       {/* CONTENT */}
-
       <div className="match-card-content">
         <h3 className="match-card-name">
           {user.name || "Unknown User"}
-
           {age !== null && `, ${age}`}
         </h3>
 
@@ -167,13 +156,29 @@ function MatchCard({ match, onUnmatch }) {
           <button
             type="button"
             className="match-unmatch-btn"
-            onClick={handleUnmatch}
+            onClick={() => setShowConfirm(true)}
             disabled={loading}
           >
             {loading ? "Removing..." : "Unmatch"}
           </button>
         </div>
       </div>
+
+      {/* CONFIRMATION DIALOG */}
+      <ConfirmDialog
+        open={showConfirm}
+        title={`Unmatch with ${user.name || "this person"}?`}
+        message="This will remove your match and delete your conversation. This action cannot be undone."
+        confirmText="Unmatch"
+        cancelText="Cancel"
+        danger
+        icon="bi-heartbreak-fill"
+        onCancel={() => setShowConfirm(false)}
+        onConfirm={() => {
+          setShowConfirm(false);
+          handleUnmatch();
+        }}
+      />
     </article>
   );
 }

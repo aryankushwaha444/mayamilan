@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { getMyProfile, updateMyProfile } from "../services/userService";
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 function EditProfile() {
   const navigate = useNavigate();
   const { user, updateUser } = useAuth();
+  const toast = useAlert(); // 👈 ADD
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -48,6 +50,7 @@ function EditProfile() {
       } catch (err) {
         console.error(err);
         setError("Failed to load your profile.");
+        toast.error("Failed to load your profile"); // 👈 ADD
       } finally {
         setLoading(false);
       }
@@ -74,21 +77,25 @@ function EditProfile() {
 
     if (!formData.name.trim()) {
       setError("Name is required.");
+      toast.warning("Name is required"); // 👈 ADD
       return;
     }
 
     if (!formData.dateOfBirth) {
       setError("Date of birth is required.");
+      toast.warning("Date of birth is required"); // 👈 ADD
       return;
     }
 
     if (!formData.gender) {
       setError("Please select your gender.");
+      toast.warning("Please select your gender"); // 👈 ADD
       return;
     }
 
     if (!formData.relationshipGoal) {
       setError("Please select your relationship goal.");
+      toast.warning("Please select your relationship goal"); // 👈 ADD
       return;
     }
 
@@ -125,6 +132,7 @@ function EditProfile() {
 
       // Show success state
       setSuccess(true);
+      toast.success("Profile updated successfully! ✨", "Saved", 3000); // 👈 ADD
 
       // Redirect after showing the success message
       setTimeout(() => {
@@ -133,6 +141,11 @@ function EditProfile() {
     } catch (err) {
       console.error(err);
       setError(err.response?.data?.message || "Failed to update your profile.");
+      toast.error(
+        err.response?.data?.message || "Failed to update your profile",
+        "Error",
+        5000
+      ); // 👈 ADD
     } finally {
       setSaving(false);
     }

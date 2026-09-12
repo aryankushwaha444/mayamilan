@@ -1,0 +1,165 @@
+/* ============ LOADER WRAPPER ============ */
+.loader-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loader-full {
+  min-height: 60vh;
+  width: 100%;
+  animation: loaderFadeIn 0.4s ease;
+}
+
+.loader-inline {
+  padding: 40px 20px;
+}
+
+/* ============ CONTENT ============ */
+.loader-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+/* ============ HEART ICON + RINGS ============ */
+.loader-icon {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loader-inline .loader-icon {
+  width: 56px;
+  height: 56px;
+}
+
+.loader-heart-pulse {
+  position: relative;
+  z-index: 2;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ec4899, #f43f5e);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 28px;
+  box-shadow: 0 10px 30px rgba(236, 72, 153, 0.4);
+  animation: heartPulse 1.4s ease-in-out infinite;
+}
+
+.loader-inline .loader-heart-pulse {
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+}
+
+/* Expanding rings */
+.loader-ring {
+  position: absolute;
+  inset: 0;
+  border: 2px solid #ec4899;
+  border-radius: 50%;
+  animation: ringExpand 2s ease-out infinite;
+  opacity: 0;
+}
+
+.loader-ring.ring-2 {
+  animation-delay: 1s;
+}
+
+/* ============ BOUNCING DOTS ============ */
+.loader-dots {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.loader-dots .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ec4899;
+  animation: dotBounce 1.2s ease-in-out infinite;
+}
+
+.loader-dots .dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.loader-dots .dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.loader-inline .loader-dots .dot {
+  width: 5px;
+  height: 5px;
+}
+
+/* ============ TEXT ============ */
+.loader-text {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1f2937;
+  letter-spacing: -0.2px;
+}
+
+.loader-subtitle {
+  margin: 0;
+  font-size: 0.87rem;
+  color: #9ca3af;
+}
+
+/* ============ ANIMATIONS ============ */
+@keyframes heartPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 10px 30px rgba(236, 72, 153, 0.4);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 15px 40px rgba(236, 72, 153, 0.55);
+  }
+}
+
+@keyframes ringExpand {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes dotBounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-8px);
+    opacity: 1;
+  }
+}
+
+@keyframes loaderFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

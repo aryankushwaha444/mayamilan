@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { changePassword } from "../services/authService";
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 function ChangePassword() {
   const navigate = useNavigate();
+  const toast = useAlert(); // 👈 ADD
 
   const [formData, setFormData] = useState({
     currentPassword: "",
@@ -61,14 +63,17 @@ function ChangePassword() {
 
     if (!formData.currentPassword) {
       setError("Please enter your current password.");
+      toast.warning("Please enter your current password"); // 👈 ADD
       return;
     }
     if (formData.newPassword.length < 6) {
       setError("New password must be at least 6 characters.");
+      toast.warning("New password must be at least 6 characters"); // 👈 ADD
       return;
     }
     if (formData.newPassword !== formData.confirmPassword) {
       setError("New passwords do not match.");
+      toast.warning("New passwords do not match"); // 👈 ADD
       return;
     }
 
@@ -81,12 +86,18 @@ function ChangePassword() {
       });
 
       setSuccess(true);
+      toast.success("Password changed successfully! 🔐", "Success", 3000); // 👈 ADD
 
       setTimeout(() => {
         navigate("/profile");
       }, 1500);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to change password.");
+      toast.error(
+        err.response?.data?.message || "Failed to change password",
+        "Error",
+        5000
+      ); // 👈 ADD
     } finally {
       setSaving(false);
     }
