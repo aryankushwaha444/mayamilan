@@ -5,9 +5,10 @@ import {
   Navigate,
   useLocation,
 } from "react-router-dom";
+import { lazy, Suspense } from "react";
 
 import { useAuth } from "./hooks/useAuth";
-
+import Loader from "./components/Loader.jsx";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
@@ -20,42 +21,53 @@ import Footer from "./components/Footer.jsx";
 import Navbar from "./components/Navbar.jsx";
 import UserProfile from "./pages/UserProfile";
 import Notifications from "./pages/Notifications";
-import ChangePassword from "./pages/ChangePassword";
-import ForgotPassword from "./pages/ForgotPassword.jsx";
-import Suggestion from "./pages/Suggestion.jsx";
-import AdminSuggestions from "./pages/admin/AdminSuggestions.jsx";
-import OAuthSuccess from "./pages/OAuthSuccess.jsx";
-import About from "./pages/About.jsx";
-import Safety from "./pages/Safety.jsx";
-import SuccessStories from "./pages/SuccessStories.jsx";
-import Blog from "./pages/Blog.jsx";
-import BlogPost from "./pages/BlogPost.jsx";
 import Feed from "./pages/Feed.jsx";
-import SavedPosts from "./pages/SavedPosts.jsx";
-import PostDetail from "./pages/PostDetail.jsx";
 import ScrollToTop from "./components/ScrollToTop";
 
-// Admin
-import AdminRoutes from "./pages/admin/AdminRoutes.jsx";
-import AdminDashboard from "./pages/admin/AdminDashboard.jsx";
-import Users from "./pages/admin/Users.jsx";
-import UserDetails from "./pages/admin/UserDetails.jsx";
-import AdminReports from "./pages/admin/AdminReports.jsx";
+// LAZY IMPORTS (loaded on demand — shrinks initial bundle)
+const ChangePassword = lazy(() => import("./pages/ChangePassword"));
+const ForgotPassword = lazy(() => import("./pages/ForgotPassword.jsx"));
+const Suggestion = lazy(() => import("./pages/Suggestion.jsx"));
+const OAuthSuccess = lazy(() => import("./pages/OAuthSuccess.jsx"));
+const About = lazy(() => import("./pages/About.jsx"));
+const Safety = lazy(() => import("./pages/Safety.jsx"));
+const SuccessStories = lazy(() => import("./pages/SuccessStories.jsx"));
+const Blog = lazy(() => import("./pages/Blog.jsx"));
+const BlogPost = lazy(() => import("./pages/BlogPost.jsx"));
+const SavedPosts = lazy(() => import("./pages/SavedPosts.jsx"));
+const PostDetail = lazy(() => import("./pages/PostDetail.jsx"));
 
-function ProtectedRoute({ children }) {
-  const { isAuthenticated, loading } = useAuth();
+// Admin — lazy (most users never visit)
+const AdminRoutes = lazy(() => import("./pages/admin/AdminRoutes.jsx"));
+const AdminDashboard = lazy(() => import("./pages/admin/AdminDashboard.jsx"));
+const Users = lazy(() => import("./pages/admin/Users.jsx"));
+const UserDetails = lazy(() => import("./pages/admin/UserDetails.jsx"));
+const AdminReports = lazy(() => import("./pages/admin/AdminReports.jsx"));
+const AdminSuggestions = lazy(() =>
+  import("./pages/admin/AdminSuggestions.jsx")
+);
+
+function ProtectedRoute({ children, adminOnly = false }) {
+  const { isAuthenticated, loading, user } = useAuth();
   const location = useLocation();
 
   if (loading) {
     return (
-      <div className="min-vh-100 d-flex justify-content-center align-items-center">
-        <div className="spinner-border text-primary"></div>
-      </div>
+      <Loader
+        full
+        text="Checking authentication"
+        subtitle="Just a moment..."
+        icon="shield-lock-fill"
+      />
     );
   }
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  if (adminOnly && user?.role !== "admin") {
+    return <Navigate to="/discover" replace />;
   }
 
   return children;
@@ -77,147 +89,164 @@ function AppContent() {
     <>
       <ScrollToTop />
       <Navbar />
-      <Routes>
-        {/* PUBLIC */}
-        <Route path="/" element={<Home />} />
-        <Route path="/suggestion" element={<Suggestion />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/oauth-success" element={<OAuthSuccess />} />
-        <Route path="/about" element={<About />} />
-        <Route path="/safety" element={<Safety />} />
-        <Route path="/success-stories" element={<SuccessStories />} />
-        <Route path="/blog" element={<Blog />} />
-        <Route path="/blog/:slug" element={<BlogPost />} />
 
-        {/* PROTECTED (any logged-in user) */}
-        <Route
-          path="/profile"
-          element={
-            <ProtectedRoute>
-              <Profile />
-            </ProtectedRoute>
-          }
-        />
+      {/* Suspense wraps Routes — shows Loader while lazy pages load */}
+      <Suspense
+        fallback={
+          <Loader
+            full
+            text="Loading page"
+            subtitle="Just a moment..."
+            icon="arrow-clockwise"
+          />
+        }
+      >
+        <Routes>
+          {/* PUBLIC (eager) */}
+          <Route path="/" element={<Home />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
 
-        <Route
-          path="/profile/edit"
-          element={
-            <ProtectedRoute>
-              <EditProfile />
-            </ProtectedRoute>
-          }
-        />
+          {/* PUBLIC (lazy — loaded on demand) */}
+          <Route path="/suggestion" element={<Suggestion />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/oauth-success" element={<OAuthSuccess />} />
+          <Route path="/about" element={<About />} />
+          <Route path="/safety" element={<Safety />} />
+          <Route path="/success-stories" element={<SuccessStories />} />
+          <Route path="/blog" element={<Blog />} />
+          <Route path="/blog/:slug" element={<BlogPost />} />
 
-        <Route
-          path="/dashboard"
-          element={
-            <ProtectedRoute>
-              <Navigate to="/profile" replace />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/discover"
-          element={
-            <ProtectedRoute>
-              <Discover />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/matches"
-          element={
-            <ProtectedRoute>
-              <Matches />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/messages"
-          element={
-            <ProtectedRoute>
-              <Messages />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/notifications"
-          element={
-            <ProtectedRoute>
-              <Notifications />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/change-password"
-          element={
-            <ProtectedRoute>
-              <ChangePassword />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/users/:userId"
-          element={
-            <ProtectedRoute>
-              <UserProfile />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/feed"
-          element={
-            <ProtectedRoute>
-              <Feed />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/saved"
-          element={
-            <ProtectedRoute>
-              <SavedPosts />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/post/:postId"
-          element={
-            <ProtectedRoute>
-              <PostDetail />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* ADMIN ONLY (role protected) */}
-        <Route element={<AdminRoutes />}>
-          <Route path="/admin" element={<AdminDashboard />} />
-          <Route path="/admin/users" element={<Users />} />
-          <Route path="/admin/users/:userId" element={<UserDetails />} />
-          <Route path="/admin/reports" element={<AdminReports />} />
+          {/* PROTECTED (any logged-in user) */}
           <Route
-            path="/admin/suggestions"
+            path="/profile"
             element={
-              <ProtectedRoute adminOnly>
-                <AdminSuggestions />
+              <ProtectedRoute>
+                <Profile />
               </ProtectedRoute>
             }
           />
-        </Route>
 
-        {/* UNKNOWN */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          <Route
+            path="/profile/edit"
+            element={
+              <ProtectedRoute>
+                <EditProfile />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute>
+                <Navigate to="/profile" replace />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/discover"
+            element={
+              <ProtectedRoute>
+                <Discover />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/matches"
+            element={
+              <ProtectedRoute>
+                <Matches />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/messages"
+            element={
+              <ProtectedRoute>
+                <Messages />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/notifications"
+            element={
+              <ProtectedRoute>
+                <Notifications />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/change-password"
+            element={
+              <ProtectedRoute>
+                <ChangePassword />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/users/:userId"
+            element={
+              <ProtectedRoute>
+                <UserProfile />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/feed"
+            element={
+              <ProtectedRoute>
+                <Feed />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/saved"
+            element={
+              <ProtectedRoute>
+                <SavedPosts />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/post/:postId"
+            element={
+              <ProtectedRoute>
+                <PostDetail />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* ADMIN ONLY (lazy — most users never visit) */}
+          <Route element={<AdminRoutes />}>
+            <Route path="/admin" element={<AdminDashboard />} />
+            <Route path="/admin/users" element={<Users />} />
+            <Route path="/admin/users/:userId" element={<UserDetails />} />
+            <Route path="/admin/reports" element={<AdminReports />} />
+            <Route
+              path="/admin/suggestions"
+              element={
+                <ProtectedRoute adminOnly>
+                  <AdminSuggestions />
+                </ProtectedRoute>
+              }
+            />
+          </Route>
+
+          {/* UNKNOWN */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+
       {!hideFooter && <Footer />}
     </>
   );
