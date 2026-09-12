@@ -26,8 +26,13 @@ const messageSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["text", "image", "gif", "sticker", "voice", "heart"],
+      enum: ["text", "image", "gif", "sticker", "voice", "heart", "post"],
       default: "text",
+    },
+    post: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Post",
+      default: null,
     },
     attachment: {
       url: String,

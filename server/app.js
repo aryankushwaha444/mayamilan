@@ -17,6 +17,7 @@ import notificationRoutes from "./routes/notification.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import suggestionRoutes from "./routes/suggestion.routes.js";
 import passport from "./config/passport.js";
+import postRoutes from "./routes/post.routes.js";
 
 
 const app = express();
@@ -83,6 +84,7 @@ app.use("/api/likes", likeRoutes);
 app.use("/api/matches", matchRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/posts", postRoutes);
 
 // admin routes
 app.use("/api/admin", adminRoutes);

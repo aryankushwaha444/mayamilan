@@ -37,8 +37,8 @@ function Navbar() {
   const chatRef = useRef(null);
   const notificationsRef = useRef(null);
   const loadChatDataRef = useRef(null);
-  const mobileNavRef = useRef(null); // 👈 NEW: the dropdown menu
-  const mobileButtonRef = useRef(null); // 👈 NEW: the hamburger button
+  const mobileNavRef = useRef(null);
+  const mobileButtonRef = useRef(null);
 
   const getAvatarUrl = (photos) => {
     if (!Array.isArray(photos) || photos.length === 0) return null;
@@ -61,7 +61,6 @@ function Navbar() {
     load();
   }, [user]);
 
-  /* OUTSIDE CLICK — now includes MOBILE MENU*/
   useEffect(() => {
     const handleOutsideClick = (event) => {
       if (profileRef.current && !profileRef.current.contains(event.target)) {
@@ -77,7 +76,6 @@ function Navbar() {
         setNotificationsOpen(false);
       }
 
-      // NEW: close hamburger menu when clicking outside menu AND button
       if (
         mobileOpen &&
         mobileNavRef.current &&
@@ -90,9 +88,8 @@ function Navbar() {
     };
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
-  }, [mobileOpen]); // 👈 depends on mobileOpen so check runs correctly
+  }, [mobileOpen]);
 
-  /* ESC KEY closes everything (bonus for mobile) */
   useEffect(() => {
     const handleEscape = (event) => {
       if (event.key === "Escape") {
@@ -287,7 +284,11 @@ function Navbar() {
             </div>
           </NavLink>
         ) : (
-          <a href="/" className="navbar-brand-custom" onClick={closeMobileMenu}>
+          <a
+            href="/discover"
+            className="navbar-brand-custom"
+            onClick={closeMobileMenu}
+          >
             <span className="brand-logo">
               <img src="./images/logo.png" alt="logo" />
             </span>
@@ -299,7 +300,6 @@ function Navbar() {
 
         {user ? (
           <>
-            {/* REF ATTACHED to the mobile dropdown menu */}
             <nav
               ref={mobileNavRef}
               className={`navbar-navigation ${
@@ -363,6 +363,7 @@ function Navbar() {
                     <i className="bi bi-compass"></i>
                     <span>Discover</span>
                   </NavLink>
+
                   <NavLink
                     to="/matches"
                     onClick={closeMobileMenu}
@@ -378,11 +379,32 @@ function Navbar() {
                   </NavLink>
                 </>
               )}
+              <NavLink
+                to="/saved"
+                onClick={closeMobileMenu}
+                className={({ isActive }) =>
+                  `navbar-link ${isActive ? "navbar-link-active" : ""}`
+                }
+              >
+                <i className="bi bi-bookmark"></i>
+                <span>Saved</span>
+              </NavLink>
             </nav>
 
             <div className="navbar-actions">
               {!isAdmin && (
                 <>
+                  <NavLink
+                    to="/feed"
+                    aria-label="Feed"
+                    className={({ isActive }) =>
+                      `navbar-icon-button mobile-only-feed ${
+                        isActive ? "active" : ""
+                      }`
+                    }
+                  >
+                    <i className="bi bi-house-door-fill"></i>
+                  </NavLink>
                   <div className="navbar-chat-dropdown" ref={chatRef}>
                     <button
                       type="button"
@@ -702,7 +724,6 @@ function Navbar() {
                 )}
               </div>
 
-              {/* REF ATTACHED to the hamburger button */}
               <button
                 type="button"
                 ref={mobileButtonRef}

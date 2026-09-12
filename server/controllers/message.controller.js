@@ -212,6 +212,11 @@ export const getMessages = async (req, res, next) => {
       .populate("sender", "_id name photos")
       .populate("receiver", "_id name photos")
       .populate("reactions.user", "_id name")
+      .populate({
+        path: "post",
+        select: "content images author",
+        populate: { path: "author", select: "name photos" },
+      })
       .sort({
         createdAt: 1,
       });

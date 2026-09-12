@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /messages
+Disallow: /discover
+Disallow: /matches
+Disallow: /profile
+Disallow: /notifications
+Disallow: /change-password
+Disallow: /users/
+
+Sitemap: https://mayamilan.vercel.app/sitemap.xml

@@ -25,6 +25,14 @@ import ForgotPassword from "./pages/ForgotPassword.jsx";
 import Suggestion from "./pages/Suggestion.jsx";
 import AdminSuggestions from "./pages/admin/AdminSuggestions.jsx";
 import OAuthSuccess from "./pages/OAuthSuccess.jsx";
+import About from "./pages/About.jsx";
+import Safety from "./pages/Safety.jsx";
+import SuccessStories from "./pages/SuccessStories.jsx";
+import Blog from "./pages/Blog.jsx";
+import BlogPost from "./pages/BlogPost.jsx";
+import Feed from "./pages/Feed.jsx";
+import SavedPosts from "./pages/SavedPosts.jsx";
+import PostDetail from "./pages/PostDetail.jsx";
 
 // Admin
 import AdminRoutes from "./pages/admin/AdminRoutes.jsx";
@@ -75,6 +83,11 @@ function AppContent() {
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/oauth-success" element={<OAuthSuccess />} />
+        <Route path="/about" element={<About />} />
+        <Route path="/safety" element={<Safety />} />
+        <Route path="/success-stories" element={<SuccessStories />} />
+        <Route path="/blog" element={<Blog />} />
+        <Route path="/blog/:slug" element={<BlogPost />} />
 
         {/* PROTECTED (any logged-in user) */}
         <Route
@@ -154,6 +167,32 @@ function AppContent() {
           element={
             <ProtectedRoute>
               <UserProfile />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/feed"
+          element={
+            <ProtectedRoute>
+              <Feed />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/saved"
+          element={
+            <ProtectedRoute>
+              <SavedPosts />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/post/:postId"
+          element={
+            <ProtectedRoute>
+              <PostDetail />
             </ProtectedRoute>
           }
         />

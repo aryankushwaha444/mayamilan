@@ -1,11 +1,50 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import "../styles/home.css";
+import SEO from "../components/SEO";
 
 function Home() {
   const { user } = useAuth();
 
   return (
+
+    <> 
+    <SEO
+  title="Find Your Perfect Match — Free Online Dating"
+  description="Join Maya Milan, the trusted dating platform for meaningful relationships. Verified profiles, real-time chat, smart matching. Create your free profile today."
+  keywords="dating app, online dating, find love, singles, match making, dating site free"
+  path="/"
+  schema={{
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: [
+      {
+        "@type": "Question",
+        name: "Is Maya Milan free to use?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Yes. Signing up, matching and chatting are completely free.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "How does Maya Milan keep users safe?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Email verification, profile reporting, blocking tools and active admin moderation.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Can I find people near my city?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Yes. Discover lets you filter matches by city, age, gender and relationship goals.",
+        },
+      },
+    ],
+  }}
+/>
     <main className="home-page">
       {/* Floating hearts background */}
       <div className="home-hearts" aria-hidden="true">
@@ -126,6 +165,7 @@ function Home() {
         </div>
       </section>
     </main>
+    </>
   );
 }
 

@@ -27,8 +27,8 @@ function OAuthSuccess() {
       // Dispatch event so AuthContext picks it up
       window.dispatchEvent(new Event("auth:login"));
 
-      // Redirect to profile edit
-      navigate("/");
+      // Redirect to discover
+      navigate("/discover");
     } catch (error) {
       console.error("OAuth success error:", error);
       navigate("/register");

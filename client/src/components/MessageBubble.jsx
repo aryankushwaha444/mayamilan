@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 const REACTIONS = ["❤️", "😂", "😮", "😢", "😡", "👍"];
 
 function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
   const [menu, setMenu] = useState(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (!menu) return;
@@ -73,6 +75,66 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
             <i className="bi bi-heart-fill"></i>
           </div>
         );
+      case "post":
+        // Post was deleted after sharing
+        if (!message.post) {
+          return (
+            <div className="chat-shared-post chat-shared-dead">
+              <div className="chat-shared-label">
+                <i className="bi bi-share-fill"></i> Shared post
+              </div>
+              <p className="chat-shared-content">
+                <i className="bi bi-slash-circle me-1"></i>
+                This post is no longer available
+              </p>
+            </div>
+          );
+        }
+
+        return (
+          <div
+            className="chat-shared-post chat-shared-clickable"
+            role="button"
+            tabIndex={0}
+            onClick={() => navigate(`/post/${message.post._id}`)}
+            onKeyDown={(e) =>
+              e.key === "Enter" && navigate(`/post/${message.post._id}`)
+            }
+            title="Open post"
+          >
+            <div className="chat-shared-label">
+              <i className="bi bi-share-fill"></i> Shared post
+            </div>
+
+            {message.post.images?.[0] && (
+              <img
+                src={message.post.images[0].url}
+                alt=""
+                className="chat-shared-img"
+                loading="lazy"
+                onClick={(e) => {
+                  e.stopPropagation(); // 👈 lightbox, not navigate
+                  onImageClick?.(message.post.images[0].url);
+                }}
+              />
+            )}
+
+            <p className="chat-shared-content">
+              {message.post.content || message.text || "Shared post"}
+            </p>
+
+            {message.post.author && (
+              <small className="chat-shared-author">
+                by {message.post.author.name}
+              </small>
+            )}
+
+            <div className="chat-shared-cta">
+              <span>View post</span>
+              <i className="bi bi-arrow-right-circle-fill"></i>
+            </div>
+          </div>
+        );
       default:
         return <div className="message-text">{message.text}</div>;
     }
@@ -103,7 +165,9 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
     return acc;
   }, {});
 
-  const noPad = ["image", "gif", "sticker", "heart"].includes(message.type);
+  const noPad = ["image", "gif", "sticker", "heart", "post"].includes(
+    message.type
+  );
 
   return (
     <div className={`message-row ${isMine ? "mine" : ""}`}>

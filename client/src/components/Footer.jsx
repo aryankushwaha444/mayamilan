@@ -23,34 +23,20 @@ function Footer() {
             and find someone special.
           </p>
 
-          {/* SOCIALS 
+          {/* SOCIALS */}
+          {/*
           <div className="footer-socials">
-            <a
-              href="https://www.aaryankushawaha.com.np"
-              aria-label="website"
-              target="_blank"
-            >
+            <a href="https://www.aaryankushawaha.com.np" aria-label="website" target="_blank">
               <i className="bi bi-globe"></i>
             </a>
-
-            <a
-              href="https://www.facebook.com/rupnarayan444/"
-              aria-label="Facebook"
-              target="_blank"
-            >
+            <a href="https://www.facebook.com/rupnarayan444/" aria-label="Facebook" target="_blank">
               <i className="bi bi-facebook"></i>
             </a>
-
-            <a
-              href="https://www.linkedin.com/in/aryan-kushwaha-47479033b/"
-              aria-label="LinkedIn"
-              target="_blank"
-            >
+            <a href="https://www.linkedin.com/in/aryan-kushwaha-47479033b/" aria-label="LinkedIn" target="_blank">
               <i className="bi bi-linkedin"></i>
             </a>
           </div>
           */}
-          
         </div>
 
         {/* DISCOVER */}
@@ -76,6 +62,35 @@ function Footer() {
             <i className="bi bi-bell"></i>
             Notifications
           </NavLink>
+
+          <NavLink to="/feed">
+            <i className="bi bi-house-door"></i>
+            Feed
+          </NavLink>
+          <NavLink to="/saved">
+            <i className="bi bi-bookmark"></i>
+            Saved Posts
+          </NavLink>
+
+          <NavLink to="/about">
+            <i className="bi bi-info-circle"></i>
+            About Us
+          </NavLink>
+
+          <NavLink to="/safety">
+            <i className="bi bi-shield-check"></i>
+            Safety Tips
+          </NavLink>
+
+          <NavLink to="/success-stories">
+            <i className="bi bi-heart-fill"></i>
+            Success Stories
+          </NavLink>
+
+          <NavLink to="/blog">
+            <i className="bi bi-journal-text"></i>
+            Blog
+          </NavLink>
         </div>
 
         {/* ACCOUNT */}
@@ -87,14 +102,13 @@ function Footer() {
             My Profile
           </NavLink>
 
-          <NavLink to="/edit-profile">
+          <NavLink to="/profile/edit">
             <i className="bi bi-pencil-square"></i>
             Edit Profile
           </NavLink>
         </div>
 
-        {/*  SUPPORT */}
-
+        {/* SUPPORT */}
         <div>
           <h3>Support</h3>
           <div className="footer-support-link">
@@ -105,7 +119,6 @@ function Footer() {
       </div>
 
       {/* BOTTOM */}
-
       <div className="footer-bottom">
         <div className="footer-bottom-container">
           <p>© {currentYear} Maya~Milan. All rights reserved.</p>

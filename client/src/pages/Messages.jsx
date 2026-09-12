@@ -249,6 +249,8 @@ function Messages() {
                           ? `${lastMessage.text} Sticker`
                           : lastMessage?.type === "heart"
                           ? "❤️"
+                          : lastMessage?.type === "post"
+                          ? "📤 Shared post"
                           : lastMessage?.text || "Start a conversation"}
                       </p>
                     </div>
