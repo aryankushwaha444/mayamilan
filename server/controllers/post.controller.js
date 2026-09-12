@@ -7,6 +7,7 @@ import Match from "../models/Match.js";
 import { getIO } from "../sockets/socket.js";
 import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
+import { invalidateCache, invalidateUserCache } from "../utils/cache.js";
 
 // Helper: upload buffer to Cloudinary
 const uploadBufferToCloudinary = (buffer) => {
@@ -89,6 +90,7 @@ export const createPost = async (req, res, next) => {
         isSaved: false,
       },
     });
+    await invalidateCache("feed:*");
   } catch (error) {
     console.error("❌ Create post error:", error.message);
     res.status(500).json({
@@ -310,6 +312,11 @@ export const editPost = async (req, res, next) => {
       message: "Post updated",
       post: populated,
     });
+
+    await Promise.all([
+      invalidateCache("feed:*"),
+      invalidateCache(`post:*${post._id}*`),
+    ]);
   } catch (error) {
     next(error);
   }
@@ -344,6 +351,7 @@ export const deletePost = async (req, res, next) => {
       success: true,
       message: "Post deleted",
     });
+    await invalidateCache("feed:*");
   } catch (error) {
     next(error);
   }
@@ -379,6 +387,7 @@ export const toggleLike = async (req, res, next) => {
       isLiked: !alreadyLiked,
       likesCount: post.likes.length,
     });
+    await invalidateUserCache(req.user._id, ["feed"]);
   } catch (error) {
     next(error);
   }
@@ -414,6 +423,7 @@ export const toggleSave = async (req, res, next) => {
       isSaved: !alreadySaved,
       savesCount: post.saves.length,
     });
+    await invalidateUserCache(req.user._id, ["feed", "saved-posts"]);
   } catch (error) {
     next(error);
   }
@@ -461,6 +471,7 @@ export const addComment = async (req, res, next) => {
       },
       commentsCount: post.commentsCount,
     });
+    await invalidateCache(`comments:*${postId}*`);
   } catch (error) {
     next(error);
   }
@@ -533,6 +544,7 @@ export const deleteComment = async (req, res, next) => {
     });
 
     res.status(200).json({ success: true, message: "Comment deleted" });
+    await invalidateCache(`comments:*${comment.post}*`);
   } catch (error) {
     next(error);
   }

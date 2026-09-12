@@ -18,9 +18,12 @@ import adminRoutes from "./routes/admin.routes.js";
 import suggestionRoutes from "./routes/suggestion.routes.js";
 import passport from "./config/passport.js";
 import postRoutes from "./routes/post.routes.js";
-
+import compression from "compression";
 
 const app = express();
+
+// good speed/compression balance
+app.use(compression({ level: 6 }));
 
 // CORS
 app.use(
@@ -44,7 +47,6 @@ app.use(express.urlencoded({ extended: true }));
 
 // COOKIE
 app.use(cookieParser());
-
 
 // RATE LIMIT
 const limiter = rateLimit({

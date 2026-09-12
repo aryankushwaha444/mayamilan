@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { postService } from "../services/postService";
 import CreatePost from "../components/CreatePost";
@@ -7,18 +7,23 @@ import SEO from "../components/SEO";
 import { useSocket } from "../hooks/useSocket.js";
 import Loader from "../components/Loader.jsx";
 import { useAlert } from "../context/AlertContext";
+import { Virtuoso } from "react-virtuoso"; // 👈 ADD
 
 function Feed() {
   const { user } = useAuth();
+  const toast = useAlert();
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false); // 👈 NEW state
   const { socket } = useSocket();
-  const toast = useAlert();
+  const virtuosoRef = useRef(null); // 👈 ADD
 
   const loadFeed = async (pageNum = 1, append = false) => {
-    setLoading(true);
+    if (append) setLoadingMore(true);
+    else setLoading(true);
+
     try {
       const res = await postService.getFeed(pageNum);
       if (append) {
@@ -33,6 +38,7 @@ function Feed() {
       toast.error("Failed to load feed");
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
@@ -55,7 +61,9 @@ function Feed() {
 
   const handlePostCreated = (newPost) => {
     setPosts([newPost, ...posts]);
-    toast.success("Post shared with your community !");
+    toast.success("Post shared with your community! 🎉");
+    // Scroll to top to see new post
+    virtuosoRef.current?.scrollToIndex({ index: 0, behavior: "smooth" });
   };
 
   const handleUpdate = (index, updated) => {
@@ -66,7 +74,34 @@ function Feed() {
     }
   };
 
+  // 👇 Load more when reaching bottom
+  const loadMore = () => {
+    if (!loadingMore && hasMore) {
+      loadFeed(page + 1, true);
+    }
+  };
+
   const isInitialLoad = loading && posts.length === 0;
+
+  // 👇 Custom footer shown at bottom of list
+  const Footer = () => {
+    if (loadingMore) {
+      return (
+        <div style={{ padding: "30px", textAlign: "center" }}>
+          <Loader full={false} text="Loading more" icon="arrow-clockwise" />
+        </div>
+      );
+    }
+    if (!hasMore && posts.length > 0) {
+      return (
+        <div style={{ padding: "30px", textAlign: "center", color: "#94a3b8" }}>
+          <i className="bi bi-check-circle me-2"></i>
+          You've seen all posts!
+        </div>
+      );
+    }
+    return null;
+  };
 
   return (
     <>
@@ -80,43 +115,46 @@ function Feed() {
         <div className="feed-container">
           <CreatePost user={user} onPostCreated={handlePostCreated} />
 
-          <div className="posts-list">
-            {isInitialLoad && (
-              <Loader
-                full
-                text="Loading your feed"
-                subtitle="Fetching latest posts"
-                icon="house-door-fill"
+          {/* Initial load */}
+          {isInitialLoad && (
+            <Loader
+              full
+              text="Loading your feed"
+              subtitle="Fetching latest posts"
+              icon="house-door-fill"
+            />
+          )}
+
+          {/* Empty state */}
+          {posts.length === 0 && !loading && (
+            <div className="empty-state">
+              <i className="bi bi-inbox"></i>
+              <p>No posts yet. Be the first to share something!</p>
+            </div>
+          )}
+
+          {/* 👇 VIRTUALIZED LIST - only renders visible posts */}
+          {posts.length > 0 && (
+            <div style={{ height: "calc(100vh - 200px)", minHeight: "500px" }}>
+              <Virtuoso
+                ref={virtuosoRef}
+                style={{ height: "100%" }}
+                data={posts}
+                endReached={loadMore}
+                overscan={400} // render 400px extra above/below viewport for smooth scroll
+                computeItemKey={(index, post) => post._id}
+                itemContent={(index, post) => (
+                  <div style={{ paddingBottom: "16px" }}>
+                    <PostCard
+                      post={post}
+                      onUpdate={(updated) => handleUpdate(index, updated)}
+                    />
+                  </div>
+                )}
+                components={{ Footer }}
               />
-            )}
-            {posts.length === 0 && !loading && (
-              <div className="empty-state">
-                <i className="bi bi-inbox"></i>
-                <p>No posts yet. Be the first to share something!</p>
-              </div>
-            )}
-
-            {posts.map((post, i) => (
-              <PostCard
-                key={post._id}
-                post={post}
-                onUpdate={(updated) => handleUpdate(i, updated)}
-              />
-            ))}
-
-            {loading && !isInitialLoad && (
-              <Loader full={false} text="Loading more" icon="arrow-clockwise" />
-            )}
-
-            {hasMore && !loading && (
-              <button
-                className="btn btn-outline-primary w-100"
-                onClick={() => loadFeed(page + 1, true)}
-              >
-                Load More
-              </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ChatInputBar from "./ChatInputBar.jsx";
 import MessageBubble from "./MessageBubble.jsx";
 import PhotoLightbox from "./PhotoLightbox.jsx";
+import { avatarImg } from "../utils/cloudinary";
 import {
   getMessages,
   sendChatMessage,
@@ -278,7 +279,10 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         <div className="chat-header-user">
           <div className="chat-header-avatar">
             {otherUser?.photos?.[0]?.url ? (
-              <img src={otherUser.photos[0].url} alt={otherUser.name} />
+              <img
+                src={avatarImg(otherUser.photos[0].url)}
+                alt={otherUser.name}
+              />
             ) : (
               <span>{otherUser?.name?.charAt(0) || "?"}</span>
             )}

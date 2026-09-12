@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useState, memo } from "react"; // 👈 ADD memo to import
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
 import CommentItem from "./CommentItem.jsx";
 import ShareModal from "./ShareModal.jsx";
-import ConfirmDialog from "./ConfirmDialog.jsx"; // 👈 ADD
-import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import ConfirmDialog from "./ConfirmDialog.jsx";
+import { useAlert } from "../context/AlertContext";
+import { avatarImg, postImg } from "../utils/cloudinary";
 
 function PostCard({ post, onUpdate }) {
-  const toast = useAlert(); // 👈 ADD
+  const toast = useAlert();
 
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
@@ -17,12 +18,13 @@ function PostCard({ post, onUpdate }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(post.content);
   const [showShare, setShowShare] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false); // 👈 ADD
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const authorPhoto =
+  const authorPhoto = avatarImg(
     post.author?.photos?.find((p) => p.isPrimary)?.url ||
-    post.author?.photos?.[0]?.url ||
-    "/images/default-avatar.png";
+      post.author?.photos?.[0]?.url ||
+      "/images/default-avatar.png"
+  );
 
   const formatTime = (date) => {
     const diff = (Date.now() - new Date(date)) / 1000;
@@ -43,7 +45,7 @@ function PostCard({ post, onUpdate }) {
       });
     } catch (err) {
       console.error(err);
-      toast.error("Failed to update like"); // 👈 ADD
+      toast.error("Failed to update like");
     }
   };
 
@@ -51,10 +53,10 @@ function PostCard({ post, onUpdate }) {
     try {
       const res = await postService.toggleSave(post._id);
       onUpdate({ ...post, isSaved: res.isSaved });
-      toast.success(res.isSaved ? "Post saved! 📌" : "Removed from saved"); // 👈 ADD
+      toast.success(res.isSaved ? "Post saved! 📌" : "Removed from saved");
     } catch (err) {
       console.error(err);
-      toast.error("Failed to save post"); // 👈 ADD
+      toast.error("Failed to save post");
     }
   };
 
@@ -65,7 +67,7 @@ function PostCard({ post, onUpdate }) {
         setComments(res.comments || []);
       } catch (err) {
         console.error(err);
-        toast.error("Failed to load comments"); // 👈 ADD
+        toast.error("Failed to load comments");
       }
     }
     setShowComments(!showComments);
@@ -82,21 +84,20 @@ function PostCard({ post, onUpdate }) {
       setCommentText("");
     } catch (err) {
       console.error(err);
-      toast.error("Failed to post comment"); // 👈 ADD
+      toast.error("Failed to post comment");
     } finally {
       setSubmittingComment(false);
     }
   };
 
-  // 👇 UPDATED: no longer uses window.confirm
   const handleDelete = async () => {
     try {
       await postService.deletePost(post._id);
       onUpdate(null);
-      toast.success("Post deleted successfully 🗑️"); // 👈 UPDATED
+      toast.success("Post deleted successfully 🗑️");
     } catch (err) {
       console.error(err);
-      toast.error("Failed to delete post"); // 👈 UPDATED (was alert)
+      toast.error("Failed to delete post");
     }
   };
 
@@ -107,10 +108,10 @@ function PostCard({ post, onUpdate }) {
       const res = await postService.editPost(post._id, editText);
       onUpdate({ ...post, ...res.post, content: editText, isEdited: true });
       setEditing(false);
-      toast.success("Post updated successfully ✏️"); // 👈 ADD
+      toast.success("Post updated successfully ✏️");
     } catch (err) {
       console.error(err);
-      toast.error("Failed to update post"); // 👈 UPDATED (was alert)
+      toast.error("Failed to update post");
     }
   };
 
@@ -163,7 +164,6 @@ function PostCard({ post, onUpdate }) {
                 >
                   <i className="bi bi-pencil"></i> Edit
                 </button>
-                {/* 👇 UPDATED: opens confirm dialog instead of window.confirm */}
                 <button
                   onClick={() => {
                     setShowDeleteConfirm(true);
@@ -213,7 +213,12 @@ function PostCard({ post, onUpdate }) {
             )}`}
           >
             {post.images.map((img, i) => (
-              <img key={i} src={img.url} alt={`Post ${i + 1}`} loading="lazy" />
+              <img
+                key={i}
+                src={postImg(img.url)}
+                alt={`Post ${i + 1}`}
+                loading="lazy"
+              />
             ))}
           </div>
         )}
@@ -319,7 +324,6 @@ function PostCard({ post, onUpdate }) {
         />
       )}
 
-      {/* 👇 NEW: Delete confirmation dialog */}
       <ConfirmDialog
         open={showDeleteConfirm}
         title="Delete this post?"
@@ -338,4 +342,19 @@ function PostCard({ post, onUpdate }) {
   );
 }
 
-export default PostCard;
+// 👇 CUSTOM COMPARISON FUNCTION - Only re-render when these properties change
+function areEqual(prevProps, nextProps) {
+  return (
+    prevProps.post._id === nextProps.post._id &&
+    prevProps.post.content === nextProps.post.content &&
+    prevProps.post.likes.length === nextProps.post.likes.length &&
+    prevProps.post.commentsCount === nextProps.post.commentsCount &&
+    prevProps.post.sharesCount === nextProps.post.sharesCount &&
+    prevProps.post.isLiked === nextProps.post.isLiked &&
+    prevProps.post.isSaved === nextProps.post.isSaved &&
+    prevProps.post.isEdited === nextProps.post.isEdited
+  );
+}
+
+// 👇 EXPORT WITH MEMO + CUSTOM COMPARISON
+export default memo(PostCard, areEqual);

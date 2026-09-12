@@ -35,4 +35,6 @@ const matchSchema = new mongoose.Schema(
   }
 );
 
+matchSchema.index({ users: 1, createdAt: -1 });
+
 export default mongoose.model("Match", matchSchema);

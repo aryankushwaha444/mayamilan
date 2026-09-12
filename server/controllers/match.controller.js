@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Match from "../models/Match.js";
 import Like from "../models/Like.js";
 import { getIO } from "../sockets/socket.js";
+import { invalidateUserCache } from "../utils/cache.js";
 
 // GET ALL MATCHES
 export const getMatches = async (req, res, next) => {
@@ -141,6 +142,11 @@ export const deleteMatch = async (req, res, next) => {
       io.to(`user:${currentUserId}`).emit("match_removed", payload);
       io.to(`user:${otherUserId}`).emit("match_removed", payload);
     }
+
+    await Promise.all([
+      invalidateUserCache(currentUserId, ["matches", "discover", "feed"]),
+      invalidateUserCache(otherUserId, ["matches", "discover"]),
+    ]);
 
     return res.status(200).json({
       success: true,

@@ -12,19 +12,20 @@ import {
 import { protect } from "../middleware/auth.middleware.js";
 import upload from "../middleware/upload.middleware.js";
 import { reportUser, toggleBlock, getBlockStatus } from "../controllers/user.controller.js";
+import { cached } from "../utils/cache.js";
 
 
 const router = express.Router();
 
 // CURRENT USER
-router.get("/me", protect, getMyProfile);
+router.get("/me", protect,cached("my-profile", 30), getMyProfile);
 router.put("/me", protect, updateMyProfile);
 router.post("/me/photos", protect, upload.single("photo"), uploadProfilePhoto);
 router.delete("/me/photos/:photoId", protect, deleteProfilePhoto);
 router.put("/me/photos/:photoId/primary", protect, setPrimaryPhoto);
 
 // OTHER USER
-router.get("/:userId", protect, getUserProfile);
+router.get("/:userId", protect,cached("profile", 60), getUserProfile);
 router.post("/:userId/report", protect, reportUser);
 router.post("/:userId/block", protect, toggleBlock);
 router.get("/:userId/block-status", protect, getBlockStatus);

@@ -11,6 +11,7 @@ import PhotoLightbox from "../components/PhotoLightbox.jsx";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import { useAlert } from "../context/AlertContext";
 import Loader from "../components/Loader.jsx";
+import { cardImg } from "../utils/cloudinary";
 
 function UserProfile() {
   const { userId } = useParams();
@@ -240,7 +241,7 @@ function UserProfile() {
           <div className="card border-0 shadow-sm overflow-hidden position-relative">
             {photo ? (
               <img
-                src={photo}
+                src={cardImg(photo)}
                 alt={profile.name}
                 className="w-100 user-profile-main-photo"
                 style={{ height: "500px", objectFit: "cover" }}
@@ -442,11 +443,10 @@ function UserProfile() {
                   {profile.photos.map((p, index) => (
                     <div key={p._id || index} className="col-4">
                       <img
-                        src={p?.url || p?.secure_url}
+                        src={cardImg(p?.url || p?.secure_url)}
                         alt={`Photo ${index + 1}`}
                         className="w-100 rounded user-profile-thumb"
                         onClick={() => setLightboxIndex(index)}
-                        style={{ height: "150px", objectFit: "cover" }}
                       />
                     </div>
                   ))}

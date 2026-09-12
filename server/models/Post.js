@@ -47,6 +47,8 @@ const postSchema = new mongoose.Schema(
 // Index for fast feed queries
 postSchema.index({ createdAt: -1 });
 postSchema.index({ author: 1, createdAt: -1 });
+postSchema.index({ location: "2dsphere" });
+
 
 // Virtual for like/save counts
 postSchema.virtual("likesCount").get(function () {

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, memo } from "react"; // 👈 ADD memo to import
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "./ConfirmDialog.jsx";
+import { cardImg } from "../utils/cloudinary";
 
 function MatchCard({ match, onUnmatch }) {
   const navigate = useNavigate();
@@ -11,7 +12,6 @@ function MatchCard({ match, onUnmatch }) {
 
   if (!user) return null;
 
-  // GET PROFILE PHOTO
   const getPhotoUrl = (photos) => {
     if (!Array.isArray(photos) || photos.length === 0) {
       return null;
@@ -43,9 +43,8 @@ function MatchCard({ match, onUnmatch }) {
     return null;
   };
 
-  const photo = getPhotoUrl(user.photos);
+  const photo = cardImg(getPhotoUrl(user.photos));
 
-  // AGE
   const calculateAge = (dateOfBirth) => {
     if (!dateOfBirth) return null;
 
@@ -73,23 +72,19 @@ function MatchCard({ match, onUnmatch }) {
 
   const age = calculateAge(user.dateOfBirth);
 
-  // LOCATION
   const location =
     typeof user.location === "object"
       ? [user.location?.city, user.location?.country].filter(Boolean).join(", ")
       : user.location || "";
 
-  // VIEW PROFILE
   const handleViewProfile = () => {
     navigate(`/users/${user._id}`);
   };
 
-  // CHAT
   const handleChat = () => {
     navigate(`/messages?matchId=${match._id}`);
   };
 
-  // UNMATCH
   const handleUnmatch = async () => {
     try {
       setLoading(true);
@@ -103,7 +98,6 @@ function MatchCard({ match, onUnmatch }) {
 
   return (
     <article className="match-card">
-      {/* PROFILE IMAGE */}
       <div className="match-card-image-wrapper">
         {photo ? (
           <img
@@ -121,7 +115,6 @@ function MatchCard({ match, onUnmatch }) {
         ) : null}
       </div>
 
-      {/* CONTENT */}
       <div className="match-card-content">
         <h3 className="match-card-name">
           {user.name || "Unknown User"}
@@ -164,7 +157,6 @@ function MatchCard({ match, onUnmatch }) {
         </div>
       </div>
 
-      {/* CONFIRMATION DIALOG */}
       <ConfirmDialog
         open={showConfirm}
         title={`Unmatch with ${user.name || "this person"}?`}
@@ -183,4 +175,5 @@ function MatchCard({ match, onUnmatch }) {
   );
 }
 
-export default MatchCard;
+// 👇 EXPORT WITH MEMO - uses default shallow comparison
+export default memo(MatchCard);

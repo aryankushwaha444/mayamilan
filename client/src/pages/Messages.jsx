@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, memo } from "react"; // 👈 ADD memo
 import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   getConversations,
@@ -7,6 +7,60 @@ import {
 import ChatWindow from "../components/ChatWindow.jsx";
 import { useSocket } from "../hooks/useSocket.js";
 import { useAuth } from "../context/AuthContext.jsx";
+import { Virtuoso } from "react-virtuoso";
+import Loader from "../components/Loader.jsx"; // 👈 ADD
+
+// 👇 EXTRACTED: Memoized conversation item (prevents re-rendering all items when one updates)
+const ConversationItem = memo(function ConversationItem({
+  conversation,
+  isActive,
+  onSelect,
+}) {
+  const otherUser = conversation.user;
+  const lastMessage = conversation.lastMessage;
+
+  return (
+    <button
+      className={`conversation-item ${
+        isActive ? "conversation-item-active" : ""
+      }`}
+      onClick={() => onSelect(conversation)}
+    >
+      <div className="conversation-avatar">
+        {otherUser?.photos?.[0]?.url ? (
+          <img src={otherUser.photos[0].url} alt={otherUser.name} />
+        ) : (
+          <span>{otherUser?.name?.charAt(0)?.toUpperCase() || "?"}</span>
+        )}
+      </div>
+      <div className="conversation-content">
+        <div className="conversation-top">
+          <strong>{otherUser?.name}</strong>
+          {conversation.lastMessageAt && (
+            <time>
+              {new Date(conversation.lastMessageAt).toLocaleDateString()}
+            </time>
+          )}
+        </div>
+        <p>
+          {lastMessage?.deletedForEveryone
+            ? "This message was deleted"
+            : lastMessage?.type === "image"
+            ? "📷 Photo"
+            : lastMessage?.type === "voice"
+            ? "🎤 Voice message"
+            : lastMessage?.type === "sticker"
+            ? `${lastMessage.text} Sticker`
+            : lastMessage?.type === "heart"
+            ? "❤️"
+            : lastMessage?.type === "post"
+            ? "📤 Shared post"
+            : lastMessage?.text || "Start a conversation"}
+        </p>
+      </div>
+    </button>
+  );
+});
 
 function Messages() {
   const { socket } = useSocket();
@@ -29,7 +83,7 @@ function Messages() {
     conversationsRef.current = conversations;
   }, [conversations]);
 
-  //  LOAD CONVERSATIONS (sorted newest first)
+  // LOAD CONVERSATIONS (sorted newest first)
   const loadConversations = async () => {
     try {
       setLoading(true);
@@ -53,7 +107,7 @@ function Messages() {
     loadConversations();
   }, []);
 
-  //  MOVE CONVERSATION TO TOP (no side effects inside setState)
+  // MOVE CONVERSATION TO TOP (no side effects inside setState)
   const moveConversationToTop = (conversationId, message) => {
     if (!conversationId) return;
 
@@ -61,7 +115,6 @@ function Messages() {
       (c) => c._id === conversationId
     );
 
-    // New conversation we don't have yet -> full reload (outside setState!)
     if (!exists) {
       loadConversations();
       return;
@@ -85,7 +138,7 @@ function Messages() {
     });
   };
 
-  //  AUTO-OPEN CHAT FROM ?matchId= URL
+  // AUTO-OPEN CHAT FROM ?matchId= URL
   useEffect(() => {
     const autoOpenChat = async () => {
       if (!matchIdFromUrl || !user) return;
@@ -124,7 +177,7 @@ function Messages() {
     autoOpenChat();
   }, [matchIdFromUrl, user, navigate]);
 
-  //  REAL-TIME: reorder on ANY new activity
+  // REAL-TIME: reorder on ANY new activity
   useEffect(() => {
     if (!socket) return;
 
@@ -132,7 +185,6 @@ function Messages() {
       moveConversationToTop(conversationId, message);
     };
 
-    // Backup: also reorder on raw new message (covers sender side)
     const handleNewMessage = (msg) => {
       const convId =
         typeof msg.conversation === "string"
@@ -158,7 +210,11 @@ function Messages() {
     return (
       <main className="messages-page">
         <div className="messages-container">
-          <div className="messages-loading">Loading messages...</div>
+          <Loader
+            full
+            text="Loading your conversations"
+            icon="chat-dots-fill"
+          />
         </div>
       </main>
     );
@@ -199,64 +255,36 @@ function Messages() {
               <h3>No conversations yet</h3>
               <p>Match with someone and start chatting.</p>
             </div>
+          ) : conversations.length > 20 ? (
+            // 👇 VIRTUALIZED LIST for 20+ conversations (smooth scrolling)
+            <div style={{ height: "calc(100% - 70px)", overflow: "hidden" }}>
+              <Virtuoso
+                style={{ height: "100%" }}
+                data={conversations}
+                overscan={300}
+                computeItemKey={(index, conv) => conv._id}
+                itemContent={(index, conversation) => (
+                  <div style={{ padding: "0 8px 4px 8px" }}>
+                    <ConversationItem
+                      conversation={conversation}
+                      isActive={selectedConversation?._id === conversation._id}
+                      onSelect={handleSelectConversation}
+                    />
+                  </div>
+                )}
+              />
+            </div>
           ) : (
+            // 👇 NORMAL RENDER for small lists (fewer than 20)
             <div className="conversation-list">
-              {conversations.map((conversation) => {
-                const otherUser = conversation.user;
-                const lastMessage = conversation.lastMessage;
-
-                return (
-                  <button
-                    key={conversation._id}
-                    className={`conversation-item ${
-                      selectedConversation?._id === conversation._id
-                        ? "conversation-item-active"
-                        : ""
-                    }`}
-                    onClick={() => handleSelectConversation(conversation)}
-                  >
-                    <div className="conversation-avatar">
-                      {otherUser?.photos?.[0]?.url ? (
-                        <img
-                          src={otherUser.photos[0].url}
-                          alt={otherUser.name}
-                        />
-                      ) : (
-                        <span>
-                          {otherUser?.name?.charAt(0)?.toUpperCase() || "?"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="conversation-content">
-                      <div className="conversation-top">
-                        <strong>{otherUser?.name}</strong>
-                        {conversation.lastMessageAt && (
-                          <time>
-                            {new Date(
-                              conversation.lastMessageAt
-                            ).toLocaleDateString()}
-                          </time>
-                        )}
-                      </div>
-                      <p>
-                        {lastMessage?.deletedForEveryone
-                          ? "This message was deleted"
-                          : lastMessage?.type === "image"
-                          ? "📷 Photo"
-                          : lastMessage?.type === "voice"
-                          ? "🎤 Voice message"
-                          : lastMessage?.type === "sticker"
-                          ? `${lastMessage.text} Sticker`
-                          : lastMessage?.type === "heart"
-                          ? "❤️"
-                          : lastMessage?.type === "post"
-                          ? "📤 Shared post"
-                          : lastMessage?.text || "Start a conversation"}
-                      </p>
-                    </div>
-                  </button>
-                );
-              })}
+              {conversations.map((conversation) => (
+                <ConversationItem
+                  key={conversation._id}
+                  conversation={conversation}
+                  isActive={selectedConversation?._id === conversation._id}
+                  onSelect={handleSelectConversation}
+                />
+              ))}
             </div>
           )}
         </aside>

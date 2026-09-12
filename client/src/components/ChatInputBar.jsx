@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { compressChatImage } from "../utils/imageCompressor"; // 👈 ADD
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 const EMOJIS = [
   "😀",
@@ -44,11 +46,14 @@ const GIFS = [
 ];
 
 function ChatInputBar({ onSend, disabled }) {
+  const toast = useAlert(); // 👈 ADD
+
   const [text, setText] = useState("");
   const [panel, setPanel] = useState(null); // "emoji" | "gif" | "sticker"
   const [plusOpen, setPlusOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  const [compressing, setCompressing] = useState(false); // 👈 ADD
 
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -57,7 +62,7 @@ function ChatInputBar({ onSend, disabled }) {
   const fileRef = useRef(null);
   const composerRef = useRef(null);
 
-  //  CLOSE PANELS + PLUS MENU ON OUTSIDE CLICK
+  // CLOSE PANELS + PLUS MENU ON OUTSIDE CLICK
   useEffect(() => {
     if (!panel && !plusOpen) return;
 
@@ -122,7 +127,12 @@ function ChatInputBar({ onSend, disabled }) {
       setSeconds(0);
       timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
     } catch (e) {
-      alert("Microphone access denied.");
+      // 👇 REPLACE alert with toast
+      toast.error(
+        "Microphone access denied. Please allow microphone permissions.",
+        "Permission needed",
+        5000
+      );
     }
   };
 
@@ -134,6 +144,39 @@ function ChatInputBar({ onSend, disabled }) {
   const cancelRecording = () => {
     cancelRef.current = true;
     recorderRef.current?.stop();
+  };
+
+  // 👇 NEW: Handle image upload with compression
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.warning("Please select an image file");
+      e.target.value = "";
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      toast.warning("Image must be less than 10 MB");
+      e.target.value = "";
+      return;
+    }
+
+    try {
+      setCompressing(true);
+      toast.info("Optimizing image...", "Compressing", 2000);
+
+      const compressedFile = await compressChatImage(file);
+      onSend({ type: "image", file: compressedFile });
+    } catch (error) {
+      console.error("Image compression error:", error);
+      // Fallback to original if compression fails
+      onSend({ type: "image", file });
+    } finally {
+      setCompressing(false);
+      e.target.value = "";
+    }
   };
 
   return (
@@ -165,8 +208,13 @@ function ChatInputBar({ onSend, disabled }) {
             className={`composer-plus-btn ${plusOpen ? "active" : ""}`}
             onClick={() => setPlusOpen((p) => !p)}
             title="Attachments"
+            disabled={compressing}
           >
-            <i className="bi bi-plus-lg"></i>
+            <i
+              className={`bi ${
+                compressing ? "bi-arrow-clockwise" : "bi-plus-lg"
+              }`}
+            ></i>
           </button>
 
           {/* DESKTOP ICONS (hidden on mobile) */}
@@ -175,6 +223,7 @@ function ChatInputBar({ onSend, disabled }) {
               className="composer-icon"
               onClick={startRecording}
               title="Voice message"
+              disabled={compressing}
             >
               <i className="bi bi-mic-fill"></i>
             </button>
@@ -183,14 +232,20 @@ function ChatInputBar({ onSend, disabled }) {
               className="composer-icon"
               onClick={() => fileRef.current?.click()}
               title="Send image"
+              disabled={compressing}
             >
-              <i className="bi bi-image-fill"></i>
+              <i
+                className={`bi ${
+                  compressing ? "bi-arrow-clockwise" : "bi-image-fill"
+                }`}
+              ></i>
             </button>
 
             <button
               className={`composer-icon ${panel === "sticker" ? "active" : ""}`}
               onClick={() => setPanel(panel === "sticker" ? null : "sticker")}
               title="Stickers"
+              disabled={compressing}
             >
               <i className="bi bi-emoji-smile-upside-down-fill"></i>
             </button>
@@ -199,6 +254,7 @@ function ChatInputBar({ onSend, disabled }) {
               className={`composer-icon ${panel === "gif" ? "active" : ""}`}
               onClick={() => setPanel(panel === "gif" ? null : "gif")}
               title="GIF"
+              disabled={compressing}
             >
               <span className="composer-gif-label">GIF</span>
             </button>
@@ -209,11 +265,7 @@ function ChatInputBar({ onSend, disabled }) {
             accept="image/*"
             className="d-none"
             ref={fileRef}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onSend({ type: "image", file: f });
-              e.target.value = "";
-            }}
+            onChange={handleImageUpload} // 👇 UPDATED: use new handler
           />
 
           <div className="composer-input-wrap">
@@ -221,16 +273,17 @@ function ChatInputBar({ onSend, disabled }) {
               type="text"
               value={text}
               placeholder="Aa"
-              disabled={disabled}
+              disabled={disabled || compressing}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submitText()}
             />
 
-            {/* 👇 EMOJI inside input — visible on BOTH desktop & mobile */}
+            {/* EMOJI inside input — visible on BOTH desktop & mobile */}
             <button
               className={`composer-icon ${panel === "emoji" ? "active" : ""}`}
               onClick={() => setPanel(panel === "emoji" ? null : "emoji")}
               title="Emoji"
+              disabled={compressing}
             >
               <i className="bi bi-emoji-smile-fill"></i>
             </button>
@@ -240,13 +293,14 @@ function ChatInputBar({ onSend, disabled }) {
             className="composer-heart"
             onClick={() => onSend({ type: "heart" })}
             title="Send love"
+            disabled={compressing}
           >
             <i className="bi bi-heart-fill"></i>
           </button>
         </>
       )}
 
-      {/* 👇 + MENU: voice / photo / gif / STICKER (emoji removed — it's in the input) */}
+      {/* + MENU: voice / photo / gif / STICKER */}
       {plusOpen && (
         <div className="plus-menu">
           <button
@@ -255,6 +309,7 @@ function ChatInputBar({ onSend, disabled }) {
               setPlusOpen(false);
               startRecording();
             }}
+            disabled={compressing}
           >
             <i className="bi bi-mic-fill"></i>
             <span>Voice Message</span>
@@ -266,6 +321,7 @@ function ChatInputBar({ onSend, disabled }) {
               setPlusOpen(false);
               fileRef.current?.click();
             }}
+            disabled={compressing}
           >
             <i className="bi bi-image-fill"></i>
             <span>Photo</span>
@@ -277,6 +333,7 @@ function ChatInputBar({ onSend, disabled }) {
               setPlusOpen(false);
               setPanel("gif");
             }}
+            disabled={compressing}
           >
             <span className="composer-gif-label plus-gif-label">GIF</span>
             <span>GIF</span>
@@ -288,6 +345,7 @@ function ChatInputBar({ onSend, disabled }) {
               setPlusOpen(false);
               setPanel("sticker");
             }}
+            disabled={compressing}
           >
             <i className="bi bi-emoji-smile-upside-down-fill"></i>
             <span>Sticker</span>
@@ -295,7 +353,7 @@ function ChatInputBar({ onSend, disabled }) {
         </div>
       )}
 
-      {/* Panels (emoji / sticker / gif) — shared by desktop & mobile */}
+      {/* Panels (emoji / sticker / gif) */}
       {panel === "emoji" && (
         <div className="composer-panel emoji-panel">
           {EMOJIS.map((e) => (

@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useState, memo } from "react"; // 👈 ADD memo to import
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
-import ConfirmDialog from "./ConfirmDialog.jsx"; // 👈 ADD
-import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import ConfirmDialog from "./ConfirmDialog.jsx";
+import { useAlert } from "../context/AlertContext";
+import { avatarImg } from "../utils/cloudinary";
 
 const EMOJIS = ["❤️", "😂", "", "👍", "🔥", "", "😢", ""];
 
 function CommentItem({ comment, postId, isReply = false, onDeleted }) {
-  const toast = useAlert(); // 👈 ADD
+  const toast = useAlert();
 
   const [showPicker, setShowPicker] = useState(false);
   const [reactions, setReactions] = useState(comment.reactionSummary || []);
@@ -17,12 +18,13 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
   const [showReplies, setShowReplies] = useState(false);
   const [repliesCount, setRepliesCount] = useState(comment.repliesCount || 0);
   const [loadingReplies, setLoadingReplies] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false); // 👈 ADD
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const avatar =
+  const avatar = avatarImg(
     comment.author?.photos?.find((p) => p.isPrimary)?.url ||
-    comment.author?.photos?.[0]?.url ||
-    "/images/default-avatar.png";
+      comment.author?.photos?.[0]?.url ||
+      "/images/default-avatar.png"
+  );
 
   const formatTime = (date) => {
     const diff = (Date.now() - new Date(date)) / 1000;
@@ -39,7 +41,7 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
       setReactions(res.reactionSummary);
     } catch (err) {
       console.error(err);
-      toast.error("Failed to react"); // 👈 ADD
+      toast.error("Failed to react");
     }
   };
 
@@ -51,7 +53,7 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
         setReplies(res.replies || []);
       } catch (err) {
         console.error(err);
-        toast.error("Failed to load replies"); // 👈 ADD
+        toast.error("Failed to load replies");
       }
       setLoadingReplies(false);
     }
@@ -68,22 +70,21 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
       setShowReplies(true);
       setReplyText("");
       setReplying(false);
-      toast.success("Reply added 💬"); // 👈 ADD
+      toast.success("Reply added 💬");
     } catch (err) {
       console.error(err);
-      toast.error("Failed to post reply"); // 👈 ADD
+      toast.error("Failed to post reply");
     }
   };
 
-  // 👇 UPDATED: no longer uses window.confirm
   const handleDelete = async () => {
     try {
       await postService.deleteComment(postId, comment._id);
       onDeleted?.(comment._id);
-      toast.success("Comment deleted 🗑️"); // 👈 UPDATED (was alert)
+      toast.success("Comment deleted 🗑️");
     } catch (err) {
       console.error(err);
-      toast.error("Failed to delete comment"); // 👈 UPDATED (was alert)
+      toast.error("Failed to delete comment");
     }
   };
 
@@ -173,7 +174,6 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
           )}
 
           {comment.isMine && (
-            // 👇 UPDATED: opens confirm dialog instead of calling handleDelete directly
             <button
               className="comment-action-link danger"
               onClick={() => setShowDeleteConfirm(true)}
@@ -215,7 +215,6 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
           </div>
         )}
 
-        {/* 👇 NEW: Delete confirmation dialog */}
         <ConfirmDialog
           open={showDeleteConfirm}
           title="Delete this comment?"
@@ -235,4 +234,5 @@ function CommentItem({ comment, postId, isReply = false, onDeleted }) {
   );
 }
 
-export default CommentItem;
+// 👇 EXPORT WITH MEMO - uses default shallow comparison
+export default memo(CommentItem);

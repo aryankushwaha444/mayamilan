@@ -1,5 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, memo } from "react"; // 👈 ADD memo to import
 import { Link } from "react-router-dom";
+import { cardImg } from "../utils/cloudinary";
 
 function calculateAge(dateOfBirth) {
   if (!dateOfBirth) return null;
@@ -29,11 +30,10 @@ function ProfileCard({ user, onLike, onPass }) {
 
   return (
     <div className="card border-0 shadow-sm h-100 profile-discovery-card">
-      {/* Profile Image */}
       <div className="position-relative">
         {primaryPhoto?.url ? (
           <img
-            src={primaryPhoto.url}
+            src={cardImg(primaryPhoto?.url)}
             alt={`${user.name}'s profile`}
             className="card-img-top discovery-profile-image"
           />
@@ -43,24 +43,14 @@ function ProfileCard({ user, onLike, onPass }) {
           </div>
         )}
 
-        {/* Online indicator */}
         {user.isOnline && (
           <span className="position-absolute top-0 end-0 m-3 badge rounded-pill bg-success">
             Online
           </span>
         )}
-
-        {/* Verification */}
-        {/* {user.isVerified && (
-          <span className="position-absolute bottom-0 start-0 m-3 badge rounded-pill bg-primary">
-            <i className="bi bi-patch-check-fill me-1"></i>
-            Verified
-          </span>
-        )} */}
       </div>
 
       <div className="card-body d-flex flex-column p-4">
-        {/* Name + Age */}
         <h5 className="card-title mb-1">
           {user.name}
 
@@ -69,7 +59,6 @@ function ProfileCard({ user, onLike, onPass }) {
           )}
         </h5>
 
-        {/* Location */}
         {user.location?.city && (
           <p className="text-muted small mb-2">
             <i className="bi bi-geo-alt me-1"></i>
@@ -78,7 +67,6 @@ function ProfileCard({ user, onLike, onPass }) {
           </p>
         )}
 
-        {/* Occupation */}
         {user.occupation && (
           <p className="small mb-2">
             <i className="bi bi-briefcase me-1"></i>
@@ -86,19 +74,16 @@ function ProfileCard({ user, onLike, onPass }) {
           </p>
         )}
 
-        {/* Relationship Goal */}
         {user.relationshipGoal && (
           <span className="badge bg-light text-dark align-self-start mb-3">
             {formatRelationshipGoal(user.relationshipGoal)}
           </span>
         )}
 
-        {/* Bio */}
         {user.bio && (
           <p className="text-muted small discovery-bio">{user.bio}</p>
         )}
 
-        {/* Interests */}
         {user.interests?.length > 0 && (
           <div className="mb-3">
             {user.interests.slice(0, 4).map((interest) => (
@@ -112,7 +97,6 @@ function ProfileCard({ user, onLike, onPass }) {
           </div>
         )}
 
-        {/* Actions */}
         <div className="mt-auto d-flex gap-2">
           <button
             type="button"
@@ -163,4 +147,5 @@ function formatRelationshipGoal(goal) {
   return labels[goal] || goal;
 }
 
-export default ProfileCard;
+// 👇 EXPORT WITH MEMO - uses default shallow comparison
+export default memo(ProfileCard);

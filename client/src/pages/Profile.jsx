@@ -5,6 +5,8 @@ import PhotoLightbox from "../components/PhotoLightbox.jsx";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import { useAlert } from "../context/AlertContext";
 import Loader from "../components/Loader.jsx";
+import { compressProfilePhoto } from "../utils/imageCompressor";
+import { cardImg, avatarImg } from "../utils/cloudinary";
 
 import {
   getMyProfile,
@@ -69,14 +71,15 @@ function Profile() {
 
     if (!file.type.startsWith("image/")) {
       setError("Please select an image file.");
-      toast.warning("Please select an image file"); // 👈 ADD
+      toast.warning("Please select an image file");
       event.target.value = "";
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      setError("Image size must be less than 5 MB.");
-      toast.warning("Image size must be less than 5 MB"); // 👈 ADD
+    // Increased to 10MB since compression will reduce it
+    if (file.size > 10 * 1024 * 1024) {
+      setError("Image size must be less than 10 MB.");
+      toast.warning("Image size must be less than 10 MB");
       event.target.value = "";
       return;
     }
@@ -84,7 +87,11 @@ function Profile() {
     try {
       setUploading(true);
 
-      const data = await uploadProfilePhoto(file);
+      // 👇 COMPRESS before upload
+      toast.info("Optimizing image...", "Compressing", 2000);
+      const compressedFile = await compressProfilePhoto(file);
+
+      const data = await uploadProfilePhoto(compressedFile);
 
       setProfile((previous) => ({
         ...previous,
@@ -92,12 +99,12 @@ function Profile() {
       }));
 
       setSuccess("Photo uploaded successfully.");
-      toast.success("Photo uploaded successfully! 📸"); // 👈 ADD
+      toast.success("Photo uploaded successfully! 📸");
     } catch (error) {
       console.error(error);
       const msg = error.response?.data?.message || "Failed to upload photo.";
       setError(msg);
-      toast.error(msg); // 👈 ADD
+      toast.error(msg);
     } finally {
       setUploading(false);
       event.target.value = "";
@@ -235,7 +242,7 @@ function Profile() {
                   <div className="col-6 col-md-4" key={photo._id}>
                     <div className="profile-photo-card position-relative">
                       <img
-                        src={photo.url}
+                        src={cardImg(photo.url)}
                         alt={`${profile.name} profile`}
                         className="profile-photo"
                         onClick={() => setLightboxIndex(index)}
@@ -304,7 +311,9 @@ function Profile() {
               <div className="profile-avatar">
                 {profile.photos?.find((photo) => photo.isPrimary)?.url ? (
                   <img
-                    src={profile.photos.find((photo) => photo.isPrimary).url}
+                    src={avatarImg(
+                      profile.photos.find((photo) => photo.isPrimary).url
+                    )}
                     alt={profile.name}
                   />
                 ) : (

@@ -3,6 +3,7 @@ import { useSocket } from "../hooks/useSocket.js";
 import { NavLink, useNavigate } from "react-router-dom";
 import { getMatches } from "../services/matchService.js";
 import { getAllReports, getSuggestions } from "../services/adminService";
+import { avatarImg } from "../utils/cloudinary";
 import {
   getNotifications,
   markAllAsRead,
@@ -244,11 +245,12 @@ function Navbar() {
 
   const closeMobileMenu = () => setMobileOpen(false);
 
-  const profilePhoto =
+  const profilePhoto = avatarImg(
     Array.isArray(user?.photos) && user.photos.length > 0
       ? (user.photos.find((photo) => photo?.isPrimary) || user.photos[0])
           ?.url || null
-      : null;
+      : null
+  );
 
   const profileInitial = user?.name?.charAt(0)?.toUpperCase() || "U";
 
@@ -467,7 +469,9 @@ function Navbar() {
                                 >
                                   {getAvatarUrl(chat.user?.photos) ? (
                                     <img
-                                      src={getAvatarUrl(chat.user.photos)}
+                                      src={avatarImg(
+                                        getAvatarUrl(chat.user.photos)
+                                      )}
                                       alt={chat.user?.name}
                                       style={{
                                         width: "100%",
@@ -600,8 +604,8 @@ function Navbar() {
                                 <div className="item-avatar">
                                   {getAvatarUrl(notification.sender?.photos) ? (
                                     <img
-                                      src={getAvatarUrl(
-                                        notification.sender.photos
+                                      src={avatarImg(
+                                        getAvatarUrl(notification.sender.photos)
                                       )}
                                       alt={notification.sender?.name}
                                       className="item-avatar-img"

@@ -3,6 +3,7 @@ import cloudinary from "../config/cloudinary.js";
 import Like from "../models/Like.js";
 import Match from "../models/Match.js";
 import Report from "../models/Report.js";
+import { invalidateUserCache } from "../utils/cache.js";
 
 /*
 GET MY PROFILE
@@ -74,6 +75,12 @@ export const updateMyProfile = async (req, res, next) => {
       message: "Profile updated successfully",
       user,
     });
+    await invalidateUserCache(req.user._id, [
+      "profile",
+      "my-profile",
+      "discover",
+      "feed",
+    ]);
   } catch (error) {
     next(error);
   }
@@ -181,6 +188,12 @@ export const uploadProfilePhoto = async (req, res, next) => {
       message: "Profile photo uploaded successfully",
       photos: user.photos,
     });
+    await invalidateUserCache(req.user._id, [
+      "profile",
+      "my-profile",
+      "discover",
+      "feed",
+    ]);
   } catch (error) {
     next(error);
   }
@@ -225,6 +238,12 @@ export const deleteProfilePhoto = async (req, res, next) => {
       message: "Profile photo deleted successfully",
       photos: user.photos,
     });
+    await invalidateUserCache(req.user._id, [
+      "profile",
+      "my-profile",
+      "discover",
+      "feed",
+    ]);
   } catch (error) {
     next(error);
   }
@@ -264,6 +283,12 @@ export const setPrimaryPhoto = async (req, res, next) => {
       message: "Primary photo updated successfully",
       photos: user.photos,
     });
+    await invalidateUserCache(req.user._id, [
+      "profile",
+      "my-profile",
+      "discover",
+      "feed",
+    ]);
   } catch (error) {
     next(error);
   }
@@ -347,6 +372,10 @@ export const toggleBlock = async (req, res, next) => {
         ? "User blocked successfully"
         : "User unblocked successfully",
     });
+    await Promise.all([
+      invalidateUserCache(req.user._id, ["discover", "feed", "matches"]),
+      invalidateUserCache(userId, ["discover", "feed", "matches"]),
+    ]);
   } catch (error) {
     next(error);
   }

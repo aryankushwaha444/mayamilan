@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { fullImg } from "../utils/cloudinary";
 
 function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
   const [index, setIndex] = useState(initialIndex);
@@ -73,7 +74,7 @@ function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
 
       {/* Main image (swipe support) */}
       <img
-        src={currentUrl}
+        src={fullImg(currentPhoto.url)}
         alt={`Photo ${index + 1}`}
         className="lightbox-image"
         onClick={(e) => e.stopPropagation()}

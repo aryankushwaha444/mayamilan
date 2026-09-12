@@ -1,4 +1,5 @@
 import express from "express";
+import { cached } from "../utils/cache.js";
 
 import {
   getMatches,
@@ -10,7 +11,7 @@ import { protect } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-router.get("/", protect, getMatches);
+router.get("/", protect,cached("matches", 60), getMatches);
 
 router.get("/:matchId", protect, getMatchById);
 

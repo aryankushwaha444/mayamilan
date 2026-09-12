@@ -1,7 +1,11 @@
 import { useState, useRef } from "react";
 import { postService } from "../services/postService";
+import { compressPostPhoto } from "../utils/imageCompressor"; // 👈 ADD
+import { useAlert } from "../context/AlertContext"; // 👈 ADD
 
 function CreatePost({ user, onPostCreated }) {
+  const toast = useAlert(); // 👈 ADD
+
   const [content, setContent] = useState("");
   const [images, setImages] = useState([]);
   const [previews, setPreviews] = useState([]);
@@ -31,7 +35,7 @@ function CreatePost({ user, onPostCreated }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!content.trim() && images.length === 0) {
-      alert("Write something or add an image");
+      toast.warning("Write something or add an image"); // 👈 REPLACE alert
       return;
     }
 
@@ -39,7 +43,23 @@ function CreatePost({ user, onPostCreated }) {
     try {
       const formData = new FormData();
       formData.append("content", content.trim());
-      images.forEach((img) => formData.append("images", img));
+
+      // 👇 COMPRESS each image before upload
+      if (images.length > 0) {
+        toast.info(
+          `Optimizing ${images.length} photo${images.length > 1 ? "s" : ""}...`,
+          "Compressing",
+          2500
+        );
+
+        const compressedImages = await Promise.all(
+          images.map((file) => compressPostPhoto(file))
+        );
+
+        compressedImages.forEach((file) => {
+          formData.append("images", file);
+        });
+      }
 
       const res = await postService.createPost(formData);
       onPostCreated(res.post);
@@ -48,8 +68,11 @@ function CreatePost({ user, onPostCreated }) {
       setImages([]);
       setPreviews([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
+
+      toast.success("Post shared! 🎉"); // 👈 ADD
     } catch (err) {
-      alert(err.response?.data?.message || "Failed to create post");
+      console.error(err);
+      toast.error(err.response?.data?.message || "Failed to create post"); // 👈 REPLACE alert
     } finally {
       setSubmitting(false);
     }
