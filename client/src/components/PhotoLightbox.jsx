@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fullImg } from "../utils/cloudinary";
+import { fullImg, avatarImg } from "../utils/cloudinary";
+import SmartImage from "./SmartImage.jsx";
 
 function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
   const [index, setIndex] = useState(initialIndex);
@@ -72,9 +73,9 @@ function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
         </button>
       )}
 
-      {/* Main image (swipe support) */}
-      <img
-        src={fullImg(currentPhoto.url)}
+      {/* Main image (swipe support) — FIXED: uses currentUrl instead of currentPhoto */}
+      <SmartImage
+        src={fullImg(currentUrl)}
         alt={`Photo ${index + 1}`}
         className="lightbox-image"
         onClick={(e) => e.stopPropagation()}
@@ -101,7 +102,7 @@ function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
         </button>
       )}
 
-      {/* Thumbnails */}
+      {/* Thumbnails — optimized with avatarImg for tiny previews */}
       {count > 1 && (
         <div className="lightbox-thumbs" onClick={(e) => e.stopPropagation()}>
           {photos.map((p, i) => (
@@ -111,7 +112,7 @@ function PhotoLightbox({ photos, initialIndex = 0, onClose }) {
               className={`lightbox-thumb ${i === index ? "active" : ""}`}
               onClick={() => setIndex(i)}
             >
-              <img src={getUrl(p)} alt={`Thumb ${i + 1}`} />
+              <SmartImage src={avatarImg(getUrl(p))} alt={`Thumb ${i + 1}`} />{" "}
             </button>
           ))}
         </div>
