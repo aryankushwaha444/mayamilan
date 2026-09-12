@@ -19,6 +19,7 @@ import suggestionRoutes from "./routes/suggestion.routes.js";
 import passport from "./config/passport.js";
 import postRoutes from "./routes/post.routes.js";
 import compression from "compression";
+import bootstrapRoutes from "./routes/bootstrap.routes.js";
 
 const app = express();
 
