@@ -104,6 +104,8 @@ function MatchCard({ match, onUnmatch }) {
             src={photo}
             alt={user.name || "Matched user"}
             className="match-card-image"
+            loading="lazy"
+            decoding="async"
             onError={(event) => {
               console.error("Failed to load profile image:", photo);
               event.currentTarget.style.display = "none";

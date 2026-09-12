@@ -24,12 +24,14 @@ const app = express();
 
 // good speed/compression balance
 app.use(compression({ level: 6 }));
+app.use("/api/bootstrap", bootstrapRoutes);
 
 // CORS
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: [process.env.CLIENT_URL || "http://localhost:5173"].filter(Boolean),
     credentials: true,
+    maxAge: 86400,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })

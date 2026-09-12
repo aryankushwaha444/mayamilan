@@ -73,8 +73,10 @@ export const cached = (prefix, ttl = 60) => {
 
       const cachedData = await redis.get(cacheKey);
       if (cachedData) {
+        res.set("X-Cache", "HIT");
         return res.json(JSON.parse(cachedData));
       }
+      res.set("X-Cache", "MISS");
 
       const originalJson = res.json.bind(res);
       res.json = (data) => {

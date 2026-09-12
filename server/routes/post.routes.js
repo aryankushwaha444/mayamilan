@@ -29,7 +29,7 @@ router.use(protect);
 
 // Posts
 router.post("/", upload.array("images", 5), createPost);
-router.get("/",cached("feed", 30), getFeed);
+router.get("/",cached("feed", 120), getFeed);
 router.get("/my",cached("my-posts", 30), getMyPosts);
 router.get("/saved",cached("saved-posts", 30), getSavedPosts);
 router.get("/share-targets", getShareTargets);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { discoverUsers } from "../services/userService";
 import ProfileCard from "../components/ProfileCard";
 import { likeUser, unlikeUser } from "../services/matchService";
@@ -13,6 +13,7 @@ function Discover() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
 
   const [filters, setFilters] = useState({
     minAge: "",
@@ -22,6 +23,12 @@ function Discover() {
     relationshipGoal: "",
     interests: "",
   });
+
+  // 👇 Memoized — only recalculates when filters change (performance)
+  const activeFilterCount = useMemo(
+    () => Object.values(filters).filter((v) => v !== "").length,
+    [filters]
+  );
 
   const [pagination, setPagination] = useState({
     page: 1,
@@ -57,7 +64,7 @@ function Discover() {
     } catch (error) {
       console.error("Discovery error:", error);
       setError(error.response?.data?.message || "Unable to load profiles");
-      toast.error("Failed to load profiles"); // 👈 ADD
+      toast.error("Failed to load profiles");
     } finally {
       setLoading(false);
     }
@@ -129,7 +136,7 @@ function Discover() {
 
         if (response.success) {
           await fetchUsers(filters, pagination.page);
-          toast.info("Removed like"); // 👈 ADD
+          toast.info("Removed like");
         }
         return;
       }
@@ -141,14 +148,14 @@ function Discover() {
       if (response.success) {
         await fetchUsers(filters, pagination.page);
         if (response.matched) {
-          toast.success("It's a Match! 💕", "New Match", 5000); // 👈 REPLACE alert with toast
+          toast.success("It's a Match! 💕", "New Match", 5000);
         } else {
-          toast.success("Like sent! ❤️"); // 👈 ADD
+          toast.success("Like sent! ❤️");
         }
       }
     } catch (error) {
       console.error("Like/unlike error:", error.response?.data || error);
-      toast.error(error.response?.data?.message || "Failed to like user"); // 👈 ADD
+      toast.error(error.response?.data?.message || "Failed to like user");
     }
   };
 
@@ -178,86 +185,119 @@ function Discover() {
       </div>
 
       {/* Filters */}
-      <div className="card border-0 shadow-sm mb-4">
-        <div className="card-body p-3 p-md-4">
-          <form onSubmit={handleFilterSubmit}>
-            <div className="row g-3">
-              <div className="col-6 col-md-2">
-                <label htmlFor="minAge" className="form-label">
-                  Min Age
-                </label>
+      <div className="filter-composer mb-4">
+        {!showFilters ? (
+          /* ============ COLLAPSED PILL ROW ============ */
+          <div className="filter-composer-collapsed">
+            <div className="filter-composer-icon">
+              <i className="bi bi-sliders"></i>
+            </div>
+
+            <button
+              type="button"
+              className="filter-composer-pill"
+              onClick={() => setShowFilters(true)}
+            >
+              {activeFilterCount > 0
+                ? `Filtering by ${activeFilterCount} criteria — tap to edit`
+                : "Filter profiles — age, city, gender, goals..."}
+            </button>
+
+            {activeFilterCount > 0 && (
+              <span className="filter-active-badge">{activeFilterCount}</span>
+            )}
+
+            <button
+              type="button"
+              className="filter-composer-icon-btn"
+              title="Open filters"
+              onClick={() => setShowFilters(true)}
+            >
+              <i className="bi bi-funnel-fill"></i>
+            </button>
+          </div>
+        ) : (
+          /* ============ EXPANDED COMPOSER ============ */
+          <form
+            className="filter-composer-expanded"
+            onSubmit={handleFilterSubmit}
+          >
+            <div className="filter-composer-header">
+              <div className="filter-composer-icon">
+                <i className="bi bi-sliders"></i>
+              </div>
+              <strong>Filter Profiles</strong>
+              <button
+                type="button"
+                className="filter-composer-close"
+                onClick={() => setShowFilters(false)}
+                title="Close"
+              >
+                <i className="bi bi-x-lg"></i>
+              </button>
+            </div>
+
+            <div className="filter-composer-fields">
+              <div className="filter-field">
+                <i className="bi bi-calendar-heart"></i>
                 <input
-                  id="minAge"
                   name="minAge"
                   type="number"
                   min="18"
                   max="100"
-                  className="form-control"
+                  placeholder="Min age"
                   value={filters.minAge}
                   onChange={handleFilterChange}
-                  placeholder="18"
                 />
               </div>
-              <div className="col-6 col-md-2">
-                <label htmlFor="maxAge" className="form-label">
-                  Max Age
-                </label>
+
+              <div className="filter-field">
+                <i className="bi bi-calendar-heart"></i>
                 <input
-                  id="maxAge"
                   name="maxAge"
                   type="number"
                   min="18"
                   max="100"
-                  className="form-control"
+                  placeholder="Max age"
                   value={filters.maxAge}
                   onChange={handleFilterChange}
-                  placeholder="60"
                 />
               </div>
-              <div className="col-12 col-md-2">
-                <label htmlFor="gender" className="form-label">
-                  Gender
-                </label>
+
+              <div className="filter-field">
+                <i className="bi bi-gender-ambiguous"></i>
                 <select
-                  id="gender"
                   name="gender"
-                  className="form-select"
                   value={filters.gender}
                   onChange={handleFilterChange}
                 >
-                  <option value="">Any</option>
+                  <option value="">Any gender</option>
                   <option value="male">Male</option>
                   <option value="female">Female</option>
                   <option value="non-binary">Non-binary</option>
                   <option value="other">Other</option>
                 </select>
               </div>
-              <div className="col-12 col-md-2">
-                <label htmlFor="city" className="form-label">
-                  City
-                </label>
+
+              <div className="filter-field">
+                <i className="bi bi-geo-alt"></i>
                 <input
-                  id="city"
                   name="city"
                   type="text"
-                  className="form-control"
+                  placeholder="City"
                   value={filters.city}
                   onChange={handleFilterChange}
-                  placeholder="Kathmandu"
                 />
               </div>
-              <div className="col-12 col-md-2">
-                <label htmlFor="relationshipGoal" className="form-label">
-                  Looking for
-                </label>
+
+              <div className="filter-field">
+                <i className="bi bi-heart"></i>
                 <select
-                  id="relationshipGoal"
                   name="relationshipGoal"
-                  className="form-select"
                   value={filters.relationshipGoal}
                   onChange={handleFilterChange}
                 >
-                  <option value="">Any</option>
+                  <option value="">Any goal</option>
                   <option value="serious">Serious</option>
                   <option value="marriage">Marriage</option>
                   <option value="casual">Casual</option>
@@ -265,26 +305,28 @@ function Discover() {
                   <option value="not-sure">Not Sure</option>
                 </select>
               </div>
-              <div className="col-12 col-md-2 d-flex align-items-end gap-2">
-                <button
-                  type="submit"
-                  className="btn btn-primary flex-fill"
-                  disabled={loading}
-                >
-                  <i className="bi bi-funnel me-1"></i> Filter
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline-secondary"
-                  onClick={handleClearFilters}
-                  title="Clear filters"
-                >
-                  <i className="bi bi-x-lg"></i>
-                </button>
-              </div>
+            </div>
+
+            <div className="filter-composer-footer">
+              <button
+                type="button"
+                className="btn btn-light filter-clear-btn"
+                onClick={handleClearFilters}
+              >
+                <i className="bi bi-arrow-counterclockwise me-1"></i>
+                Clear
+              </button>
+              <button
+                type="submit"
+                className="btn filter-apply-btn"
+                disabled={loading}
+              >
+                <i className="bi bi-funnel-fill me-1"></i>
+                Apply Filters
+              </button>
             </div>
           </form>
-        </div>
+        )}
       </div>
 
       {error && <div className="alert alert-danger">{error}</div>}

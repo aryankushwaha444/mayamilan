@@ -35,6 +35,8 @@ function ProfileCard({ user, onLike, onPass }) {
           <img
             src={cardImg(primaryPhoto?.url)}
             alt={`${user.name}'s profile`}
+            loading="lazy"
+            decoding="async"
             className="card-img-top discovery-profile-image"
           />
         ) : (

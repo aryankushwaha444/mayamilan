@@ -1,4 +1,5 @@
 import express from "express";
+import { cached } from "../utils/cache.js";
 
 import {
   createOrGetConversation,
@@ -27,8 +28,8 @@ router.post("/conversations/:matchId", protect, createOrGetConversation);
 router.get("/conversations", protect, getConversations);
 
 // Navbar helpers
-router.get("/unread-count", protect, getUnreadMessageCount);
-router.get("/recent", protect, getRecentConversations);
+router.get("/unread-count", protect, cached("unread", 60), getUnreadMessageCount);
+router.get("/recent", protect, cached("recent", 60),getRecentConversations);
 
 // PARAMETERIZED ROUTES LAST
 router.get("/:conversationId", protect, getMessages);

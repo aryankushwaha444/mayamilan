@@ -855,7 +855,6 @@
   }
 }
 
-
 /* ============ COLLAPSED COMPOSER (Facebook-style pill) ============ */
 .create-post-collapsed {
   display: flex;
@@ -911,8 +910,12 @@
   transform: scale(1.1);
 }
 
-.icon-photo { color: #45bd62; }   /* green like Facebook photos */
-.icon-emoji { color: #f7b928; }   /* yellow emoji */
+.icon-photo {
+  color: #45bd62;
+} /* green like Facebook photos */
+.icon-emoji {
+  color: #f7b928;
+} /* yellow emoji */
 
 /* ============ EXPANDED COMPOSER ============ */
 .create-post-expanded {
@@ -1018,5 +1021,212 @@
     width: 38px;
     height: 38px;
     font-size: 1.2rem;
+  }
+}
+
+/* ============ FILTER COMPOSER (CreatePost style) ============ */
+.filter-composer-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 12px 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.filter-composer-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.filter-composer-pill {
+  flex: 1;
+  border: none;
+  background: #f0f2f5;
+  border-radius: 999px;
+  padding: 12px 20px;
+  text-align: left;
+  color: #65676b;
+  font-size: 1rem;
+  transition: background 0.2s ease;
+  cursor: pointer;
+}
+
+.filter-composer-pill:hover {
+  background: #e4e6eb;
+}
+
+.filter-active-badge {
+  background: #ec4899;
+  color: #fff;
+  border-radius: 999px;
+  min-width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0 8px;
+}
+
+.filter-composer-icon-btn {
+  width: 44px;
+  height: 44px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  color: #ec4899;
+  font-size: 1.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, transform 0.15s;
+}
+
+.filter-composer-icon-btn:hover {
+  background: #f0f2f5;
+  transform: scale(1.1);
+}
+
+/* ============ EXPANDED ============ */
+.filter-composer-expanded {
+  background: #fff;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  animation: composerExpand 0.25s ease;
+}
+
+@keyframes composerExpand {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.filter-composer-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.filter-composer-header strong {
+  flex: 1;
+}
+
+.filter-composer-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: #f0f2f5;
+  color: #65676b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.filter-composer-close:hover {
+  background: #e4e6eb;
+}
+
+.filter-composer-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.filter-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f0f2f5;
+  border-radius: 999px;
+  padding: 10px 16px;
+  color: #65676b;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.filter-field:focus-within {
+  background: #fff;
+  box-shadow: 0 0 0 2px #ec4899;
+}
+
+.filter-field i {
+  color: #ec4899;
+  flex-shrink: 0;
+}
+
+.filter-field input,
+.filter-field select {
+  border: none;
+  background: transparent;
+  outline: none;
+  width: 100%;
+  font-size: 0.95rem;
+  color: #1c1e21;
+}
+
+/* hide number spinners for clean pills */
+.filter-field input[type="number"]::-webkit-outer-spin-button,
+.filter-field input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.filter-field input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.filter-composer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+  border-top: 1px solid #e4e6eb;
+  padding-top: 12px;
+}
+
+.filter-apply-btn {
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 22px;
+  font-weight: 600;
+}
+
+.filter-apply-btn:hover {
+  filter: brightness(1.05);
+  color: #fff;
+}
+
+.filter-clear-btn {
+  border-radius: 999px;
+}
+
+/* Mobile */
+@media (max-width: 576px) {
+  .filter-composer-collapsed {
+    padding: 10px 12px;
+  }
+  .filter-composer-pill {
+    font-size: 0.95rem;
+    padding: 10px 16px;
   }
 }
