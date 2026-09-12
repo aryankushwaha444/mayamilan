@@ -33,6 +33,7 @@ import BlogPost from "./pages/BlogPost.jsx";
 import Feed from "./pages/Feed.jsx";
 import SavedPosts from "./pages/SavedPosts.jsx";
 import PostDetail from "./pages/PostDetail.jsx";
+import ScrollToTop from "./components/ScrollToTop";
 
 // Admin
 import AdminRoutes from "./pages/admin/AdminRoutes.jsx";
@@ -74,6 +75,7 @@ function AppContent() {
 
   return (
     <>
+      <ScrollToTop />
       <Navbar />
       <Routes>
         {/* PUBLIC */}

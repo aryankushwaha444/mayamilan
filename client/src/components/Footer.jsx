@@ -67,6 +67,7 @@ function Footer() {
             <i className="bi bi-house-door"></i>
             Feed
           </NavLink>
+
           <NavLink to="/saved">
             <i className="bi bi-bookmark"></i>
             Saved Posts
@@ -105,6 +106,16 @@ function Footer() {
           <NavLink to="/profile/edit">
             <i className="bi bi-pencil-square"></i>
             Edit Profile
+          </NavLink>
+
+          <NavLink to="/change-password">
+            <i className="bi bi-key"></i>
+            Change Password
+          </NavLink>
+
+          <NavLink to="/forgot-password">
+            <i className="bi bi-question-circle"></i>
+            Forgot Password
           </NavLink>
         </div>
 
