@@ -25,7 +25,6 @@ const app = express();
 
 // good speed/compression balance
 app.use(compression({ level: 6 }));
-app.use("/api/bootstrap", bootstrapRoutes);
 
 // CORS
 app.use(
@@ -84,6 +83,7 @@ app.get("/api/health", (req, res) => {
 app.use("/api/suggestions", suggestionRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/bootstrap", bootstrapRoutes);
 app.use("/api/discovery", discoveryRoutes);
 app.use("/api/likes", likeRoutes);
 app.use("/api/matches", matchRoutes);

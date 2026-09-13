@@ -26,6 +26,27 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem("user", JSON.stringify(updatedUser));
   };
 
+  // 👇 NEW: silent session restore helper (used on init AND mid-session)
+  const trySilentRefresh = async () => {
+    try {
+      const refreshed = await refreshAccessToken(); // sends httpOnly cookie
+      if (refreshed.success && refreshed.accessToken) {
+        localStorage.setItem("accessToken", refreshed.accessToken);
+        setAccessToken(refreshed.accessToken);
+
+        const retry = await getCurrentUser();
+        if (retry.success && retry.user) {
+          setUser(retry.user);
+          localStorage.setItem("user", JSON.stringify(retry.user));
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
   // INITIALIZE AUTH
   useEffect(() => {
     const handleAuthLogout = () => {
@@ -46,7 +67,7 @@ export const AuthProvider = ({ children }) => {
 
       const storedToken = localStorage.getItem("accessToken");
 
-      // If no token, just bail out silently — don't try to refresh
+      // If no token, just bail out silently
       if (!storedToken) {
         setLoading(false);
         return;
@@ -59,17 +80,14 @@ export const AuthProvider = ({ children }) => {
         if (response.success) {
           setUser(response.user);
         } else {
-          // Token invalid — clean up
-          localStorage.removeItem("accessToken");
-          localStorage.removeItem("user");
-          setAccessToken(null);
-          setUser(null);
+          throw new Error("invalid-token");
         }
       } catch (error) {
-        // SILENT: Don't log 401 errors during init, just clean up
-        const status = error.response?.status;
+        // 👇 KEY FIX: access token dead? Try REFRESH before killing session
+        const restored = await trySilentRefresh();
 
-        if (status === 401 || status === 403) {
+        if (!restored) {
+          // Refresh cookie also dead/expired → NOW logout is correct
           localStorage.removeItem("accessToken");
           localStorage.removeItem("user");
           setAccessToken(null);
@@ -126,7 +144,6 @@ export const AuthProvider = ({ children }) => {
         console.warn("Falling back to login response user:", err);
       }
 
-      // Fallback
       localStorage.setItem("user", JSON.stringify(response.user));
       setUser(response.user);
     }
@@ -162,6 +179,7 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         updateUser,
+        trySilentRefresh, //  expose for axios interceptor if needed
       }}
     >
       {children}

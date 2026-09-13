@@ -22,7 +22,11 @@ export const getCurrentUser = async () => {
 };
 
 export const refreshAccessToken = async () => {
-  const response = await api.post("/auth/refresh");
+  const response = await api.post(
+    "/auth/refresh",
+    {},
+    { withCredentials: true } // CRITICAL — sends httpOnly cookie
+  );
   return response.data;
 };
 

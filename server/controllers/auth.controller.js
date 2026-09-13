@@ -227,13 +227,28 @@ export const refreshAccessToken = async (req, res) => {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
 
     if (decoded.type !== "refresh") {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid refresh token",
-      });
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid refresh token" });
     }
 
     const tokenHash = hashToken(refreshToken);
+
+    // 🔒 Replay detection: if a revoked token is reused → nuke all sessions
+    const revokedToken = await RefreshToken.findOne({
+      tokenHash,
+      revokedAt: { $ne: null },
+    });
+    if (revokedToken) {
+      await RefreshToken.updateMany(
+        { user: decoded.userId, revokedAt: null },
+        { revokedAt: new Date() }
+      );
+      return res.status(401).json({
+        success: false,
+        message: "Token reuse detected — session terminated",
+      });
+    }
 
     const storedToken = await RefreshToken.findOne({
       tokenHash,
@@ -241,42 +256,46 @@ export const refreshAccessToken = async (req, res) => {
       revokedAt: null,
     });
 
-    if (!storedToken) {
+    if (!storedToken || storedToken.expiresAt < new Date()) {
+      if (storedToken) await storedToken.updateOne({ revokedAt: new Date() });
       return res.status(401).json({
         success: false,
-        message: "Refresh token is invalid or revoked",
-      });
-    }
-
-    if (storedToken.expiresAt < new Date()) {
-      return res.status(401).json({
-        success: false,
-        message: "Refresh token has expired",
+        message: "Refresh token expired or revoked",
       });
     }
 
     const user = await User.findById(decoded.userId);
-
     if (!user || !user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: "User account is unavailable",
-      });
+      return res
+        .status(401)
+        .json({ success: false, message: "Account unavailable" });
     }
 
+    // 👇 Rotate: revoke old, issue new
     const newAccessToken = generateAccessToken(user._id.toString());
+    const newRefreshToken = generateRefreshToken(user._id.toString());
 
-    return res.status(200).json({
-      success: true,
-      accessToken: newAccessToken,
+    await storedToken.updateOne({ revokedAt: new Date() });
+
+    await RefreshToken.create({
+      user: user._id,
+      tokenHash: hashToken(newRefreshToken),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
+
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(200).json({ success: true, accessToken: newAccessToken });
   } catch (error) {
     console.error("Refresh token error:", error);
-
-    return res.status(401).json({
-      success: false,
-      message: "Invalid or expired refresh token",
-    });
+    return res
+      .status(401)
+      .json({ success: false, message: "Invalid refresh token" });
   }
 };
 
@@ -505,7 +524,8 @@ export const resetPassword = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: "Password reset successfully. Please login with your new password.",
+      message:
+        "Password reset successfully. Please login with your new password.",
     });
   } catch (error) {
     console.error("Reset password error:", error);
