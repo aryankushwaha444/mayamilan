@@ -3,13 +3,13 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   getConversations,
   createOrGetConversation,
-  deleteConversation, // 👈 Step 3: import
+  deleteConversation,
 } from "../services/messageService.js";
 import ChatWindow from "../components/ChatWindow.jsx";
-import ConfirmDialog from "../components/ConfirmDialog.jsx"; // 👈 Step 3: import
+import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import { useSocket } from "../hooks/useSocket.js";
 import { useAuth } from "../context/AuthContext.jsx";
-import { useAlert } from "../context/AlertContext"; // 👈 Step 3: import
+import { useAlert } from "../context/AlertContext";
 import { Virtuoso } from "react-virtuoso";
 import Loader from "../components/Loader.jsx";
 import { avatarImg } from "../utils/cloudinary";
@@ -114,6 +114,7 @@ const ConversationItem = memo(function ConversationItem({
             <span>{otherUser?.name?.charAt(0)?.toUpperCase() || "?"}</span>
           )}
         </div>
+
         <div className="conversation-content">
           <div className="conversation-top">
             <strong>{otherUser?.name}</strong>
@@ -139,6 +140,12 @@ const ConversationItem = memo(function ConversationItem({
               : lastMessage?.text || "Start a conversation"}
           </p>
         </div>
+
+        {/* 👇 PER-ROW "← slide" HINT (mobile only, fades when slid) */}
+        <span className="conversation-swipe-hint" aria-hidden="true">
+          <i className="bi bi-arrow-left-short"></i>
+          <em>slide</em>
+        </span>
       </div>
     </div>
   );
@@ -148,7 +155,7 @@ const ConversationItem = memo(function ConversationItem({
 function Messages() {
   const { socket } = useSocket();
   const { user } = useAuth();
-  const toast = useAlert(); // 👈 Step 3
+  const toast = useAlert();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -160,7 +167,7 @@ function Messages() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [conversationToDelete, setConversationToDelete] = useState(null); // 👈 Step 3
+  const [conversationToDelete, setConversationToDelete] = useState(null);
 
   const openingRef = useRef(false);
   const conversationsRef = useRef([]);
@@ -338,7 +345,6 @@ function Messages() {
       moveConversationToTop(convId, msg);
     };
 
-    // 👇 Step 3: real-time delete for BOTH users
     const handleConversationDeleted = ({ conversationId }) => {
       setConversations((prev) => prev.filter((c) => c._id !== conversationId));
       setSelectedConversation((prev) =>
@@ -362,7 +368,7 @@ function Messages() {
     setSearch("");
   };
 
-  /* 👇 Step 3: delete handlers */
+  /* Delete handlers */
   const requestDeleteConversation = (conversation) => {
     setConversationToDelete(conversation);
   };
@@ -510,7 +516,7 @@ function Messages() {
                       conversation={conversation}
                       isActive={selectedConversation?._id === conversation._id}
                       onSelect={handleSelectConversation}
-                      onDelete={requestDeleteConversation} // 👈 Step 3
+                      onDelete={requestDeleteConversation}
                     />
                   </div>
                 )}
@@ -524,7 +530,7 @@ function Messages() {
                   conversation={conversation}
                   isActive={selectedConversation?._id === conversation._id}
                   onSelect={handleSelectConversation}
-                  onDelete={requestDeleteConversation} // 👈 Step 3
+                  onDelete={requestDeleteConversation}
                 />
               ))}
             </div>
@@ -553,7 +559,7 @@ function Messages() {
         </div>
       </div>
 
-      {/* 👇 Step 3: delete confirmation dialog */}
+      {/* Delete confirmation dialog */}
       <ConfirmDialog
         open={conversationToDelete !== null}
         title="Delete this conversation?"

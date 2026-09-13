@@ -51,3 +51,47 @@ export const markAllAsRead = async (req, res, next) => {
     next(error);
   }
 };
+
+export const deleteNotification = async (req, res, next) => {
+  try {
+    const notification = await Notification.findOneAndDelete({
+      _id: req.params.id,
+      recipient: req.user._id,
+    });
+
+    if (!notification) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Notification not found" });
+    }
+
+    const io = getIO();
+    if (io) {
+      io.to(`user:${req.user._id.toString()}`).emit("notifications_changed", {
+        action: "delete",
+        notificationId: notification._id.toString(),
+      });
+    }
+
+    res.json({ success: true, message: "Notification deleted" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteAllNotifications = async (req, res, next) => {
+  try {
+    await Notification.deleteMany({ recipient: req.user._id });
+
+    const io = getIO();
+    if (io) {
+      io.to(`user:${req.user._id.toString()}`).emit("notifications_changed", {
+        action: "clear",
+      });
+    }
+
+    res.json({ success: true, message: "All notifications deleted" });
+  } catch (error) {
+    next(error);
+  }
+};

@@ -981,11 +981,85 @@ body {
   background: #e2e8f0;
 }
 
-
-
 /* Off-screen cards aren't even rendered/painted until scrolled near */
 .profile-discovery-card {
   content-visibility: auto;
   contain-intrinsic-size: 420px; /* reserve approx height to avoid layout jump */
+}
+
+/* ===== Notification delete: hover / slide ===== */
+/* ===== Notification slide-to-delete ===== */
+.notif-shell {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.notif-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 72px;
+  border: none;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  font-size: 1.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity 0.15s ease;
+}
+
+/* Desktop: reveal on hover */
+@media (hover: hover) and (pointer: fine) {
+  .notif-shell:hover .notif-delete {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* Mobile: revealed by slide */
+.notif-shell.revealed .notif-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.notif-row {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  background: #ffffff;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.15s ease;
+  border-radius: 12px;
+}
+
+.notif-row:hover {
+  background: #f8f9fb;
+}
+
+.notif-unread {
+  background: #f1f5f9;
+}
+
+.notif-swipe-hint {
+  display: none;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.8rem;
+  margin-top: 12px;
+}
+
+@media (max-width: 768px) {
+  .notif-swipe-hint {
+    display: block;
+  }
 }
 

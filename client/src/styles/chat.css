@@ -1606,3 +1606,52 @@
 .conversation-item.conversation-item-active {
   background: #fce7f3; /* your pink active color */
 }
+
+.conversation-item {
+  position: relative; /* anchor for the hint */
+}
+
+.conversation-swipe-hint {
+  display: none;
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  align-items: center;
+  gap: 4px;
+  color: #cbd5e1;
+  pointer-events: none;
+  z-index: 1;
+  transition: opacity 0.15s ease;
+}
+
+.conversation-swipe-hint i {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.conversation-swipe-hint em {
+  font-style: normal;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* Show only on mobile */
+@media (max-width: 768px) {
+  .conversation-swipe-hint {
+    display: flex;
+  }
+}
+
+/* Fade out when row is slid open */
+.conversation-item-shell.revealed .conversation-swipe-hint {
+  opacity: 0;
+}
+
+/* Never show on desktop (hover reveals trash instead) */
+@media (hover: hover) and (pointer: fine) {
+  .conversation-swipe-hint {
+    display: none !important;
+  }
+}
