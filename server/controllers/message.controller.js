@@ -730,3 +730,49 @@ export const getRecentConversations = async (req, res, next) => {
     next(error);
   }
 };
+
+
+// 👇 DELETE ENTIRE CONVERSATION + ALL MESSAGES
+export const deleteConversation = async (req, res, next) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.user._id.toString();
+
+    const conversation = await Conversation.findById(conversationId);
+    if (!conversation) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Conversation not found" });
+    }
+
+    // Only participants can delete
+    const isParticipant = conversation.participants.some(
+      (p) => p.toString() === userId
+    );
+    if (!isParticipant) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Not allowed to delete this conversation" });
+    }
+
+    const otherUserId = conversation.participants.find(
+      (p) => p.toString() !== userId
+    )?.toString();
+
+    // 👇 Delete ALL messages + the conversation itself
+    await Message.deleteMany({ conversation: conversationId });
+    await conversation.deleteOne();
+
+    // Notify BOTH users in real-time
+    const io = getIO();
+    if (io) {
+      const payload = { conversationId: conversationId.toString() };
+      io.to(`user:${userId}`).emit("conversation_deleted", payload);
+      if (otherUserId) io.to(`user:${otherUserId}`).emit("conversation_deleted", payload);
+    }
+
+    res.json({ success: true, message: "Conversation deleted successfully" });
+  } catch (error) {
+    next(error);
+  }
+};

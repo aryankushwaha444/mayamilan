@@ -1553,3 +1553,56 @@
     flex-shrink: 0;
   }
 }
+
+/* ===== Conversation delete: hover / swipe / hold ===== */
+.conversation-item-shell {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.conversation-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 72px;
+  border: none;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity 0.15s ease;
+}
+
+/* Desktop: reveal on hover */
+@media (hover: hover) and (pointer: fine) {
+  .conversation-item-shell:hover .conversation-delete {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* Mobile: revealed by swipe or 1s hold */
+.conversation-item-shell.revealed .conversation-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conversation-item {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  background: #ffffff;
+  transition: transform 0.2s ease, background 0.15s ease;
+}
+
+.conversation-item-active,
+.conversation-item.conversation-item-active {
+  background: #fce7f3; /* your pink active color */
+}

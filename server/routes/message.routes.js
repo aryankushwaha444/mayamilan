@@ -17,6 +17,8 @@ import {
 } from "../controllers/message.controller.js";
 
 import { protect } from "../middleware/auth.middleware.js";
+import { deleteConversation } from "../controllers/message.controller.js";
+
 
 const router = express.Router();
 
@@ -26,6 +28,7 @@ router.post("/upload", protect, uploadMemory, uploadChatAttachment);
 // Conversations
 router.post("/conversations/:matchId", protect, createOrGetConversation);
 router.get("/conversations", protect, getConversations);
+router.delete("/conversations/:conversationId", protect, deleteConversation);
 
 // Navbar helpers
 router.get("/unread-count", protect, cached("unread", 60), getUnreadMessageCount);

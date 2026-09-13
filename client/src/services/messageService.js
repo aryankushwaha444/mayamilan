@@ -71,3 +71,8 @@ export const deleteMessage = async (messageId, scope) => {
   const response = await api.delete(`/messages/${messageId}?scope=${scope}`);
   return response.data;
 };
+
+export const deleteConversation = async (conversationId) => {
+  const response = await api.delete(`/messages/conversations/${conversationId}`);
+  return response.data;
+};
