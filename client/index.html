@@ -1,35 +1,52 @@
 <!DOCTYPE html>
+
 <html lang="en">
   <head>
+    <!-- BASIC / SEO -->
+
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#ec4899" />
+
     <meta
       name="google-site-verification"
       content="MNbpw2QPgVbQMM5L_WWW_6nd-zy42pF5EkmA1SbMOjo"
     />
 
-    <!-- PRIMARY META -->
     <title>
       Maya Milan — Trusted Dating Platform for Meaningful Relationships
     </title>
     <meta
       name="description"
-      content="Maya Milan is a safe, verified dating platform to meet genuine people. Real-time chat, smart matching, video-ready profiles. Join free today and find someone special."
-    />
-    <meta
-      name="keywords"
-      content="dating app, online dating, dating site, find love, match making, singles near me, serious relationships, maya milan, dating platform nepal"
+      content="Maya Milan is a dating platform for meeting genuine people, discovering meaningful connections, chatting in real time, and building relationships."
     />
     <meta
       name="robots"
-      content="index, follow, max-image-preview:large, max-snippet:-1"
+      content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1"
     />
     <meta name="author" content="Maya Milan" />
-    <meta name="language" content="English" />
+
     <link rel="canonical" href="https://mayamilan.vercel.app/" />
 
-    <!-- OPEN GRAPH (Facebook/WhatsApp preview) -->
+    <!-- GOOGLE ANALYTICS 4 -->
+
+    <script
+      async
+      src="https://www.googletagmanager.com/gtag/js?id=G-X80HBDH82J"
+    ></script>
+
+    <script>
+      window.dataLayer = window.dataLayer || [];
+
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+
+      gtag("js", new Date());
+
+      gtag("config", "G-X80HBDH82J");
+    </script>
+
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Maya Milan" />
     <meta property="og:url" content="https://mayamilan.vercel.app/" />
@@ -39,38 +56,53 @@
     />
     <meta
       property="og:description"
-      content="Meet verified singles, chat in real-time, and find a meaningful connection. Free to join."
+      content="Meet genuine people, discover meaningful connections, and chat in real time with Maya Milan."
     />
     <meta
       property="og:image"
       content="https://mayamilan.vercel.app/images/og-cover.png"
     />
+    <meta
+      property="og:image:secure_url"
+      content="https://mayamilan.vercel.app/images/og-cover.png"
+    />
+    <meta property="og:image:type" content="image/png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:locale" content="en_US" />
+    <meta
+      property="og:image:alt"
+      content="Maya Milan — Dating Platform for Meaningful Relationships"
+    />
 
-    <!-- TWITTER CARD -->
+    <meta property="og:locale" content="en_US" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Maya Milan — Trusted Dating Platform" />
     <meta
       name="twitter:description"
-      content="Meet verified singles, chat in real-time, find someone special. Free to join."
+      content="Meet genuine people, discover meaningful connections, and chat in real time with Maya Milan."
     />
     <meta
       name="twitter:image"
-      content="https://mayamilan.vercel.app/images/og-cover.jpg"
+      content="https://mayamilan.vercel.app/images/og-cover.png"
     />
 
-    <!-- ICONS -->
+    <meta
+      name="twitter:image:alt"
+      content="Maya Milan — Dating Platform for Meaningful Relationships"
+    />
+
     <link rel="icon" type="image/png" href="/images/logo.png" />
+
     <link rel="apple-touch-icon" href="/images/logo.png" />
 
-    <!-- PERFORMANCE HINTS -->
     <link rel="preconnect" href="https://mayamilan.onrender.com" />
+
     <link rel="dns-prefetch" href="https://mayamilan.onrender.com" />
+
     <link rel="preconnect" href="https://res.cloudinary.com" />
 
-    <!-- STRUCTURED DATA: Organization + WebSite -->
+    <link rel="dns-prefetch" href="https://res.cloudinary.com" />
+
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -83,50 +115,41 @@
             "logo": {
               "@type": "ImageObject",
               "url": "https://mayamilan.vercel.app/images/logo.png"
-            },
-            "sameAs": [
-              "https://facebook.com/mayamilan",
-              "https://instagram.com/mayamilan",
-              "https://twitter.com/mayamilan",
-              "https://linkedin.com/company/mayamilan"
-            ]
+            }
           },
           {
             "@type": "WebSite",
             "@id": "https://mayamilan.vercel.app/#website",
             "url": "https://mayamilan.vercel.app/",
             "name": "Maya Milan",
-            "description": "Trusted dating platform for meaningful relationships",
+            "description": "Dating platform for meaningful relationships.",
             "publisher": {
               "@id": "https://mayamilan.vercel.app/#organization"
-            },
-            "potentialAction": {
-              "@type": "SearchAction",
-              "target": "https://mayamilan.vercel.app/discover?q={search_term_string}",
-              "query-input": "required name=search_term_string"
             }
           },
           {
             "@type": "WebApplication",
-            "name": "Maya Milan Dating",
-            "applicationCategory": "SocialNetworkingApplication",
-            "operatingSystem": "Web, Android, iOS",
+            "@id": "https://mayamilan.vercel.app/#webapp",
+            "name": "Maya Milan",
             "url": "https://mayamilan.vercel.app/",
+            "description": "Maya Milan is a dating platform for discovering meaningful connections, meeting genuine people, and chatting in real time.",
+            "applicationCategory": "SocialNetworkingApplication",
+            "operatingSystem": "Web",
+            "browserRequirements": "Requires JavaScript",
             "offers": {
               "@type": "Offer",
               "price": "0",
               "priceCurrency": "USD"
             },
-            "aggregateRating": {
-              "@type": "AggregateRating",
-              "ratingValue": "4.8",
-              "reviewCount": "312"
+            "publisher": {
+              "@id": "https://mayamilan.vercel.app/#organization"
             }
           }
         ]
       }
     </script>
   </head>
+
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
