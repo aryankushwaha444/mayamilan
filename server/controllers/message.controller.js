@@ -58,7 +58,7 @@ export const createOrGetConversation = async (req, res) => {
       return res.status(403).json({ success: false, message: "Blocked" });
     }
 
-    // 4. Prepare sorted participants and unique key
+    // Prepare sorted participants and unique key
     const participants = [currentUserId.toString(), otherUserId.toString()]
       .sort()
       .map((id) => new mongoose.Types.ObjectId(id));
@@ -647,6 +647,7 @@ export const markMessageAsDelivered = async (req, res, next) => {
   }
 };
 
+// ✅ FIXED: Single response (was double-responding when io existed)
 export const markMessageAsRead = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -696,17 +697,13 @@ export const markMessageAsRead = async (req, res, next) => {
         );
 
         // ALWAYS sync reader's badge (race-proof)
-        const io2 = getIO();
-        if (io2) {
-          io2.to(`user:${currentUserId.toString()}`).emit("unread_updated", {
-            conversationId: message.conversation.toString(),
-          });
-        }
-
-        res.status(200).json({ success: true });
+        io.to(`user:${currentUserId.toString()}`).emit("unread_updated", {
+          conversationId: message.conversation.toString(),
+        });
       }
     }
 
+    // ✅ SINGLE response — no longer inside the if (io) block
     res.status(200).json({ success: true });
   } catch (error) {
     next(error);
@@ -761,7 +758,7 @@ export const getRecentConversations = async (req, res, next) => {
   }
 };
 
-// 👇 DELETE ENTIRE CONVERSATION + ALL MESSAGES
+// DELETE ENTIRE CONVERSATION + ALL MESSAGES
 export const deleteConversation = async (req, res, next) => {
   try {
     const { conversationId } = req.params;
@@ -779,19 +776,17 @@ export const deleteConversation = async (req, res, next) => {
       (p) => p.toString() === userId
     );
     if (!isParticipant) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          message: "Not allowed to delete this conversation",
-        });
+      return res.status(403).json({
+        success: false,
+        message: "Not allowed to delete this conversation",
+      });
     }
 
     const otherUserId = conversation.participants
       .find((p) => p.toString() !== userId)
       ?.toString();
 
-    // 👇 Delete ALL messages + the conversation itself
+    // Delete ALL messages + the conversation itself
     await Message.deleteMany({ conversation: conversationId });
     await conversation.deleteOne();
 
