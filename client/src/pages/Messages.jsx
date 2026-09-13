@@ -1,16 +1,17 @@
-import { useEffect, useState, useRef, memo } from "react"; // 👈 ADD memo
+import { useEffect, useState, useRef, memo, useMemo } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   getConversations,
   createOrGetConversation,
 } from "../services/messageService.js";
+import { getMatches } from "../services/matchService.js"; // 👈 ADD
 import ChatWindow from "../components/ChatWindow.jsx";
 import { useSocket } from "../hooks/useSocket.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { Virtuoso } from "react-virtuoso";
-import Loader from "../components/Loader.jsx"; // 👈 ADD
+import Loader from "../components/Loader.jsx";
+import { avatarImg } from "../utils/cloudinary";
 
-// 👇 EXTRACTED: Memoized conversation item (prevents re-rendering all items when one updates)
 const ConversationItem = memo(function ConversationItem({
   conversation,
   isActive,
@@ -28,7 +29,7 @@ const ConversationItem = memo(function ConversationItem({
     >
       <div className="conversation-avatar">
         {otherUser?.photos?.[0]?.url ? (
-          <img src={otherUser.photos[0].url} alt={otherUser.name} />
+          <img src={avatarImg(otherUser.photos[0].url)} alt={otherUser.name} />
         ) : (
           <span>{otherUser?.name?.charAt(0)?.toUpperCase() || "?"}</span>
         )}
@@ -71,19 +72,26 @@ function Messages() {
   const matchIdFromUrl = searchParams.get("matchId");
 
   const [conversations, setConversations] = useState([]);
+  const [matches, setMatches] = useState([]); // 👈 ALL matched users
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
 
   const openingRef = useRef(false);
   const conversationsRef = useRef([]);
 
-  // Keep ref in sync so socket handlers can read latest list safely
+  // 👇 Search MATCHED USERS (not just existing conversations)
+  const searchResults = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return matches.filter((m) => m.user?.name?.toLowerCase().includes(q));
+  }, [matches, search]);
+
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
 
-  // LOAD CONVERSATIONS (sorted newest first)
   const loadConversations = async () => {
     try {
       setLoading(true);
@@ -103,11 +111,21 @@ function Messages() {
     }
   };
 
+  // 👇 NEW: load all matches for search
+  const loadMatches = async () => {
+    try {
+      const data = await getMatches();
+      setMatches(data.matches || []);
+    } catch (err) {
+      console.error("Load matches error:", err);
+    }
+  };
+
   useEffect(() => {
     loadConversations();
+    loadMatches();
   }, []);
 
-  // MOVE CONVERSATION TO TOP (no side effects inside setState)
   const moveConversationToTop = (conversationId, message) => {
     if (!conversationId) return;
 
@@ -138,7 +156,35 @@ function Messages() {
     });
   };
 
-  // AUTO-OPEN CHAT FROM ?matchId= URL
+  // 👇 NEW: open (or create) chat with a matched user from search
+  const handleOpenMatch = async (match) => {
+    try {
+      setLoading(true);
+      const data = await createOrGetConversation(match._id);
+
+      if (data.success && data.conversation) {
+        const otherUser = data.conversation.participants.find(
+          (p) => p._id.toString() !== user._id.toString()
+        );
+
+        setSelectedConversation({
+          _id: data.conversation._id,
+          user: otherUser,
+          lastMessage: data.conversation.lastMessage,
+          lastMessageAt: data.conversation.lastMessageAt,
+        });
+
+        setSearch("");
+        await loadConversations();
+      }
+    } catch (err) {
+      console.error("Open match chat error:", err);
+      setError(err.response?.data?.message || "Failed to open conversation.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     const autoOpenChat = async () => {
       if (!matchIdFromUrl || !user) return;
@@ -177,7 +223,6 @@ function Messages() {
     autoOpenChat();
   }, [matchIdFromUrl, user, navigate]);
 
-  // REAL-TIME: reorder on ANY new activity
   useEffect(() => {
     if (!socket) return;
 
@@ -204,6 +249,7 @@ function Messages() {
 
   const handleSelectConversation = (conversation) => {
     setSelectedConversation(conversation);
+    setSearch("");
   };
 
   if (loading) {
@@ -249,15 +295,77 @@ function Messages() {
             <span>{conversations.length}</span>
           </div>
 
-          {conversations.length === 0 ? (
+          {/* Search bar */}
+          {(conversations.length > 0 || matches.length > 0) && (
+            <div className="conversation-search">
+              <i className="bi bi-search"></i>
+              <input
+                type="text"
+                placeholder="Search matches..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  title="Clear search"
+                >
+                  <i className="bi bi-x-circle-fill"></i>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* 👇 SEARCH MODE: show matched users */}
+          {search.trim() ? (
+            <div className="conversation-list">
+              {searchResults.length === 0 ? (
+                <div className="no-conversations">
+                  <div>🔍</div>
+                  <h3>No matches found</h3>
+                  <p>No matched user named "{search.trim()}".</p>
+                </div>
+              ) : (
+                searchResults.map((match) => (
+                  <button
+                    key={match._id}
+                    className="conversation-item"
+                    onClick={() => handleOpenMatch(match)}
+                  >
+                    <div className="conversation-avatar">
+                      {match.user?.photos?.[0]?.url ? (
+                        <img
+                          src={avatarImg(match.user.photos[0].url)}
+                          alt={match.user.name}
+                        />
+                      ) : (
+                        <span>
+                          {match.user?.name?.charAt(0)?.toUpperCase() || "?"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="conversation-content">
+                      <div className="conversation-top">
+                        <strong>{match.user?.name}</strong>
+                      </div>
+                      <p>
+                        💕 Matched{" "}
+                        {new Date(match.matchedAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          ) : conversations.length === 0 ? (
             <div className="no-conversations">
               <div>💬</div>
               <h3>No conversations yet</h3>
               <p>Match with someone and start chatting.</p>
             </div>
           ) : conversations.length > 20 ? (
-            // 👇 VIRTUALIZED LIST for 20+ conversations (smooth scrolling)
-            <div style={{ height: "calc(100% - 70px)", overflow: "hidden" }}>
+            <div style={{ height: "calc(100% - 120px)", overflow: "hidden" }}>
               <Virtuoso
                 style={{ height: "100%" }}
                 data={conversations}
@@ -275,7 +383,6 @@ function Messages() {
               />
             </div>
           ) : (
-            // 👇 NORMAL RENDER for small lists (fewer than 20)
             <div className="conversation-list">
               {conversations.map((conversation) => (
                 <ConversationItem

@@ -22,9 +22,9 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
   const scrollRef = useRef(null);
   const isInitialLoad = useRef(true);
-  const readRequestedRef = useRef(new Set()); // NEW: prevent infinite mark-read spam
+  const readRequestedRef = useRef(new Set());
 
-  //  LOAD MESSAGES
+  // LOAD MESSAGES
   const loadMessages = async () => {
     try {
       const data = await getMessages(conversationId);
@@ -43,7 +43,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     loadMessages();
   }, [conversationId]);
 
-  //  AUTO-SCROLL
+  // AUTO-SCROLL
   useEffect(() => {
     if (!scrollRef.current || messages.length === 0) return;
 
@@ -51,7 +51,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       isInitialLoad.current = false;
     } else {
-      // smooth scroll for new messages
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
         behavior: "smooth",
@@ -59,12 +58,27 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     }
   }, [messages]);
 
-  //  NEW: reset read-requested tracker when conversation changes
+  // 👇 NEW: Mobile keyboard resize handler
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const onResize = () => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    };
+
+    vv.addEventListener("resize", onResize);
+    return () => vv.removeEventListener("resize", onResize);
+  }, []);
+
+  // Reset read-requested tracker when conversation changes
   useEffect(() => {
     readRequestedRef.current = new Set();
   }, [conversationId]);
 
-  //  MARK AS READ (socket = real-time, HTTP = DB backup)
+  // MARK AS READ (socket = real-time, HTTP = DB backup)
   useEffect(() => {
     if (!socket || !conversationId || messages.length === 0) return;
 
@@ -84,26 +98,23 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     pending.forEach((m) => {
       const messageId = typeof m._id === "string" ? m._id : m._id?.toString?.();
 
-      // 👇 NEW: guard to prevent infinite loop
       if (readRequestedRef.current.has(messageId)) return;
       readRequestedRef.current.add(messageId);
       socket.emit("mark_read", { messageId });
       markMessageAsRead(messageId).catch(() => {});
     });
 
-    // NEW: tell Navbar to refresh badge instantly
     if (pending.length > 0) {
       window.dispatchEvent(new CustomEvent("chat:messages-read"));
     }
   }, [messages, conversationId, currentUserId, socket]);
 
-  //  SOCKET EVENTS (with bulletproof ID matching)
+  // SOCKET EVENTS (with bulletproof ID matching)
   useEffect(() => {
     if (!socket || !conversationId) return;
 
     socket.emit("join_conversation", conversationId);
 
-    // Safe ID comparison for ALL types (string, ObjectId, nested _id)
     const sameId = (a, b) => {
       const idA =
         typeof a === "string" ? a : a?._id?.toString?.() || a?.toString?.();
@@ -125,7 +136,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         return [...prev, msg];
       });
 
-      // Auto-mark as read if chat is open
       const receiverId =
         typeof msg.receiver === "string"
           ? msg.receiver
@@ -135,7 +145,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         const messageId =
           typeof msg._id === "string" ? msg._id : msg._id?.toString?.();
 
-        // NEW: guard here too
         if (!readRequestedRef.current.has(messageId)) {
           readRequestedRef.current.add(messageId);
           socket.emit("mark_read", { messageId });
@@ -192,14 +201,13 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     };
   }, [socket, conversationId, currentUserId]);
 
-  //  SEND MESSAGE (all types)
+  // SEND MESSAGE (all types)
   const handleSend = async ({
     type = "text",
     text = "",
     file = null,
     attachment = null,
   }) => {
-    // 1. Create a temporary message to show immediately
     const tempId = `temp-${Date.now()}`;
     const optimisticMessage = {
       _id: tempId,
@@ -227,12 +235,10 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
       await sendChatMessage(conversationId, { text, type, attachment: att });
 
-      // Success: Remove temp message (the real one will arrive via Socket)
       setMessages((prev) => prev.filter((m) => m._id !== tempId));
     } catch (err) {
       console.error("Send error:", err);
 
-      // Failure: Mark the temporary message as failed (turns red)
       setMessages((prev) =>
         prev.map((m) => (m._id === tempId ? { ...m, failed: true } : m))
       );
@@ -241,7 +247,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     }
   };
 
-  //  REACTIONS & DELETE
+  // REACTIONS & DELETE
   const handleReact = async (messageId, emoji) => {
     try {
       await reactToMessage(messageId, emoji);
@@ -256,18 +262,17 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       if (scope === "me") {
         setMessages((prev) => prev.filter((m) => m._id !== messageId));
       }
-      // "everyone" deletion is handled by socket event
     } catch (e) {
       alert(e.response?.data?.message || "Failed to delete");
     }
   };
 
-  //  LIGHTBOX HANDLER
+  // LIGHTBOX HANDLER
   const handleImageClick = (url) => {
     setLightbox({ photos: [url], index: 0 });
   };
 
-  //  RENDER
+  // RENDER
   return (
     <div className="chat-window">
       {/* HEADER */}

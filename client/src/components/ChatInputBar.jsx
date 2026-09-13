@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { compressChatImage } from "../utils/imageCompressor"; // 👈 ADD
-import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import { compressChatImage } from "../utils/imageCompressor";
+import { useAlert } from "../context/AlertContext";
 
 const EMOJIS = [
   "😀",
@@ -46,14 +46,14 @@ const GIFS = [
 ];
 
 function ChatInputBar({ onSend, disabled }) {
-  const toast = useAlert(); // 👈 ADD
+  const toast = useAlert();
 
   const [text, setText] = useState("");
-  const [panel, setPanel] = useState(null); // "emoji" | "gif" | "sticker"
+  const [panel, setPanel] = useState(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const [compressing, setCompressing] = useState(false); // 👈 ADD
+  const [compressing, setCompressing] = useState(false);
 
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -61,6 +61,7 @@ function ChatInputBar({ onSend, disabled }) {
   const cancelRef = useRef(false);
   const fileRef = useRef(null);
   const composerRef = useRef(null);
+  const inputRef = useRef(null); // 👈 NEW: input ref for focus control
 
   // CLOSE PANELS + PLUS MENU ON OUTSIDE CLICK
   useEffect(() => {
@@ -91,11 +92,21 @@ function ChatInputBar({ onSend, disabled }) {
       "0"
     )}`;
 
-  const submitText = () => {
+  // 👇 FIXED: keep cursor/keyboard alive after sending
+  const submitText = async () => {
     if (!text.trim()) return;
-    onSend({ type: "text", text });
+    const payload = { type: "text", text };
     setText("");
     setPanel(null);
+    await onSend(payload); // wait for send to finish
+    requestAnimationFrame(() => inputRef.current?.focus()); // cursor returns
+  };
+
+  // 👇 NEW: scroll composer into view when keyboard opens on mobile
+  const handleInputFocus = () => {
+    setTimeout(() => {
+      composerRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 250);
   };
 
   const startRecording = async () => {
@@ -127,7 +138,6 @@ function ChatInputBar({ onSend, disabled }) {
       setSeconds(0);
       timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
     } catch (e) {
-      // 👇 REPLACE alert with toast
       toast.error(
         "Microphone access denied. Please allow microphone permissions.",
         "Permission needed",
@@ -146,7 +156,6 @@ function ChatInputBar({ onSend, disabled }) {
     recorderRef.current?.stop();
   };
 
-  // 👇 NEW: Handle image upload with compression
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -171,7 +180,6 @@ function ChatInputBar({ onSend, disabled }) {
       onSend({ type: "image", file: compressedFile });
     } catch (error) {
       console.error("Image compression error:", error);
-      // Fallback to original if compression fails
       onSend({ type: "image", file });
     } finally {
       setCompressing(false);
@@ -202,7 +210,6 @@ function ChatInputBar({ onSend, disabled }) {
         </div>
       ) : (
         <>
-          {/* MOBILE: + BUTTON (voice / photo / gif / sticker) */}
           <button
             type="button"
             className={`composer-plus-btn ${plusOpen ? "active" : ""}`}
@@ -217,7 +224,6 @@ function ChatInputBar({ onSend, disabled }) {
             ></i>
           </button>
 
-          {/* DESKTOP ICONS (hidden on mobile) */}
           <div className="composer-desktop-icons">
             <button
               className="composer-icon"
@@ -265,22 +271,24 @@ function ChatInputBar({ onSend, disabled }) {
             accept="image/*"
             className="d-none"
             ref={fileRef}
-            onChange={handleImageUpload} // 👇 UPDATED: use new handler
+            onChange={handleImageUpload}
           />
 
           <div className="composer-input-wrap">
             <input
+              ref={inputRef}
               type="text"
               value={text}
               placeholder="Aa"
-              disabled={disabled || compressing}
+              disabled={compressing}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submitText()}
+              onFocus={handleInputFocus}
             />
 
-            {/* EMOJI inside input — visible on BOTH desktop & mobile */}
             <button
               className={`composer-icon ${panel === "emoji" ? "active" : ""}`}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => setPanel(panel === "emoji" ? null : "emoji")}
               title="Emoji"
               disabled={compressing}
@@ -300,7 +308,6 @@ function ChatInputBar({ onSend, disabled }) {
         </>
       )}
 
-      {/* + MENU: voice / photo / gif / STICKER */}
       {plusOpen && (
         <div className="plus-menu">
           <button
@@ -353,7 +360,6 @@ function ChatInputBar({ onSend, disabled }) {
         </div>
       )}
 
-      {/* Panels (emoji / sticker / gif) */}
       {panel === "emoji" && (
         <div className="composer-panel emoji-panel">
           {EMOJIS.map((e) => (

@@ -1367,8 +1367,6 @@
   }
 }
 
-
-
 /* ============ SHARED POST IN CHAT ============ */
 .message-bubble-post {
   padding: 0 !important;
@@ -1382,7 +1380,7 @@
   overflow: hidden;
   max-width: 280px;
   text-align: left;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
 .chat-shared-label {
@@ -1425,11 +1423,17 @@
 }
 
 @media (max-width: 576px) {
-  .chat-shared-post { max-width: 220px; }
-  .chat-shared-img { height: 120px; }
-  .chat-shared-content { font-size: 0.82rem; padding: 8px 10px 2px; }
+  .chat-shared-post {
+    max-width: 220px;
+  }
+  .chat-shared-img {
+    height: 120px;
+  }
+  .chat-shared-content {
+    font-size: 0.82rem;
+    padding: 8px 10px 2px;
+  }
 }
-
 
 /* clickable shared post */
 .chat-shared-clickable {
@@ -1454,10 +1458,18 @@
   font-weight: 700;
 }
 
-.chat-shared-cta i { font-size: 1rem; }
+.chat-shared-cta i {
+  font-size: 1rem;
+}
 
-.chat-shared-dead { opacity: 0.7; cursor: default; }
-.chat-shared-dead .chat-shared-content { color: #9ca3af; font-style: italic; }
+.chat-shared-dead {
+  opacity: 0.7;
+  cursor: default;
+}
+.chat-shared-dead .chat-shared-content {
+  color: #9ca3af;
+  font-style: italic;
+}
 
 /* post detail page back button */
 .post-detail-back {
@@ -1474,4 +1486,70 @@
   border-radius: 8px;
 }
 
-.post-detail-back:hover { background: #fdf2f8; }
+.post-detail-back:hover {
+  background: #fdf2f8;
+}
+
+/* Search bar */
+.conversation-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 10px;
+  background: #f0f2f5;
+  border-radius: 999px;
+  padding: 9px 14px;
+  color: #65676b;
+  transition: box-shadow 0.2s, background 0.2s;
+}
+
+.conversation-search:focus-within {
+  background: #fff;
+  box-shadow: 0 0 0 2px #ec4899;
+}
+
+.conversation-search > i {
+  color: #ec4899;
+  flex-shrink: 0;
+}
+
+.conversation-search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  width: 100%;
+  font-size: 0.95rem;
+  color: #1c1e21;
+}
+
+.conversation-search button {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  padding: 0;
+  display: flex;
+}
+
+/* Mobile: keyboard-safe layout */
+@media (max-width: 768px) {
+  .messages-page {
+    height: 100dvh;
+    overflow: hidden;
+  }
+  .messages-container {
+    height: 100%;
+  }
+  .chat-window {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .chat-messages {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .chat-composer {
+    flex-shrink: 0;
+  }
+}
