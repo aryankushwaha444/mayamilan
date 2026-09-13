@@ -7,6 +7,7 @@ import {
   refreshAccessToken,
   logoutUser,
 } from "../services/authService";
+import { unsubscribeFromPush } from "../utils/alerts"; // 👈 ADD for push cleanup
 
 const AuthContext = createContext(null);
 
@@ -26,7 +27,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem("user", JSON.stringify(updatedUser));
   };
 
-  // 👇 NEW: silent session restore helper (used on init AND mid-session)
+  // Silent session restore helper (used on init AND mid-session)
   const trySilentRefresh = async () => {
     try {
       const refreshed = await refreshAccessToken(); // sends httpOnly cookie
@@ -83,7 +84,7 @@ export const AuthProvider = ({ children }) => {
           throw new Error("invalid-token");
         }
       } catch (error) {
-        // 👇 KEY FIX: access token dead? Try REFRESH before killing session
+        // KEY FIX: access token dead? Try REFRESH before killing session
         const restored = await trySilentRefresh();
 
         if (!restored) {
@@ -151,8 +152,14 @@ export const AuthProvider = ({ children }) => {
     return response;
   };
 
-  // LOGOUT
+  // LOGOUT — 👇 ADDED: unsubscribe from push notifications FIRST
   const logout = async () => {
+    try {
+      await unsubscribeFromPush(); // 👈 KEY: stop getting push after logout
+    } catch (err) {
+      console.warn("Push unsubscribe failed:", err);
+    }
+
     try {
       await logoutUser();
     } catch (error) {
@@ -179,7 +186,7 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         updateUser,
-        trySilentRefresh, //  expose for axios interceptor if needed
+        trySilentRefresh, // expose for axios interceptor if needed
       }}
     >
       {children}

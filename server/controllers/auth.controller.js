@@ -5,6 +5,7 @@ import RefreshToken from "../models/RefreshToken.js";
 import { registerSchema, loginSchema } from "../validators/auth.validator.js";
 import { sendOTP } from "../config/email.js";
 import { generateOTP, saveOTP, verifyOTP } from "../utils/otp.js";
+import { sendPushToMany } from "../utils/push.js"; // 👈 ADD
 
 import {
   generateAccessToken,
@@ -62,6 +63,40 @@ export const register = async (req, res) => {
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
+
+    // 👇 NEW: Notify recent active users about the new member
+    try {
+      const audience = await User.find({
+        _id: { $ne: user._id },
+        isActive: true,
+      })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .select("_id");
+
+      const audienceIds = audience.map((u) => u._id);
+
+      // 👇 PUSH: notify offline users
+      sendPushToMany(audienceIds, {
+        title: "New member joined 💕",
+        body: `${user.name} just joined Maya~Milan`,
+        url: `/users/${user._id}`,
+      });
+
+      // 👇 SOCKET: notify online users in real-time
+      const io = getIO();
+      if (io && audienceIds.length > 0) {
+        audienceIds.forEach((userId) => {
+          io.to(`user:${userId}`).emit("new_member", {
+            userId: user._id.toString(),
+            name: user.name,
+            photos: user.photos || [],
+          });
+        });
+      }
+    } catch (pushErr) {
+      console.warn("New user notification failed:", pushErr.message);
+    }
 
     return res.status(201).json({
       success: true,
@@ -143,7 +178,6 @@ export const login = async (req, res) => {
     });
 
     user.lastSeen = new Date();
-
     await user.save();
 
     return res.status(200).json({
@@ -234,7 +268,7 @@ export const refreshAccessToken = async (req, res) => {
 
     const tokenHash = hashToken(refreshToken);
 
-    // 🔒 Replay detection: if a revoked token is reused → nuke all sessions
+    // 🔒 Replay detection
     const revokedToken = await RefreshToken.findOne({
       tokenHash,
       revokedAt: { $ne: null },
@@ -271,7 +305,6 @@ export const refreshAccessToken = async (req, res) => {
         .json({ success: false, message: "Account unavailable" });
     }
 
-    // 👇 Rotate: revoke old, issue new
     const newAccessToken = generateAccessToken(user._id.toString());
     const newRefreshToken = generateRefreshToken(user._id.toString());
 
@@ -354,10 +387,6 @@ export const changePassword = async (req, res, next) => {
   }
 };
 
-/*
-SEND OTP
-POST /api/auth/send-otp
-*/
 export const sendOTPCode = async (req, res, next) => {
   try {
     const { email, name } = req.body;
@@ -392,10 +421,6 @@ export const sendOTPCode = async (req, res, next) => {
   }
 };
 
-/*
-VERIFY OTP
-POST /api/auth/verify-otp
-*/
 export const verifyOTPCode = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
@@ -444,7 +469,6 @@ export const forgotPassword = async (req, res, next) => {
       });
     }
 
-    // Check if user exists
     const user = await User.findOne({ email });
 
     if (!user) {
@@ -454,11 +478,9 @@ export const forgotPassword = async (req, res, next) => {
       });
     }
 
-    // Generate and save OTP
     const otp = generateOTP();
     await saveOTP(email, otp);
 
-    // Send email
     await sendOTP(email, otp, user.name);
 
     res.status(200).json({
@@ -471,10 +493,6 @@ export const forgotPassword = async (req, res, next) => {
   }
 };
 
-/*
-RESET PASSWORD (verifies OTP internally)
-POST /api/auth/reset-password
-*/
 export const resetPassword = async (req, res, next) => {
   try {
     const { email, otp, newPassword } = req.body;
@@ -493,7 +511,6 @@ export const resetPassword = async (req, res, next) => {
       });
     }
 
-    // 👇 Reuses the SAME verifyOTP util as registration
     const result = await verifyOTP(email, otp);
 
     if (!result.valid) {

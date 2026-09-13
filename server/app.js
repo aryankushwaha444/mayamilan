@@ -20,6 +20,7 @@ import passport from "./config/passport.js";
 import postRoutes from "./routes/post.routes.js";
 import compression from "compression";
 import bootstrapRoutes from "./routes/bootstrap.routes.js";
+import pushRoutes from "./routes/push.routes.js";
 
 const app = express();
 
@@ -90,6 +91,7 @@ app.use("/api/matches", matchRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/posts", postRoutes);
+app.use("/api/push", pushRoutes); 
 
 // admin routes
 app.use("/api/admin", adminRoutes);

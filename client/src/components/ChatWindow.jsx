@@ -43,6 +43,16 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     loadMessages();
   }, [conversationId]);
 
+  // 👇 NEW: Track active chat ID so alerts hook skips sound when viewing this chat
+  useEffect(() => {
+    if (conversationId) {
+      sessionStorage.setItem("activeChatId", conversationId);
+    }
+    return () => {
+      sessionStorage.removeItem("activeChatId");
+    };
+  }, [conversationId]);
+
   // AUTO-SCROLL
   useEffect(() => {
     if (!scrollRef.current || messages.length === 0) return;
@@ -58,7 +68,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     }
   }, [messages]);
 
-  // 👇 NEW: Mobile keyboard resize handler
+  // 👇 Mobile keyboard resize handler
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;

@@ -20,17 +20,34 @@ import App from "./App.jsx";
 
 import { AuthProvider } from "./context/AuthContext.jsx";
 import SocketProvider from "./context/SocketContext.jsx";
+import { useRealtimeAlerts } from "./hooks/useRealtimeAlerts"; // 👈 ADD
+import { usePushSubscription } from "./hooks/usePushSubscription"; // 👈 ADD
+
+// Service Worker registration
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/push-sw.js").catch(console.error);
+  });
+}
+
+/* BRIDGE COMPONENT (mounts hooks that need context) */
+function AlertsBridge() {
+  useRealtimeAlerts(); // sound + banner + vibration when app open
+  usePushSubscription(); // auto-subscribe push while session valid
+  return null;
+}
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <AlertProvider> 
-    <AuthProvider>
-      <SocketProvider>
-        <HelmetProvider>
-        <App />
-        </HelmetProvider>
-      </SocketProvider>
-    </AuthProvider>
-    </AlertProvider> 
+    <AlertProvider>
+      <AuthProvider>
+        <SocketProvider>
+          <HelmetProvider>
+            <AlertsBridge />
+            <App />
+          </HelmetProvider>
+        </SocketProvider>
+      </AuthProvider>
+    </AlertProvider>
   </React.StrictMode>
 );

@@ -8,6 +8,7 @@ import { getIO } from "../sockets/socket.js";
 import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import { invalidateCache, invalidateUserCache } from "../utils/cache.js";
+import { sendPushToMany, getMatchIds } from "../utils/push.js";
 
 // Helper: upload buffer to Cloudinary
 const uploadBufferToCloudinary = (buffer) => {
@@ -79,6 +80,43 @@ export const createPost = async (req, res, next) => {
     );
 
     console.log("✅ Post created:", post._id);
+
+    // 👇 Get match IDs first (needed for both push and socket)
+    const matchIds = await getMatchIds(req.user._id);
+
+    // 👇 PUSH: notify offline matches (browser closed / phone locked)
+    try {
+      if (matchIds.length > 0) {
+        sendPushToMany(matchIds, {
+          title: `${populated.author.name} shared a new post 📸`,
+          body: (content || "").slice(0, 80),
+          url: "/feed",
+        });
+      }
+    } catch (pushErr) {
+      console.warn("Post push failed:", pushErr.message);
+    }
+
+    // 👇 SOCKET: notify online matches in real-time (they hear sound + see banner)
+    try {
+      const io = getIO();
+      if (io && matchIds.length > 0) {
+        matchIds.forEach((matchId) => {
+          io.to(`user:${matchId}`).emit("new_post", {
+            postId: post._id.toString(),
+            author: {
+              _id: populated.author._id.toString(),
+              name: populated.author.name,
+              photos: populated.author.photos || [],
+            },
+            content: (content || "").slice(0, 80),
+            hasImages: images.length > 0,
+          });
+        });
+      }
+    } catch (emitErr) {
+      console.warn("Post socket emit failed:", emitErr.message);
+    }
 
     res.status(201).json({
       success: true,

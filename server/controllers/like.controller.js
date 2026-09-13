@@ -4,6 +4,7 @@ import Like from "../models/Like.js";
 import Match from "../models/Match.js";
 import { getIO } from "../sockets/socket.js";
 import Notification from "../models/Notification.js";
+import { sendPushIfOffline, sendPush } from "../utils/push.js";
 
 // LIKE USER
 // POST /api/likes/:userId
@@ -77,6 +78,17 @@ export const likeUser = async (req, res, next) => {
       });
     }
 
+    const liker = await User.findById(currentUserId).select("name");
+    sendPushIfOffline(
+      targetUserId,
+      {
+        title: `${liker?.name || "Someone"} liked you ❤️`,
+        body: "Tap to view their profile",
+        url: `/users/${currentUserId}`,
+      },
+      getIO
+    );
+
     // Check reciprocal like
     const mutualLike = await Like.findOne({
       from: targetUserId,
@@ -115,6 +127,7 @@ export const likeUser = async (req, res, next) => {
       });
 
       newMatch = true;
+
       // EMIT REAL-TIME EVENT TO BOTH USERS
       const io = getIO();
       if (io) {
@@ -123,7 +136,21 @@ export const likeUser = async (req, res, next) => {
         });
         io.to(`user:${targetUserId}`).emit("new_match", { matchId: match._id });
       }
-    }
+
+      // 👇 PUSH: "It's a Match!" to BOTH users
+      const me = await User.findById(currentUserId).select("name");
+      const them = await User.findById(targetUserId).select("name");
+      sendPush(currentUserId, {
+        title: "It's a Match! 💕",
+        body: `You and ${them?.name || "someone"} liked each other`,
+        url: `/messages?matchId=${match._id}`,
+      });
+      sendPush(targetUserId, {
+        title: "It's a Match! 💕",
+        body: `You and ${me?.name || "someone"} liked each other`,
+        url: `/messages?matchId=${match._id}`,
+      });
+    } // 👈 REMOVED extra closing brace that was here
 
     // Populate users
     await match.populate(

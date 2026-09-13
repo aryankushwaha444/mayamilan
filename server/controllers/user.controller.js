@@ -4,6 +4,8 @@ import Like from "../models/Like.js";
 import Match from "../models/Match.js";
 import Report from "../models/Report.js";
 import { invalidateUserCache } from "../utils/cache.js";
+import { sendPushToMany, getMatchIds } from "../utils/push.js";
+import { getIO } from "../sockets/socket.js";
 
 /*
 GET MY PROFILE
@@ -69,6 +71,39 @@ export const updateMyProfile = async (req, res, next) => {
       return res.status(404).json({
         message: "User not found",
       });
+    }
+
+    // 👇 Get match IDs for both push (offline) and socket (online)
+    const matchIds = await getMatchIds(req.user._id);
+
+    // 👇 PUSH: notify offline matches (browser closed / phone locked)
+    try {
+      if (matchIds.length > 0) {
+        sendPushToMany(matchIds, {
+          title: `${user.name} updated their profile ✨`,
+          body: "Tap to see what's new",
+          url: `/users/${user._id}`,
+        });
+      }
+    } catch (pushErr) {
+      console.warn("Profile update push failed:", pushErr.message);
+    }
+
+    // 👇 SOCKET: notify online matches in real-time (they hear sound + see banner)
+    try {
+      const io = getIO();
+      if (io && matchIds.length > 0) {
+        matchIds.forEach((matchId) => {
+          io.to(`user:${matchId}`).emit("profile_updated", {
+            userId: user._id.toString(),
+            name: user.name,
+            photos: user.photos || [],
+            updatedFields: Object.keys(updates),
+          });
+        });
+      }
+    } catch (emitErr) {
+      console.warn("Profile socket emit failed:", emitErr.message);
     }
 
     res.status(200).json({
