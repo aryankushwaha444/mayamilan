@@ -27,6 +27,26 @@ export const register = async (req, res) => {
     const { name, email, password, dateOfBirth, gender, relationshipGoal } =
       validation.data;
 
+    const today = new Date();
+    const birthDate = new Date(dateOfBirth);
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+
+    // Adjust age if birthday hasn't occurred yet this year
+    if (
+      monthDiff < 0 ||
+      (monthDiff === 0 && today.getDate() < birthDate.getDate())
+    ) {
+      age--;
+    }
+
+    if (age < 18) {
+      return res.status(400).json({
+        success: false,
+        message: "You must be at least 18 years old to register.",
+      });
+    }
+
     const existingUser = await User.findOne({ email });
 
     if (existingUser) {

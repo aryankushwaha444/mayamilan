@@ -3,12 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { sendOTP, verifyOTP } from "../services/authService";
 import SEO from "../components/SEO";
-import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import { useAlert } from "../context/AlertContext";
+import DatePicker from "react-datepicker";
+import { subYears } from "date-fns";
 
 function Register() {
   const navigate = useNavigate();
   const { register } = useAuth();
-  const toast = useAlert(); // 👈 ADD
+  const toast = useAlert();
+  const [dob, setDob] = useState(null);
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -482,13 +485,42 @@ function Register() {
                             <span className="input-group-text">
                               <i className="bi bi-calendar"></i>
                             </span>
-                            <input
-                              type="date"
-                              id="dateOfBirth"
-                              name="dateOfBirth"
+                            <DatePicker
+                              selected={
+                                formData.dateOfBirth
+                                  ? new Date(formData.dateOfBirth)
+                                  : null
+                              }
+                              onChange={(date) => {
+                                setDob(date);
+                                if (date) {
+                                  const formattedDate = date
+                                    .toISOString()
+                                    .split("T")[0];
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    dateOfBirth: formattedDate,
+                                  }));
+                                } else {
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    dateOfBirth: "",
+                                  }));
+                                }
+                              }}
+                              dateFormat="dd/MM/yyyy"
+                              placeholderText="dd/mm/yyyy"
+                              maxDate={subYears(new Date(), 18)}
+                              minDate={subYears(new Date(), 100)}
+                              showYearDropdown
+                              showMonthDropdown
+                              dropdownMode="select" // ← ADD THIS
+                              yearDropdownItemNumber={80}
                               className="form-control"
-                              value={formData.dateOfBirth}
-                              onChange={handleChange}
+                              wrapperClassName="datepicker-wrapper" // ← ADD THIS
+                              popperPlacement="bottom-start" // ← ADD THIS
+                              popperClassName="date-picker-popper" // ← ADD THIS
+                              required
                             />
                           </div>
                         </div>
