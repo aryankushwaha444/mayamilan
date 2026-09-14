@@ -1,7 +1,7 @@
 import Post from "../models/Post.js";
 import Comment from "../models/Comment.js";
 import { v2 as cloudinary } from "cloudinary";
-import streamifier from "streamifier"; // 👈 install this: npm install streamifier
+import streamifier from "streamifier";
 import Share from "../models/Share.js";
 import Match from "../models/Match.js";
 import { getIO } from "../sockets/socket.js";
@@ -33,11 +33,6 @@ export const createPost = async (req, res, next) => {
     const { content } = req.body;
     const author = req.user._id;
 
-    console.log("📝 Creating post:", {
-      content: content?.slice(0, 50),
-      fileCount: req.files?.length || 0,
-    });
-
     if (!content || content.trim().length === 0) {
       return res.status(400).json({
         success: false,
@@ -45,21 +40,17 @@ export const createPost = async (req, res, next) => {
       });
     }
 
-    // Upload images from buffer (memory storage)
     const images = [];
     if (req.files && req.files.length > 0) {
-      console.log(`📸 Uploading ${req.files.length} image(s) from buffer...`);
-
       for (const file of req.files) {
         try {
           const result = await uploadBufferToCloudinary(file.buffer);
-          console.log("✅ Uploaded:", result.secure_url);
           images.push({
             url: result.secure_url,
             publicId: result.public_id,
           });
         } catch (uploadError) {
-          console.error("❌ Cloudinary upload failed:", uploadError.message);
+          console.error("Cloudinary upload failed:", uploadError.message);
           return res.status(500).json({
             success: false,
             message: `Image upload failed: ${uploadError.message}`,
@@ -79,25 +70,9 @@ export const createPost = async (req, res, next) => {
       "name photos isVerified"
     );
 
-    console.log("✅ Post created:", post._id);
-
-    // 👇 Get match IDs first (needed for both push and socket)
     const matchIds = await getMatchIds(req.user._id);
 
-    // 👇 PUSH: notify offline matches (browser closed / phone locked)
-    try {
-      if (matchIds.length > 0) {
-        sendPushToMany(matchIds, {
-          title: `${populated.author.name} shared a new post 📸`,
-          body: (content || "").slice(0, 80),
-          url: "/feed",
-        });
-      }
-    } catch (pushErr) {
-      console.warn("Post push failed:", pushErr.message);
-    }
-
-    // 👇 SOCKET: notify online matches in real-time (they hear sound + see banner)
+    // Notify matches
     try {
       const io = getIO();
       if (io && matchIds.length > 0) {
@@ -130,14 +105,15 @@ export const createPost = async (req, res, next) => {
     });
     await invalidateCache("feed:*");
   } catch (error) {
-    console.error("❌ Create post error:", error.message);
+    console.error("Create post error:", error.message);
     res.status(500).json({
       success: false,
       message: error.message || "Failed to create post",
     });
   }
 };
-// Get feed (all posts, newest first)
+
+// Get feed - FIXED VERSION
 export const getFeed = async (req, res, next) => {
   try {
     const { page = 1, limit = 20 } = req.query;
@@ -154,7 +130,7 @@ export const getFeed = async (req, res, next) => {
         .lean(),
       Post.countDocuments(),
     ]);
-    // Who shared each post with the current user
+
     const postIds = posts.map((p) => p._id);
     const shares = await Share.find({
       post: { $in: postIds },
@@ -163,8 +139,6 @@ export const getFeed = async (req, res, next) => {
       .populate("sharedBy", "name")
       .lean();
 
-    const shareMap = {};
-    // Shares count = UNIQUE recipients per post (deduped)
     const shareCounts = await Share.aggregate([
       { $match: { post: { $in: postIds } } },
       { $group: { _id: "$post", recipients: { $addToSet: "$sharedTo" } } },
@@ -175,20 +149,44 @@ export const getFeed = async (req, res, next) => {
     shareCounts.forEach((s) => {
       shareCountMap[s._id.toString()] = s.count;
     });
+
+    const shareMap = {};
     shares.forEach((s) => {
       shareMap[s.post.toString()] = s.sharedBy;
     });
 
-    // Add user-specific flags
     const userId = req.user._id.toString();
-    const enriched = posts.map((post) => ({
-      ...post,
-      isLiked: post.likes.map((id) => id.toString()).includes(userId),
-      isSaved: post.saves.map((id) => id.toString()).includes(userId),
-      isMine: post.author._id.toString() === userId,
-      sharedBy: shareMap[post._id.toString()] || null,
-      sharesCount: shareCountMap[post._id.toString()] || 0,
-    }));
+
+    // ✅ SAFE MAPPING - This is the critical fix
+    const enriched = posts.map((post) => {
+      // Check if author exists before accessing _id
+      const authorExists = post.author && post.author._id;
+      const authorId = authorExists ? post.author._id.toString() : "deleted";
+
+      return {
+        ...post,
+        // Provide fallback author if deleted
+        author: authorExists
+          ? post.author
+          : {
+              _id: "deleted",
+              name: "Deleted User",
+              photos: [],
+              isVerified: false,
+            },
+        isLiked:
+          post.likes && Array.isArray(post.likes)
+            ? post.likes.map((id) => id.toString()).includes(userId)
+            : false,
+        isSaved:
+          post.saves && Array.isArray(post.saves)
+            ? post.saves.map((id) => id.toString()).includes(userId)
+            : false,
+        isMine: authorId === userId,
+        sharedBy: shareMap[post._id.toString()] || null,
+        sharesCount: shareCountMap[post._id.toString()] || 0,
+      };
+    });
 
     res.status(200).json({
       success: true,
@@ -202,6 +200,7 @@ export const getFeed = async (req, res, next) => {
       },
     });
   } catch (error) {
+    console.error("Get feed error:", error);
     next(error);
   }
 };
@@ -213,7 +212,6 @@ export const getMyPosts = async (req, res, next) => {
     const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
     const limitNumber = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
     const skip = (pageNumber - 1) * limitNumber;
-
     const userId = req.user._id;
 
     const [posts, total] = await Promise.all([
@@ -228,12 +226,14 @@ export const getMyPosts = async (req, res, next) => {
 
     const enriched = posts.map((post) => ({
       ...post,
-      isLiked: post.likes
-        .map((id) => id.toString())
-        .includes(userId.toString()),
-      isSaved: post.saves
-        .map((id) => id.toString())
-        .includes(userId.toString()),
+      isLiked:
+        post.likes && Array.isArray(post.likes)
+          ? post.likes.map((id) => id.toString()).includes(userId.toString())
+          : false,
+      isSaved:
+        post.saves && Array.isArray(post.saves)
+          ? post.saves.map((id) => id.toString()).includes(userId.toString())
+          : false,
       isMine: true,
     }));
 
@@ -268,11 +268,24 @@ export const getSavedPosts = async (req, res, next) => {
 
     const enriched = posts.map((post) => ({
       ...post,
-      isLiked: post.likes
-        .map((id) => id.toString())
-        .includes(userId.toString()),
+      author:
+        post.author && post.author._id
+          ? post.author
+          : {
+              _id: "deleted",
+              name: "Deleted User",
+              photos: [],
+              isVerified: false,
+            },
+      isLiked:
+        post.likes && Array.isArray(post.likes)
+          ? post.likes.map((id) => id.toString()).includes(userId.toString())
+          : false,
       isSaved: true,
-      isMine: post.author._id.toString() === userId.toString(),
+      isMine:
+        post.author && post.author._id
+          ? post.author._id.toString() === userId.toString()
+          : false,
     }));
 
     res.status(200).json({
@@ -304,9 +317,27 @@ export const getPostById = async (req, res, next) => {
       success: true,
       post: {
         ...post,
-        isLiked: post.likes.map((id) => id.toString()).includes(userId),
-        isSaved: post.saves.map((id) => id.toString()).includes(userId),
-        isMine: post.author._id.toString() === userId,
+        author:
+          post.author && post.author._id
+            ? post.author
+            : {
+                _id: "deleted",
+                name: "Deleted User",
+                photos: [],
+                isVerified: false,
+              },
+        isLiked:
+          post.likes && Array.isArray(post.likes)
+            ? post.likes.map((id) => id.toString()).includes(userId)
+            : false,
+        isSaved:
+          post.saves && Array.isArray(post.saves)
+            ? post.saves.map((id) => id.toString()).includes(userId)
+            : false,
+        isMine:
+          post.author && post.author._id
+            ? post.author._id.toString() === userId
+            : false,
       },
     });
   } catch (error) {
@@ -314,7 +345,7 @@ export const getPostById = async (req, res, next) => {
   }
 };
 
-// Edit post (content only, not images)
+// Edit post
 export const editPost = async (req, res, next) => {
   try {
     const { content } = req.body;
@@ -375,14 +406,11 @@ export const deletePost = async (req, res, next) => {
       return res.status(403).json({ success: false, message: "Unauthorized" });
     }
 
-    // Delete images from Cloudinary
     for (const img of post.images) {
       await cloudinary.uploader.destroy(img.publicId);
     }
 
-    // Delete all comments for this post
     await Comment.deleteMany({ post: post._id });
-
     await Post.deleteOne({ _id: post._id });
 
     res.status(200).json({
@@ -395,7 +423,7 @@ export const deletePost = async (req, res, next) => {
   }
 };
 
-// Toggle like
+// Toggle like - WITH REAL-TIME SOCKET
 export const toggleLike = async (req, res, next) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -419,6 +447,19 @@ export const toggleLike = async (req, res, next) => {
     }
 
     await post.save();
+
+    // ✅ BROADCAST TO ALL USERS
+    try {
+      const io = getIO();
+      if (io) {
+        io.emit("post_likes_updated", {
+          postId: post._id.toString(),
+          likesCount: post.likes.length,
+        });
+      }
+    } catch (emitErr) {
+      console.warn("Like socket emit failed:", emitErr.message);
+    }
 
     res.status(200).json({
       success: true,
@@ -467,7 +508,52 @@ export const toggleSave = async (req, res, next) => {
   }
 };
 
-// Add comment
+// Get comments
+export const getComments = async (req, res, next) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNumber = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
+    const skip = (pageNumber - 1) * limitNumber;
+    const userId = req.user._id.toString();
+
+    const [comments, total] = await Promise.all([
+      Comment.find({ post: req.params.id, parent: null })
+        .populate("author", "name photos isVerified")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNumber)
+        .lean(),
+      Comment.countDocuments({ post: req.params.id, parent: null }),
+    ]);
+
+    const enriched = comments.map((c) => ({
+      ...c,
+      author:
+        c.author && c.author._id
+          ? c.author
+          : {
+              _id: "deleted",
+              name: "Deleted User",
+              photos: [],
+              isVerified: false,
+            },
+      isMine:
+        c.author && c.author._id ? c.author._id.toString() === userId : false,
+      reactionSummary: summarizeReactions(c.reactions, userId),
+    }));
+
+    res.status(200).json({
+      success: true,
+      comments: enriched,
+      pagination: { page: pageNumber, limit: limitNumber, total },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Add comment — broadcasts count AND the full comment to everyone
 export const addComment = async (req, res, next) => {
   try {
     const { content } = req.body;
@@ -499,14 +585,32 @@ export const addComment = async (req, res, next) => {
       "name photos isVerified"
     );
 
+    const commentPayload = {
+      ...populated.toObject(),
+      reactionSummary: [],
+      repliesCount: 0,
+    };
+
+    // ✅ BROADCAST: count + the actual comment object to ALL connected users
+    try {
+      const io = getIO();
+      if (io) {
+        io.emit("post_comments_updated", {
+          postId: postId.toString(),
+          commentsCount: post.commentsCount,
+        });
+        io.emit("new_comment", {
+          postId: postId.toString(),
+          comment: commentPayload,
+        });
+      }
+    } catch (emitErr) {
+      console.warn("Comment socket emit failed:", emitErr.message);
+    }
+
     res.status(201).json({
       success: true,
-      comment: {
-        ...populated.toObject(),
-        isMine: true,
-        reactionSummary: [],
-        repliesCount: 0,
-      },
+      comment: { ...commentPayload, isMine: true },
       commentsCount: post.commentsCount,
     });
     await invalidateCache(`comments:*${postId}*`);
@@ -515,42 +619,7 @@ export const addComment = async (req, res, next) => {
   }
 };
 
-// Get comments for a post (top-level only, paginated)
-export const getComments = async (req, res, next) => {
-  try {
-    const { page = 1, limit = 20 } = req.query;
-    const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
-    const limitNumber = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 50);
-    const skip = (pageNumber - 1) * limitNumber;
-    const userId = req.user._id.toString();
-
-    const [comments, total] = await Promise.all([
-      Comment.find({ post: req.params.id, parent: null }) // 👈 top-level only
-        .populate("author", "name photos isVerified")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNumber)
-        .lean(),
-      Comment.countDocuments({ post: req.params.id, parent: null }),
-    ]);
-
-    const enriched = comments.map((c) => ({
-      ...c,
-      isMine: c.author._id.toString() === userId,
-      reactionSummary: summarizeReactions(c.reactions, userId),
-    }));
-
-    res.status(200).json({
-      success: true,
-      comments: enriched,
-      pagination: { page: pageNumber, limit: limitNumber, total },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Delete comment
+// Delete comment — broadcasts which comment ids were removed
 export const deleteComment = async (req, res, next) => {
   try {
     const comment = await Comment.findById(req.params.commentId);
@@ -559,27 +628,53 @@ export const deleteComment = async (req, res, next) => {
         .status(404)
         .json({ success: false, message: "Comment not found" });
 
-    if (comment.author.toString() !== req.user._id.toString()) {
+    const post = await Post.findById(comment.post);
+    const isCommentOwner =
+      comment.author.toString() === req.user._id.toString();
+    const isPostOwner =
+      post && post.author.toString() === req.user._id.toString();
+
+    if (!isCommentOwner && !isPostOwner) {
       return res.status(403).json({ success: false, message: "Unauthorized" });
     }
 
-    let removedCount = 1;
+    const removedIds = [comment._id.toString()];
 
     if (!comment.parent) {
-      // top-level → delete its replies too
-      const deleted = await Comment.deleteMany({ parent: comment._id });
-      removedCount += deleted.deletedCount;
+      // Top-level comment → also remove its replies (they were never in commentsCount)
+      const replies = await Comment.find({ parent: comment._id }).select("_id");
+      replies.forEach((r) => removedIds.push(r._id.toString()));
+      await Comment.deleteMany({ parent: comment._id });
+      await Comment.deleteOne({ _id: comment._id });
+      await Post.findByIdAndUpdate(comment.post, {
+        $inc: { commentsCount: -1 },
+      });
     } else {
-      // reply → decrement parent's counter
+      // Reply → only decrement parent's repliesCount, commentsCount untouched
       await Comment.findByIdAndUpdate(comment.parent, {
         $inc: { repliesCount: -1 },
       });
+      await Comment.deleteOne({ _id: comment._id });
     }
 
-    await Comment.deleteOne({ _id: comment._id });
-    await Post.findByIdAndUpdate(comment.post, {
-      $inc: { commentsCount: -removedCount },
-    });
+    const updatedPost = await Post.findById(comment.post);
+
+    try {
+      const io = getIO();
+      if (io) {
+        io.emit("comment_deleted", {
+          postId: comment.post.toString(),
+          removedIds,
+          commentsCount: updatedPost ? updatedPost.commentsCount : 0,
+        });
+        io.emit("post_comments_updated", {
+          postId: comment.post.toString(),
+          commentsCount: updatedPost ? updatedPost.commentsCount : 0,
+        });
+      }
+    } catch (emitErr) {
+      console.warn("Delete comment socket emit failed:", emitErr.message);
+    }
 
     res.status(200).json({ success: true, message: "Comment deleted" });
     await invalidateCache(`comments:*${comment.post}*`);
@@ -588,7 +683,6 @@ export const deleteComment = async (req, res, next) => {
   }
 };
 
-// 👇 Group reactions into [{ emoji, count, reactedByMe }]
 const summarizeReactions = (reactions, currentUserId) => {
   const map = {};
   (reactions || []).forEach((r) => {
@@ -600,28 +694,55 @@ const summarizeReactions = (reactions, currentUserId) => {
   return Object.values(map);
 };
 
+// GET replies
 // GET replies of a comment
 export const getReplies = async (req, res, next) => {
   try {
-    const userId = req.user._id.toString();
+    // ✅ Local helper — impossible to be "not defined"
+    const summarize = (reactions, currentUserId) => {
+      const map = {};
+      (reactions || []).forEach((r) => {
+        if (!map[r.emoji])
+          map[r.emoji] = { emoji: r.emoji, count: 0, reactedByMe: false };
+        map[r.emoji].count++;
+        if (String(r.user) === String(currentUserId))
+          map[r.emoji].reactedByMe = true;
+      });
+      return Object.values(map);
+    };
 
-    const replies = await Comment.find({ parent: req.params.commentId })
+    const commentId = req.params.commentId || req.params.id;
+    console.log("🔁 getReplies requested for commentId:", commentId);
+
+    const replies = await Comment.find({ parent: commentId })
       .populate("author", "name photos isVerified")
       .sort({ createdAt: 1 })
       .lean();
 
+    console.log("🔁 replies found in DB:", replies.length);
+
+    const userId = req.user._id.toString();
     const enriched = replies.map((r) => ({
       ...r,
-      isMine: r.author._id.toString() === userId,
-      reactionSummary: summarizeReactions(r.reactions, userId),
+      author: r.author
+        ? r.author
+        : {
+            _id: "deleted",
+            name: "Deleted User",
+            photos: [],
+            isVerified: false,
+          },
+      isMine: r.author ? String(r.author._id) === userId : false,
+      reactionSummary: summarize(r.reactions, userId),
     }));
 
     res.status(200).json({ success: true, replies: enriched });
   } catch (error) {
+    console.error("❌ getReplies error:", error.message);
     next(error);
   }
 };
-
+// CREATE a reply
 // CREATE a reply
 export const addReply = async (req, res, next) => {
   try {
@@ -655,14 +776,29 @@ export const addReply = async (req, res, next) => {
       "name photos isVerified"
     );
 
+    const replyPayload = {
+      ...populated.toObject(),
+      reactionSummary: [],
+      repliesCount: 0,
+    };
+
+    // ✅ BROADCAST the new reply to ALL connected users
+    try {
+      const io = getIO();
+      if (io) {
+        io.emit("new_reply", {
+          postId: postId.toString(),
+          parentCommentId: commentId.toString(),
+          reply: replyPayload,
+        });
+      }
+    } catch (emitErr) {
+      console.warn("Reply socket emit failed:", emitErr.message);
+    }
+
     res.status(201).json({
       success: true,
-      reply: {
-        ...populated.toObject(),
-        isMine: true,
-        reactionSummary: [],
-        repliesCount: 0,
-      },
+      reply: { ...replyPayload, isMine: true },
       repliesCount: parent.repliesCount,
     });
   } catch (error) {
@@ -670,34 +806,34 @@ export const addReply = async (req, res, next) => {
   }
 };
 
-// TOGGLE emoji reaction on a comment
+// TOGGLE emoji reaction
 export const toggleReaction = async (req, res, next) => {
   try {
     const { emoji } = req.body;
     const userId = req.user._id;
 
-    if (!emoji)
+    if (!emoji) {
       return res
         .status(400)
         .json({ success: false, message: "Emoji required" });
+    }
 
     const comment = await Comment.findById(req.params.commentId);
-    if (!comment)
+    if (!comment) {
       return res
         .status(404)
         .json({ success: false, message: "Comment not found" });
+    }
 
     const existing = comment.reactions.find(
       (r) => r.user.toString() === userId.toString()
     );
 
     if (existing && existing.emoji === emoji) {
-      // same emoji again → remove reaction
       comment.reactions = comment.reactions.filter(
         (r) => r.user.toString() !== userId.toString()
       );
     } else if (existing) {
-      // different emoji → switch it
       existing.emoji = emoji;
     } else {
       comment.reactions.push({ user: userId, emoji });
@@ -714,7 +850,7 @@ export const toggleReaction = async (req, res, next) => {
   }
 };
 
-// GET list of users you can share with (MATCHES ONLY)
+// GET share targets
 export const getShareTargets = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -736,7 +872,7 @@ export const getShareTargets = async (req, res, next) => {
   }
 };
 
-// SHARE post with selected matches (server validates match status)
+// SHARE post
 export const sharePost = async (req, res, next) => {
   try {
     const { userIds = [] } = req.body;
@@ -757,7 +893,6 @@ export const sharePost = async (req, res, next) => {
         .json({ success: false, message: "Post not found" });
     }
 
-    // SECURITY: matches only
     const matches = await Match.find({ users: currentUserId })
       .select("users")
       .lean();
@@ -777,7 +912,6 @@ export const sharePost = async (req, res, next) => {
       });
     }
 
-    // Share records (unique per post + sharer + recipient)
     await Share.bulkWrite(
       validTargets.map((id) => ({
         updateOne: {
@@ -794,7 +928,6 @@ export const sharePost = async (req, res, next) => {
       }))
     );
 
-    // 👇 Compute fresh unique-recipient count
     const shareCountAgg = await Share.aggregate([
       { $match: { post: post._id } },
       { $group: { _id: "$post", recipients: { $addToSet: "$sharedTo" } } },
@@ -802,7 +935,6 @@ export const sharePost = async (req, res, next) => {
     ]);
     const sharesCount = shareCountAgg[0]?.count || 0;
 
-    // 👇 Broadcast to ALL connected clients (every browser/tab)
     try {
       const io = getIO();
       if (io) {
@@ -812,13 +944,11 @@ export const sharePost = async (req, res, next) => {
         });
       }
     } catch (e) {
-      /* sockets optional */
+      console.warn("Share socket emit failed:", e.message);
     }
 
-    // Deliver as a chat message to each match
     for (const targetId of validTargets) {
       try {
-        // Find or create the conversation between the two matches
         let conversation = await Conversation.findOne({
           participants: { $all: [currentUserId, targetId] },
         });
@@ -829,7 +959,6 @@ export const sharePost = async (req, res, next) => {
           });
         }
 
-        // Create message with BOTH sender and receiver (your Message model requires both)
         const msg = await Message.create({
           conversation: conversation._id,
           sender: currentUserId,
@@ -839,13 +968,11 @@ export const sharePost = async (req, res, next) => {
           post: post._id,
         });
 
-        // Update conversation's last message
         await Conversation.findByIdAndUpdate(conversation._id, {
           lastMessage: msg._id,
           lastMessageAt: msg.createdAt,
         });
 
-        // Realtime delivery with FULL nested post object
         try {
           const io = getIO();
           if (io) {
@@ -883,7 +1010,7 @@ export const sharePost = async (req, res, next) => {
             });
           }
         } catch (e) {
-          /* sockets optional */
+          console.warn("Share message socket failed:", e.message);
         }
       } catch (e) {
         console.error("Share message failed for", targetId, e.message);
@@ -895,7 +1022,7 @@ export const sharePost = async (req, res, next) => {
       message: `Post shared with ${validTargets.length} ${
         validTargets.length === 1 ? "match" : "matches"
       }`,
-      sharedCount: sharesCount, // 👈 now the true total, not just this batch
+      sharedCount: sharesCount,
     });
   } catch (error) {
     next(error);

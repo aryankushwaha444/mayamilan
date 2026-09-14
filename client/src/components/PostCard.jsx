@@ -1,4 +1,4 @@
-import { useState, memo } from "react";
+import { useState, useEffect, memo } from "react";
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
 import CommentItem from "./CommentItem.jsx";
@@ -7,9 +7,13 @@ import ConfirmDialog from "./ConfirmDialog.jsx";
 import { useAlert } from "../context/AlertContext";
 import { avatarImg, postImg } from "../utils/cloudinary";
 import PhotoLightbox from "./PhotoLightbox.jsx";
+import { useSocket } from "../hooks/useSocket.js";
+import { useAuth } from "../hooks/useAuth";
 
 function PostCard({ post, onUpdate }) {
   const toast = useAlert();
+  const { socket } = useSocket();
+  const { user } = useAuth();
 
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
@@ -81,7 +85,13 @@ function PostCard({ post, onUpdate }) {
     setSubmittingComment(true);
     try {
       const res = await postService.addComment(post._id, commentText);
-      setComments([res.comment, ...comments]);
+
+      // ✅ GUARD: socket may have already added this comment before the API responded
+      setComments((prev) => {
+        if (prev.some((c) => c._id === res.comment._id)) return prev;
+        return [res.comment, ...prev];
+      });
+
       onUpdate({ ...post, commentsCount: res.commentsCount });
       setCommentText("");
     } catch (err) {
@@ -116,6 +126,41 @@ function PostCard({ post, onUpdate }) {
       toast.error("Failed to update post");
     }
   };
+
+  // ✅ REAL-TIME COMMENT SYNC
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleNewComment = ({ postId, comment }) => {
+      if (postId !== post._id) return;
+
+      setComments((prev) => {
+        // Prevent duplicate (author already added it locally)
+        if (prev.some((c) => c._id === comment._id)) return prev;
+
+        return [
+          {
+            ...comment,
+            isMine: String(comment.author?._id) === String(user?._id),
+          },
+          ...prev,
+        ];
+      });
+    };
+
+    const handleCommentDeleted = ({ postId, removedIds }) => {
+      if (postId !== post._id) return;
+      setComments((prev) => prev.filter((c) => !removedIds.includes(c._id)));
+    };
+
+    socket.on("new_comment", handleNewComment);
+    socket.on("comment_deleted", handleCommentDeleted);
+
+    return () => {
+      socket.off("new_comment", handleNewComment);
+      socket.off("comment_deleted", handleCommentDeleted);
+    };
+  }, [socket, post._id, user]);
 
   return (
     <article className="post-card">
@@ -304,6 +349,8 @@ function PostCard({ post, onUpdate }) {
                   key={c._id}
                   comment={c}
                   postId={post._id}
+                  canDelete={c.isMine || post.isMine}
+                  isPostOwner={post.isMine}
                   onDeleted={(id) => {
                     setComments((prev) => prev.filter((x) => x._id !== id));
                     onUpdate({

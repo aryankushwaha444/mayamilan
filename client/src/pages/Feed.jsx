@@ -9,7 +9,6 @@ import Loader from "../components/Loader.jsx";
 import { useAlert } from "../context/AlertContext";
 import { Virtuoso } from "react-virtuoso";
 
-// 👇 MOVED OUTSIDE: Prevents re-creation on every render (Virtuoso optimization)
 const FeedFooter = ({ loadingMore, hasMore, postsCount }) => {
   if (loadingMore) {
     return (
@@ -62,18 +61,68 @@ function Feed() {
     }
   };
 
+  // ✅ REAL-TIME SYNC — SAFE: never destroys the likes array
   useEffect(() => {
     if (!socket) return;
 
+    // Shares (was already working — unchanged)
     const handleSharesUpdated = ({ postId, sharesCount }) => {
       setPosts((prev) =>
         prev.map((p) => (p._id === postId ? { ...p, sharesCount } : p))
       );
     };
 
+    // ✅ LIKES: keep the array intact, only sync its LENGTH to the server count.
+    // PostCard's toggle logic (likes.includes / likes.length) keeps working perfectly.
+    const handleLikesUpdated = ({ postId, likesCount }) => {
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p._id !== postId) return p;
+
+          const arr = Array.isArray(p.likes) ? [...p.likes] : [];
+          if (arr.length === likesCount) {
+            return { ...p, likesCount };
+          }
+
+          const me = user?._id ? String(user._id) : null;
+
+          if (arr.length < likesCount) {
+            // Someone else liked → grow array with placeholder ids (display-only)
+            while (arr.length < likesCount) {
+              arr.push(`sync_${arr.length}_${Date.now()}`);
+            }
+          } else {
+            // Someone unliked → shrink, but NEVER remove MY OWN like id
+            while (arr.length > likesCount) {
+              let idx = arr.length - 1;
+              while (idx >= 0 && me && String(arr[idx]) === me) idx--;
+              if (idx < 0) break;
+              arr.splice(idx, 1);
+            }
+          }
+
+          return { ...p, likes: arr, likesCount };
+        })
+      );
+    };
+
+    // ✅ COMMENTS: commentsCount is a plain number on the post — safe to set directly
+    const handleCommentsUpdated = ({ postId, commentsCount }) => {
+      setPosts((prev) =>
+        prev.map((p) => (p._id === postId ? { ...p, commentsCount } : p))
+      );
+    };
+
     socket.on("post_shares_updated", handleSharesUpdated);
-    return () => socket.off("post_shares_updated", handleSharesUpdated);
-  }, [socket]);
+    socket.on("post_likes_updated", handleLikesUpdated);
+    socket.on("post_comments_updated", handleCommentsUpdated);
+
+    return () => {
+      socket.off("post_shares_updated", handleSharesUpdated);
+      socket.off("post_likes_updated", handleLikesUpdated);
+      socket.off("post_comments_updated", handleCommentsUpdated);
+    };
+  }, [socket, user]);
 
   useEffect(() => {
     loadFeed(1);

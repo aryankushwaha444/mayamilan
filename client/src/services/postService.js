@@ -64,8 +64,10 @@ export const postService = {
   },
 
   // 👇 NEW — now inside the object
-  getReplies: async (commentId) => {
-    const { data } = await api.get(`/posts/comments/${commentId}/replies`);
+  getReplies: async (postId, commentId) => {
+    const { data } = await api.get(
+      `/posts/${postId}/comments/${commentId}/replies`
+    );
     return data;
   },
 
