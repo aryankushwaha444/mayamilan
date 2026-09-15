@@ -12,7 +12,7 @@ import "./styles/chat.css";
 import "./styles/footer.css";
 import "./styles/admin.css";
 import "./styles/content.css";
-import "./styles/feed.css";
+import "./styles/feed.css?v=2";
 import "./styles/alert.css";
 import "./styles/loader.css";
 
