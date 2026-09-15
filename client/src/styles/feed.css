@@ -272,9 +272,11 @@
 }
 
 .post-images img {
+  display: block;
   width: 100%;
+  height: auto;
+  max-width: 100%;
   object-fit: cover;
-  height:auto;
 }
 
 .post-stats {
