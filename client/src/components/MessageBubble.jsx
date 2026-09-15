@@ -91,15 +91,33 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
           );
         }
 
+        // Safe post ID extraction (handles both string and object)
+        const postId =
+          typeof message.post === "string"
+            ? message.post
+            : message.post?._id || message.post?.id;
+
+        if (!postId) {
+          return (
+            <div className="chat-shared-post chat-shared-dead">
+              <div className="chat-shared-label">
+                <i className="bi bi-share-fill"></i> Shared post
+              </div>
+              <p className="chat-shared-content">
+                <i className="bi bi-slash-circle me-1"></i>
+                This post is no longer available
+              </p>
+            </div>
+          );
+        }
+
         return (
           <div
             className="chat-shared-post chat-shared-clickable"
             role="button"
             tabIndex={0}
-            onClick={() => navigate(`/post/${message.post._id}`)}
-            onKeyDown={(e) =>
-              e.key === "Enter" && navigate(`/post/${message.post._id}`)
-            }
+            onClick={() => navigate(`/post/${postId}`)}
+            onKeyDown={(e) => e.key === "Enter" && navigate(`/post/${postId}`)}
             title="Open post"
           >
             <div className="chat-shared-label">
@@ -113,7 +131,7 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
                 className="chat-shared-img"
                 loading="lazy"
                 onClick={(e) => {
-                  e.stopPropagation(); // 👈 lightbox, not navigate
+                  e.stopPropagation();
                   onImageClick?.(message.post.images[0].url);
                 }}
               />
@@ -140,7 +158,6 @@ function MessageBubble({ message, isMine, onReact, onDelete, onImageClick }) {
     }
   };
 
-  /* THE TICK LOGIC — this was missing in your file */
   const getStatusIcon = () => {
     if (!isMine) return null;
 
