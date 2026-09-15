@@ -273,7 +273,7 @@
 
 .post-images img {
   width: 100%;
-  object-fit: fit;
+  object-fit: cover;
 }
 
 .post-stats {
