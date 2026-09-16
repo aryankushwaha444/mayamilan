@@ -15,6 +15,16 @@ const standardConfig = (action) => ({
   message: standardMessage(action),
 });
 
+// ✅ Helper: Safe key generator that handles both user ID and IP properly
+const safeKeyGenerator = (req) => {
+  // If user is authenticated, use their ID (most secure)
+  if (req.user && req.user._id) {
+    return req.user._id.toString();
+  }
+  // Otherwise use IP (default behavior, IPv6-safe)
+  return req.ip;
+};
+
 // ========================================
 // AUTH LIMITS (very strict — these are attack surfaces)
 // ========================================
@@ -23,8 +33,9 @@ const standardConfig = (action) => ({
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  skipSuccessfulRequests: true, // only count failed attempts
+  skipSuccessfulRequests: true,
   ...standardConfig("login"),
+  // ✅ Use default IP-based key generator (no custom keyGenerator)
 });
 
 // Register: 3 accounts per hour per IP (anti-account-farming)
@@ -45,21 +56,18 @@ export const refreshLimiter = rateLimit({
 // EMAIL / OTP LIMITS (critical — email sending is expensive)
 // ========================================
 
-// Send OTP: 5 per hour per IP (prevent email bombing + cost abuse)
 export const sendOTPLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
   ...standardConfig("OTP requests"),
 });
 
-// Verify OTP: 10 attempts per 15 minutes (brute-force OTP codes)
 export const verifyOTPLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   ...standardConfig("OTP verification"),
 });
 
-// Password reset: 3 per hour per email (prevent password reset spam)
 export const passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 3,
@@ -70,19 +78,19 @@ export const passwordResetLimiter = rateLimit({
 // CONTENT LIMITS (spam protection)
 // ========================================
 
-// Messages: 30 per minute per user (anti-spam DMs)
+// Messages: 30 per minute per user
 export const messageLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.user?._id?.toString() || req.ip, // per-user, not per-IP
+  keyGenerator: safeKeyGenerator, // ✅ Safe for IPv6
   ...standardConfig("messages"),
 });
 
-// Posts: 10 per hour per user (prevent content spam)
+// Posts: 10 per hour per user
 export const postLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
-  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  keyGenerator: safeKeyGenerator,
   ...standardConfig("posts"),
 });
 
@@ -90,15 +98,15 @@ export const postLimiter = rateLimit({
 export const commentLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  keyGenerator: safeKeyGenerator,
   ...standardConfig("comments"),
 });
 
-// Likes/reactions: 120 per 15 minutes (generous — users like a lot)
+// Likes/reactions: 120 per 15 minutes
 export const reactionLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 120,
-  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  keyGenerator: safeKeyGenerator,
   ...standardConfig("reactions"),
 });
 
@@ -106,11 +114,10 @@ export const reactionLimiter = rateLimit({
 // UPLOAD LIMITS (storage abuse prevention)
 // ========================================
 
-// Image uploads: 20 per hour per user
 export const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
-  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  keyGenerator: safeKeyGenerator,
   ...standardConfig("uploads"),
 });
 
@@ -118,18 +125,16 @@ export const uploadLimiter = rateLimit({
 // DISCOVERY / SWIPE LIMITS (prevent bot swiping)
 // ========================================
 
-// Swipe actions: 200 per 15 minutes (generous but prevents bots)
 export const swipeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
-  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  keyGenerator: safeKeyGenerator,
   ...standardConfig("swipes"),
 });
 
-// Profile views: 100 per 15 minutes
 export const profileViewLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  keyGenerator: safeKeyGenerator,
   ...standardConfig("profile views"),
 });
