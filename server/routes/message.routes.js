@@ -14,16 +14,22 @@ import {
   uploadChatAttachment,
   reactToMessage,
   deleteMessage,
+  deleteConversation,
 } from "../controllers/message.controller.js";
 
 import { protect } from "../middleware/auth.middleware.js";
-import { deleteConversation } from "../controllers/message.controller.js";
-
+import { messageLimiter, uploadLimiter } from "../middleware/rateLimits.js"; // ✅
 
 const router = express.Router();
 
-// UPLOAD MUST BE FIRST — otherwise "/upload" is treated as a conversationId!
-router.post("/upload", protect, uploadMemory, uploadChatAttachment);
+// UPLOAD MUST BE FIRST
+router.post(
+  "/upload",
+  protect,
+  uploadLimiter,
+  uploadMemory,
+  uploadChatAttachment
+); // ✅ added
 
 // Conversations
 router.post("/conversations/:matchId", protect, createOrGetConversation);
@@ -31,12 +37,17 @@ router.get("/conversations", protect, getConversations);
 router.delete("/conversations/:conversationId", protect, deleteConversation);
 
 // Navbar helpers
-router.get("/unread-count", protect, cached("unread", 60), getUnreadMessageCount);
-router.get("/recent", protect, cached("recent", 60),getRecentConversations);
+router.get(
+  "/unread-count",
+  protect,
+  cached("unread", 60),
+  getUnreadMessageCount
+);
+router.get("/recent", protect, cached("recent", 60), getRecentConversations);
 
 // PARAMETERIZED ROUTES LAST
 router.get("/:conversationId", protect, getMessages);
-router.post("/:conversationId", protect, sendMessage);
+router.post("/:conversationId", protect, messageLimiter, sendMessage); // ✅ added limit
 
 router.patch("/:messageId/delivered", protect, markMessageAsDelivered);
 router.patch("/:messageId/read", protect, markMessageAsRead);

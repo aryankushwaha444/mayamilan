@@ -1,21 +1,33 @@
+// server/middleware/upload.middleware.js
 import multer from "multer";
 
-const storage = multer.memoryStorage();
+const ALLOWED_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+];
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILES = 5;
 
 const fileFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith("image/")) {
-    cb(null, true);
-  } else {
-    cb(new Error("Only image files are allowed"), false);
+  if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    return cb(
+      new Error("Invalid file type. Only JPEG, PNG, WebP, and GIF allowed."),
+      false
+    );
   }
+  cb(null, true);
 };
 
 const upload = multer({
-  storage,
-  fileFilter,
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5 MB
+    fileSize: MAX_FILE_SIZE,
+    files: MAX_FILES,
   },
+  fileFilter,
 });
 
 export default upload;

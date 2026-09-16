@@ -9,6 +9,7 @@ import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import { invalidateCache, invalidateUserCache } from "../utils/cache.js";
 import { sendPushToMany, getMatchIds } from "../utils/push.js";
+import { sanitize } from "../utils/sanitize.js";
 
 // Helper: upload buffer to Cloudinary
 const uploadBufferToCloudinary = (buffer) => {
@@ -59,9 +60,19 @@ export const createPost = async (req, res, next) => {
       }
     }
 
+    const cleanContent = sanitize(content);
+
+    if (!cleanContent || cleanContent.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Post content is required",
+      });
+    }
+
     const post = await Post.create({
       author,
       content: content.trim(),
+      content: cleanContent,
       images,
     });
 
@@ -367,7 +378,14 @@ export const editPost = async (req, res, next) => {
         .json({ success: false, message: "Content cannot be empty" });
     }
 
-    post.content = content.trim();
+    const cleanContent = sanitize(content);
+    if (!cleanContent || cleanContent.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Content cannot be empty" });
+    }
+
+    post.content = cleanContent;
     post.isEdited = true;
     await post.save();
 
@@ -571,10 +589,11 @@ export const addComment = async (req, res, next) => {
         .status(404)
         .json({ success: false, message: "Post not found" });
 
+    const cleanContent = sanitize(content);
     const comment = await Comment.create({
       post: postId,
       author: req.user._id,
-      content: content.trim(),
+      content: cleanContent, // ✅ SANITIZED
     });
 
     post.commentsCount += 1;
@@ -761,11 +780,12 @@ export const addReply = async (req, res, next) => {
         .status(404)
         .json({ success: false, message: "Comment not found" });
 
+    const cleanContent = sanitize(content);
     const reply = await Comment.create({
       post: postId,
       parent: commentId,
       author: req.user._id,
-      content: content.trim(),
+      content: cleanContent, // ✅ SANITIZED
     });
 
     parent.repliesCount += 1;

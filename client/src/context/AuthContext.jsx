@@ -7,17 +7,15 @@ import {
   refreshAccessToken,
   logoutUser,
 } from "../services/authService";
-import { unsubscribeFromPush } from "../utils/alerts"; // 👈 ADD for push cleanup
+import { unsubscribeFromPush } from "../utils/alerts";
 
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-
   const [accessToken, setAccessToken] = useState(() =>
     localStorage.getItem("accessToken")
   );
-
   const [loading, setLoading] = useState(true);
 
   const isAuthenticated = !!user && !!accessToken;
@@ -27,10 +25,10 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem("user", JSON.stringify(updatedUser));
   };
 
-  // Silent session restore helper (used on init AND mid-session)
+  // Silent session restore helper
   const trySilentRefresh = async () => {
     try {
-      const refreshed = await refreshAccessToken(); // sends httpOnly cookie
+      const refreshed = await refreshAccessToken();
       if (refreshed.success && refreshed.accessToken) {
         localStorage.setItem("accessToken", refreshed.accessToken);
         setAccessToken(refreshed.accessToken);
@@ -48,8 +46,11 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // INITIALIZE AUTH
+  // ==========================================
+  // INITIALIZE AUTH + EVENT LISTENERS
+  // ==========================================
   useEffect(() => {
+    // Listener: forced logout (from axios interceptor)
     const handleAuthLogout = () => {
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
@@ -57,10 +58,20 @@ export const AuthProvider = ({ children }) => {
       setUser(null);
     };
 
+    // ✅ Listener: silent token refresh from axios interceptor
+    const handleTokenRefreshed = (event) => {
+      const { accessToken: newToken } = event.detail || {};
+      if (newToken) {
+        setAccessToken(newToken);
+        localStorage.setItem("accessToken", newToken);
+      }
+    };
+
     window.addEventListener("auth:logout", handleAuthLogout);
+    window.addEventListener("auth:token-refreshed", handleTokenRefreshed);
 
     const initializeAuth = async () => {
-      // NUCLEAR: If we're on OAuth success page, DO NOTHING
+      // Skip if on OAuth success page
       if (window.location.pathname === "/oauth-success") {
         setLoading(false);
         return;
@@ -68,7 +79,6 @@ export const AuthProvider = ({ children }) => {
 
       const storedToken = localStorage.getItem("accessToken");
 
-      // If no token, just bail out silently
       if (!storedToken) {
         setLoading(false);
         return;
@@ -84,11 +94,10 @@ export const AuthProvider = ({ children }) => {
           throw new Error("invalid-token");
         }
       } catch (error) {
-        // KEY FIX: access token dead? Try REFRESH before killing session
+        // Access token dead? Try refresh before killing session
         const restored = await trySilentRefresh();
 
         if (!restored) {
-          // Refresh cookie also dead/expired → NOW logout is correct
           localStorage.removeItem("accessToken");
           localStorage.removeItem("user");
           setAccessToken(null);
@@ -103,10 +112,13 @@ export const AuthProvider = ({ children }) => {
 
     return () => {
       window.removeEventListener("auth:logout", handleAuthLogout);
+      window.removeEventListener("auth:token-refreshed", handleTokenRefreshed);
     };
   }, []);
 
+  // ==========================================
   // REGISTER
+  // ==========================================
   const register = async (userData) => {
     const response = await registerUser(userData);
 
@@ -124,7 +136,9 @@ export const AuthProvider = ({ children }) => {
     return response;
   };
 
+  // ==========================================
   // LOGIN
+  // ==========================================
   const login = async (credentials) => {
     const response = await loginUser(credentials);
 
@@ -133,6 +147,7 @@ export const AuthProvider = ({ children }) => {
 
       localStorage.setItem("accessToken", newToken);
       setAccessToken(newToken);
+
       try {
         const freshData = await getCurrentUser();
         if (freshData.success && freshData.user) {
@@ -152,10 +167,12 @@ export const AuthProvider = ({ children }) => {
     return response;
   };
 
-  // LOGOUT — 👇 ADDED: unsubscribe from push notifications FIRST
+  // ==========================================
+  // LOGOUT
+  // ==========================================
   const logout = async () => {
     try {
-      await unsubscribeFromPush(); // 👈 KEY: stop getting push after logout
+      await unsubscribeFromPush();
     } catch (err) {
       console.warn("Push unsubscribe failed:", err);
     }
@@ -186,7 +203,7 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         updateUser,
-        trySilentRefresh, // expose for axios interceptor if needed
+        trySilentRefresh,
       }}
     >
       {children}

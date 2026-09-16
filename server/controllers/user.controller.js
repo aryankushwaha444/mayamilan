@@ -6,6 +6,7 @@ import Report from "../models/Report.js";
 import { invalidateUserCache } from "../utils/cache.js";
 import { sendPushToMany, getMatchIds } from "../utils/push.js";
 import { getIO } from "../sockets/socket.js";
+import { logAudit } from "../utils/auditLogger.js"; // ✅ ADD THIS IMPORT
 
 /*
 GET MY PROFILE
@@ -72,6 +73,13 @@ export const updateMyProfile = async (req, res, next) => {
         message: "User not found",
       });
     }
+
+    // ✅ AUDIT: Log profile update BEFORE notifications
+    await logAudit(req, "profile_updated", {
+      userId: user._id,
+      fields: Object.keys(updates),
+      deviceInfo: req.get("user-agent"),
+    });
 
     // 👇 Get match IDs for both push (offline) and socket (online)
     const matchIds = await getMatchIds(req.user._id);
@@ -219,6 +227,14 @@ export const uploadProfilePhoto = async (req, res, next) => {
 
     await user.save();
 
+    // ✅ AUDIT: Log photo upload
+    await logAudit(req, "photo_uploaded", {
+      userId: user._id,
+      photoId: result.public_id,
+      isPrimary,
+      totalPhotos: user.photos.length,
+    });
+
     res.status(201).json({
       message: "Profile photo uploaded successfully",
       photos: user.photos,
@@ -254,8 +270,10 @@ export const deleteProfilePhoto = async (req, res, next) => {
       });
     }
 
+    const publicId = photo.publicId;
+
     // Delete image from Cloudinary
-    await cloudinary.uploader.destroy(photo.publicId);
+    await cloudinary.uploader.destroy(publicId);
 
     const wasPrimary = photo.isPrimary;
 
@@ -268,6 +286,14 @@ export const deleteProfilePhoto = async (req, res, next) => {
     }
 
     await user.save();
+
+    // ✅ AUDIT: Log photo deletion
+    await logAudit(req, "photo_deleted", {
+      userId: user._id,
+      photoId: publicId,
+      wasPrimary,
+      remainingPhotos: user.photos.length,
+    });
 
     res.status(200).json({
       message: "Profile photo deleted successfully",
@@ -313,6 +339,12 @@ export const setPrimaryPhoto = async (req, res, next) => {
     photoExists.isPrimary = true;
 
     await user.save();
+
+    // ✅ AUDIT: Log primary photo change
+    await logAudit(req, "primary_photo_changed", {
+      userId: user._id,
+      newPrimaryPhotoId: photoId,
+    });
 
     res.status(200).json({
       message: "Primary photo updated successfully",
@@ -361,6 +393,14 @@ export const reportUser = async (req, res, next) => {
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
+    // ✅ AUDIT: Log user report
+    await logAudit(req, "user_reported", {
+      reporterId: req.user._id,
+      reportedUserId: userId,
+      reportedUserName: target.name,
+      messageLength: message.trim().length,
+    });
+
     res.status(200).json({
       success: true,
       message: "Report submitted. Our team will review it.",
@@ -399,6 +439,13 @@ export const toggleBlock = async (req, res, next) => {
     }
 
     await me.save();
+
+    // ✅ AUDIT: Log block/unblock action
+    await logAudit(req, alreadyBlocked ? "user_unblocked" : "user_blocked", {
+      userId: req.user._id,
+      targetUserId: userId,
+      action: alreadyBlocked ? "unblocked" : "blocked",
+    });
 
     res.status(200).json({
       success: true,

@@ -8,6 +8,20 @@ import Match from "../models/Match.js";
 import User from "../models/User.js";
 import { getIO } from "../sockets/socket.js";
 import { sendPushIfOffline } from "../utils/push.js";
+import { sanitize, sanitizeUrl } from "../utils/sanitize.js";
+
+// ✅ Whitelist allowed file types for chat uploads
+const ALLOWED_CHAT_MIME = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "audio/webm",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/ogg",
+  "audio/wav",
+];
 
 // CREATE / GET CONVERSATION FROM MATCH
 export const createOrGetConversation = async (req, res) => {
@@ -15,7 +29,6 @@ export const createOrGetConversation = async (req, res) => {
     const currentUserId = req.user._id;
     const { matchId } = req.params;
 
-    // Find match
     const match = await Match.findOne({ _id: matchId, users: currentUserId });
     if (!match) {
       return res
@@ -23,7 +36,6 @@ export const createOrGetConversation = async (req, res) => {
         .json({ success: false, message: "Match not found" });
     }
 
-    // Find other user
     const otherUserId = match.users.find(
       (id) => id.toString() !== currentUserId.toString()
     );
@@ -33,7 +45,6 @@ export const createOrGetConversation = async (req, res) => {
         .json({ success: false, message: "No other user in match" });
     }
 
-    // Check blocks
     const me = await User.findById(currentUserId).select(
       "blockedUsers isActive"
     );
@@ -58,7 +69,6 @@ export const createOrGetConversation = async (req, res) => {
       return res.status(403).json({ success: false, message: "Blocked" });
     }
 
-    // Prepare sorted participants and unique key
     const participants = [currentUserId.toString(), otherUserId.toString()]
       .sort()
       .map((id) => new mongoose.Types.ObjectId(id));
@@ -67,20 +77,17 @@ export const createOrGetConversation = async (req, res) => {
       .sort()
       .join("_");
 
-    // Find existing conversation (by key first, fallback to array query)
     let conversation =
       (await Conversation.findOne({ participantsKey })) ||
       (await Conversation.findOne({
         participants: { $all: participants, $size: 2 },
       }));
 
-    // Backfill the key if it's missing (old conversations)
     if (conversation && !conversation.participantsKey) {
       conversation.participantsKey = participantsKey;
       await conversation.save();
     }
 
-    // Create if not found, with race condition handling
     if (!conversation) {
       try {
         conversation = await Conversation.create({
@@ -88,7 +95,6 @@ export const createOrGetConversation = async (req, res) => {
           participantsKey,
         });
       } catch (err) {
-        // Race condition: another request created it at the same moment
         if (err.code === 11000) {
           conversation = await Conversation.findOne({ participantsKey });
         } else {
@@ -97,7 +103,6 @@ export const createOrGetConversation = async (req, res) => {
       }
     }
 
-    // Populate and return
     conversation = await Conversation.findById(conversation._id)
       .populate("participants", "_id name photos isOnline lastSeen")
       .populate(
@@ -232,18 +237,34 @@ export const getMessages = async (req, res, next) => {
   }
 };
 
-// SEND MESSAGE (text, image, voice, gif, sticker, heart)
+// ✅ SEND MESSAGE with all security fixes
 export const sendMessage = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
     const { conversationId } = req.params;
-    const { text = "", type = "text", attachment = null } = req.body || {};
+    let { text = "", type = "text", attachment = null } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(conversationId)) {
       return res.status(400).json({
         success: false,
         message: "Invalid conversation ID",
       });
+    }
+
+    // ✅ Whitelist message types
+    const ALLOWED_TYPES = [
+      "text",
+      "image",
+      "voice",
+      "gif",
+      "sticker",
+      "heart",
+      "post",
+    ];
+    if (!ALLOWED_TYPES.includes(type)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid message type" });
     }
 
     // Validate text for text messages
@@ -254,13 +275,24 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    const cleanText = (text || "").trim();
+    const cleanText = sanitize(text || "");
 
     if (cleanText.length > 2000) {
       return res.status(400).json({
         success: false,
         message: "Message cannot exceed 2000 characters",
       });
+    }
+
+    // ✅ Sanitize attachment URL (blocks javascript:/data: XSS)
+    if (attachment && attachment.url) {
+      const safeUrl = sanitizeUrl(attachment.url);
+      if (!safeUrl) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid attachment URL" });
+      }
+      attachment = { ...attachment, url: safeUrl };
     }
 
     const conversation = await Conversation.findOne({
@@ -312,7 +344,18 @@ export const sendMessage = async (req, res, next) => {
       });
     }
 
-    // Create message with type and attachment support
+    // ✅ MATCH-ONLY MESSAGING: verify the match still exists (covers unmatch)
+    const match = await Match.findOne({
+      users: { $all: [currentUserId, receiverId] },
+    });
+
+    if (!match) {
+      return res.status(403).json({
+        success: false,
+        message: "You must be matched with this user to send messages",
+      });
+    }
+
     const message = await Message.create({
       conversation: conversationId,
       sender: currentUserId,
@@ -360,7 +403,6 @@ export const sendMessage = async (req, res, next) => {
       }
     }
 
-    // 👇 PUSH: new message (skipped if receiver is online — they see it live)
     const senderInfo = await User.findById(currentUserId).select("name");
     const pushBody =
       type === "text"
@@ -398,13 +440,19 @@ export const sendMessage = async (req, res, next) => {
   }
 };
 
-/*
- UPLOAD CHAT ATTACHMENT (image / voice / gif)
- POST /api/messages/upload
- */
+// ✅ Upload with MIME type whitelist
 export const uploadMemory = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_CHAT_MIME.includes(file.mimetype)) {
+      return cb(
+        new Error("Unsupported file type. Only images and audio allowed."),
+        false
+      );
+    }
+    cb(null, true);
+  },
 }).single("file");
 
 export const uploadChatAttachment = async (req, res, next) => {
@@ -413,6 +461,13 @@ export const uploadChatAttachment = async (req, res, next) => {
       return res
         .status(400)
         .json({ success: false, message: "No file uploaded" });
+    }
+
+    // ✅ Double-check MIME (defense in depth)
+    if (!ALLOWED_CHAT_MIME.includes(req.file.mimetype)) {
+      return res
+        .status(415)
+        .json({ success: false, message: "Unsupported file type" });
     }
 
     const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString(
@@ -439,10 +494,7 @@ export const uploadChatAttachment = async (req, res, next) => {
   }
 };
 
-/*
- REACT TO MESSAGE
- POST /api/messages/:messageId/react
- */
+// ✅ REACT TO MESSAGE with participant check
 export const reactToMessage = async (req, res, next) => {
   try {
     const { emoji } = req.body;
@@ -455,6 +507,15 @@ export const reactToMessage = async (req, res, next) => {
     }
 
     const uid = req.user._id.toString();
+
+    // ✅ Only conversation participants can react
+    const isParticipant =
+      message.sender.toString() === uid || message.receiver.toString() === uid;
+
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: "Not allowed" });
+    }
+
     const existing = message.reactions.find((r) => r.user.toString() === uid);
 
     if (existing) {
@@ -492,10 +553,7 @@ export const reactToMessage = async (req, res, next) => {
   }
 };
 
-/*
- DELETE MESSAGE (for me / for everyone)
- DELETE /api/messages/:messageId?scope=me|everyone
- */
+// DELETE MESSAGE (for me / for everyone)
 export const deleteMessage = async (req, res, next) => {
   try {
     const scope = req.query.scope || "me";
@@ -552,27 +610,20 @@ export const deleteMessage = async (req, res, next) => {
   }
 };
 
-/*
- GET UNREAD MESSAGE COUNT
- FIXED: only counts messages inside conversations
- that actually exist AND are not block-hidden
- */
+// GET UNREAD MESSAGE COUNT
 export const getUnreadMessageCount = async (req, res, next) => {
   try {
     const myId = req.user._id.toString();
 
-    // My block list
     const me = await User.findById(myId).select("blockedUsers");
     const myBlockedIds = new Set(
       (me?.blockedUsers || []).map((id) => id.toString())
     );
 
-    // Conversations I participate in (that still exist)
     const conversations = await Conversation.find({
       participants: myId,
     }).populate("participants", "_id blockedUsers");
 
-    // Keep only visible ones (same rule as getConversations / getRecentConversations)
     const visibleConversationIds = conversations
       .filter((conv) => {
         const other = conv.participants.find((p) => p._id.toString() !== myId);
@@ -587,17 +638,15 @@ export const getUnreadMessageCount = async (req, res, next) => {
       })
       .map((conv) => conv._id);
 
-    // No visible conversations → count is 0 (no phantom badges!)
     if (visibleConversationIds.length === 0) {
       return res.status(200).json({ success: true, count: 0 });
     }
 
-    // Count unread ONLY inside those conversations
     const unreadMessages = await Message.find({
       receiver: myId,
       isRead: false,
       deletedForEveryone: false,
-      conversation: { $in: visibleConversationIds }, // 👈 orphans excluded
+      conversation: { $in: visibleConversationIds },
     }).select("sender");
 
     const uniqueSenders = new Set(
@@ -647,7 +696,6 @@ export const markMessageAsDelivered = async (req, res, next) => {
   }
 };
 
-// ✅ FIXED: Single response (was double-responding when io existed)
 export const markMessageAsRead = async (req, res, next) => {
   try {
     const currentUserId = req.user._id;
@@ -686,7 +734,6 @@ export const markMessageAsRead = async (req, res, next) => {
           conversationId: message.conversation.toString(),
         };
 
-        // Sender: ✓ → ✓✓ → 🔵 live
         io.to(`user:${message.sender.toString()}`).emit(
           "message_delivered",
           payload
@@ -696,14 +743,12 @@ export const markMessageAsRead = async (req, res, next) => {
           payload
         );
 
-        // ALWAYS sync reader's badge (race-proof)
         io.to(`user:${currentUserId.toString()}`).emit("unread_updated", {
           conversationId: message.conversation.toString(),
         });
       }
     }
 
-    // ✅ SINGLE response — no longer inside the if (io) block
     res.status(200).json({ success: true });
   } catch (error) {
     next(error);
@@ -771,7 +816,6 @@ export const deleteConversation = async (req, res, next) => {
         .json({ success: false, message: "Conversation not found" });
     }
 
-    // Only participants can delete
     const isParticipant = conversation.participants.some(
       (p) => p.toString() === userId
     );
@@ -786,11 +830,9 @@ export const deleteConversation = async (req, res, next) => {
       .find((p) => p.toString() !== userId)
       ?.toString();
 
-    // Delete ALL messages + the conversation itself
     await Message.deleteMany({ conversation: conversationId });
     await conversation.deleteOne();
 
-    // Notify BOTH users in real-time
     const io = getIO();
     if (io) {
       const payload = { conversationId: conversationId.toString() };
