@@ -18,7 +18,6 @@ const userSchema = new mongoose.Schema(
 
     password: {
       type: String,
-      // required ONLY for normal (local) signups
       required: [
         function () {
           return this.oauthProvider === "local";
@@ -27,7 +26,6 @@ const userSchema = new mongoose.Schema(
       ],
     },
 
-    // ADD these two fields
     oauthProvider: {
       type: String,
       enum: ["local", "google"],
@@ -168,7 +166,25 @@ const userSchema = new mongoose.Schema(
       ref: "User",
       default: [],
     },
-  },
+
+    // ✅ ADD THESE 4 FIELDS HERE (inside the schema object)
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+    scheduledDeletionAt: {
+      type: Date,
+      default: null,
+    },
+    reactivationAttempts: {
+      type: Number,
+      default: 0,
+    },
+    emailBlockedUntil: {
+      type: Date,
+      default: null,
+    },
+  }, // ← This closing brace is for the schema fields object
   {
     timestamps: true,
   }

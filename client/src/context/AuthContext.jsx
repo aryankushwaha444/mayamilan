@@ -50,7 +50,6 @@ export const AuthProvider = ({ children }) => {
   // INITIALIZE AUTH + EVENT LISTENERS
   // ==========================================
   useEffect(() => {
-    // Listener: forced logout (from axios interceptor)
     const handleAuthLogout = () => {
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
@@ -58,7 +57,6 @@ export const AuthProvider = ({ children }) => {
       setUser(null);
     };
 
-    // ✅ Listener: silent token refresh from axios interceptor
     const handleTokenRefreshed = (event) => {
       const { accessToken: newToken } = event.detail || {};
       if (newToken) {
@@ -71,7 +69,6 @@ export const AuthProvider = ({ children }) => {
     window.addEventListener("auth:token-refreshed", handleTokenRefreshed);
 
     const initializeAuth = async () => {
-      // Skip if on OAuth success page
       if (window.location.pathname === "/oauth-success") {
         setLoading(false);
         return;
@@ -94,10 +91,35 @@ export const AuthProvider = ({ children }) => {
           throw new Error("invalid-token");
         }
       } catch (error) {
-        // Access token dead? Try refresh before killing session
-        const restored = await trySilentRefresh();
+        const statusCode = error.response?.status;
+        const errorData = error.response?.data;
 
-        if (!restored) {
+        // ✅ CRITICAL: If account is deactivated (403), DON'T try refresh
+        // Just clean up and let the user login fresh
+        if (statusCode === 403 && errorData?.deactivated) {
+          console.log(
+            "🔒 Account deactivated — clearing session, waiting for login"
+          );
+          localStorage.removeItem("accessToken");
+          localStorage.removeItem("user");
+          setAccessToken(null);
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+
+        // For 401 (expired token), try silent refresh
+        if (statusCode === 401) {
+          const restored = await trySilentRefresh();
+
+          if (!restored) {
+            localStorage.removeItem("accessToken");
+            localStorage.removeItem("user");
+            setAccessToken(null);
+            setUser(null);
+          }
+        } else {
+          // Any other error — just clean up
           localStorage.removeItem("accessToken");
           localStorage.removeItem("user");
           setAccessToken(null);
@@ -140,31 +162,37 @@ export const AuthProvider = ({ children }) => {
   // LOGIN
   // ==========================================
   const login = async (credentials) => {
-    const response = await loginUser(credentials);
+    try {
+      const response = await loginUser(credentials);
 
-    if (response.success) {
-      const newToken = response.accessToken;
+      if (response.success) {
+        const newToken = response.accessToken;
 
-      localStorage.setItem("accessToken", newToken);
-      setAccessToken(newToken);
+        localStorage.setItem("accessToken", newToken);
+        setAccessToken(newToken);
 
-      try {
-        const freshData = await getCurrentUser();
-        if (freshData.success && freshData.user) {
-          const freshUser = freshData.user;
-          localStorage.setItem("user", JSON.stringify(freshUser));
-          setUser(freshUser);
-          return { ...response, user: freshUser };
+        try {
+          const freshData = await getCurrentUser();
+          if (freshData.success && freshData.user) {
+            const freshUser = freshData.user;
+            localStorage.setItem("user", JSON.stringify(freshUser));
+            setUser(freshUser);
+            return { ...response, user: freshUser };
+          }
+        } catch (err) {
+          console.warn("Falling back to login response user:", err);
         }
-      } catch (err) {
-        console.warn("Falling back to login response user:", err);
+
+        localStorage.setItem("user", JSON.stringify(response.user));
+        setUser(response.user);
       }
 
-      localStorage.setItem("user", JSON.stringify(response.user));
-      setUser(response.user);
+      return response;
+    } catch (error) {
+      // ✅ CRITICAL: Re-throw the FULL error so Login.jsx can detect deactivated accounts
+      console.error("AuthContext login error:", error);
+      throw error;
     }
-
-    return response;
   };
 
   // ==========================================

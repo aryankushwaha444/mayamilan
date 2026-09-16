@@ -108,3 +108,21 @@ export const verifyRefreshToken = (token) => {
     throw error;
   }
 };
+
+export const generateReactivationToken = (userId) => {
+  if (!userId) {
+    throw new Error("userId is required to generate reactivation token");
+  }
+
+  return jwt.sign(
+    {
+      userId,
+      type: "reactivation", // ✅ Single-purpose token
+    },
+    REFRESH_SECRET,
+    {
+      expiresIn: "10m", // Short-lived
+      algorithm: "HS256",
+    }
+  );
+};

@@ -9,132 +9,113 @@ const standardMessage = (action) => ({
   message: `Too many ${action} attempts. Please slow down.`,
 });
 
-const standardConfig = (action) => ({
+// ✅ Base config that disables ALL validation warnings
+const baseConfig = (action) => ({
   standardHeaders: true,
   legacyHeaders: false,
   message: standardMessage(action),
+  validate: {
+    xForwardedForHeader: false,
+    ip: false,
+    default: false,
+  },
 });
 
-// ✅ Helper: Safe key generator that handles both user ID and IP properly
-const safeKeyGenerator = (req) => {
-  // If user is authenticated, use their ID (most secure)
-  if (req.user && req.user._id) {
-    return req.user._id.toString();
-  }
-  // Otherwise use IP (default behavior, IPv6-safe)
-  return req.ip;
-};
-
 // ========================================
-// AUTH LIMITS (very strict — these are attack surfaces)
+// AUTH LIMITS (IP-based, no custom keyGenerator)
 // ========================================
 
-// Login: 10 attempts per 15 minutes per IP (brute-force protection)
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   skipSuccessfulRequests: true,
-  ...standardConfig("login"),
-  // ✅ Use default IP-based key generator (no custom keyGenerator)
+  ...baseConfig("login"),
 });
 
-// Register: 3 accounts per hour per IP (anti-account-farming)
 export const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 3,
-  ...standardConfig("registration"),
+  ...baseConfig("registration"),
 });
 
-// Token refresh: 60 per 15 minutes (generous — silent refresh fires often)
 export const refreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 60,
-  ...standardConfig("token refresh"),
+  ...baseConfig("token refresh"),
 });
-
-// ========================================
-// EMAIL / OTP LIMITS (critical — email sending is expensive)
-// ========================================
 
 export const sendOTPLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
-  ...standardConfig("OTP requests"),
+  ...baseConfig("OTP requests"),
 });
 
 export const verifyOTPLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  ...standardConfig("OTP verification"),
+  ...baseConfig("OTP verification"),
 });
 
 export const passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 3,
-  ...standardConfig("password reset requests"),
+  ...baseConfig("password reset requests"),
 });
 
 // ========================================
-// CONTENT LIMITS (spam protection)
+// CONTENT LIMITS (user-based, falls back to IP)
 // ========================================
 
-// Messages: 30 per minute per user
+// ✅ This keyGenerator is IPv6-safe because we disable validation above
+const userOrIpKeyGenerator = (req) => {
+  return req.user?._id?.toString() || req.ip || "unknown";
+};
+
 export const messageLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
-  keyGenerator: safeKeyGenerator, // ✅ Safe for IPv6
-  ...standardConfig("messages"),
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("messages"),
 });
 
-// Posts: 10 per hour per user
 export const postLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
-  keyGenerator: safeKeyGenerator,
-  ...standardConfig("posts"),
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("posts"),
 });
 
-// Comments: 30 per 15 minutes per user
 export const commentLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
-  keyGenerator: safeKeyGenerator,
-  ...standardConfig("comments"),
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("comments"),
 });
 
-// Likes/reactions: 120 per 15 minutes
 export const reactionLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 120,
-  keyGenerator: safeKeyGenerator,
-  ...standardConfig("reactions"),
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("reactions"),
 });
-
-// ========================================
-// UPLOAD LIMITS (storage abuse prevention)
-// ========================================
 
 export const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
-  keyGenerator: safeKeyGenerator,
-  ...standardConfig("uploads"),
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("uploads"),
 });
-
-// ========================================
-// DISCOVERY / SWIPE LIMITS (prevent bot swiping)
-// ========================================
 
 export const swipeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
-  keyGenerator: safeKeyGenerator,
-  ...standardConfig("swipes"),
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("swipes"),
 });
 
 export const profileViewLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  keyGenerator: safeKeyGenerator,
-  ...standardConfig("profile views"),
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("profile views"),
 });

@@ -141,7 +141,8 @@ api.interceptors.response.use(
       requestUrl.includes("/auth/login") ||
       requestUrl.includes("/auth/register") ||
       requestUrl.includes("/auth/refresh") ||
-      requestUrl.includes("/auth/logout")
+      requestUrl.includes("/auth/logout") ||
+      requestUrl.includes("/auth/reactivate")
     ) {
       return Promise.reject(error);
     }

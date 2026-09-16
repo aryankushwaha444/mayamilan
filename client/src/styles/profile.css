@@ -1,29 +1,54 @@
 .match-card-image-wrapper {
-    position: relative;
-    width: 100%;
-    height: 280px;
-    overflow: hidden;
-    border-radius: 16px 16px 0 0;
+  position: relative;
+  width: 100%;
+  height: 280px;
+  overflow: hidden;
+  border-radius: 16px 16px 0 0;
+}
+
+.match-card-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.match-card-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+  font-weight: 700;
+  background: #f3f4f6;
+}
+
+.match-card-placeholder.hidden {
+  display: none;
+}
+
+/* Reactivation Modal Animations */
+.reactivation-modal-overlay {
+  animation: overlayFadeIn 0.25s ease-out !important;
+}
+
+@keyframes overlayFadeIn {
+  from {
+    opacity: 0;
   }
-  
-  .match-card-image {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
+  to {
+    opacity: 1;
   }
-  
-  .match-card-placeholder {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 64px;
-    font-weight: 700;
-    background: #f3f4f6;
+}
+
+@keyframes modalPopIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(20px);
   }
-  
-  .match-card-placeholder.hidden {
-    display: none;
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
   }
+}

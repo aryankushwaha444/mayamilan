@@ -16,11 +16,13 @@ import {
   getSessions,
   revokeSession,
   revokeAllOtherSessions,
+  reactivateAccount,
 } from "../controllers/auth.controller.js";
 
 import {
   generateAccessToken,
   generateRefreshToken,
+  generateReactivationToken, // ✅ ADD: for Google OAuth reactivation
   hashToken,
 } from "../utils/generateToken.js";
 
@@ -32,7 +34,7 @@ import {
 
 import { protect } from "../middleware/auth.middleware.js";
 
-// ✅ Import centralized rate limiters
+// ✅ Centralized rate limiters
 import {
   loginLimiter,
   registerLimiter,
@@ -50,30 +52,20 @@ const router = express.Router();
 
 router.post("/register", registerLimiter, register);
 router.post("/login", loginLimiter, login);
+router.post("/reactivate", reactivateAccount);
 router.post("/logout", logout);
 router.post("/refresh", refreshLimiter, refreshAccessToken);
 router.get("/me", protect, getMe);
 router.put("/change-password", protect, changePassword);
 
 // ========================================
-// OTP & PASSWORD RESET (now rate-limited!)
+// OTP & PASSWORD RESET (rate-limited)
 // ========================================
 
 router.post("/send-otp", sendOTPLimiter, sendOTPCode);
 router.post("/verify-otp", verifyOTPLimiter, verifyOTPCode);
-router.post("/forgot-password", sendOTPLimiter, forgotPassword); // uses same OTP sending limit
+router.post("/forgot-password", sendOTPLimiter, forgotPassword);
 router.post("/reset-password", passwordResetLimiter, resetPassword);
-
-// ... rest of the file stays exactly the same ...
-
-// ========================================
-// OTP & PASSWORD RESET
-// ========================================
-
-router.post("/send-otp", sendOTPCode);
-router.post("/verify-otp", verifyOTPCode);
-router.post("/forgot-password", forgotPassword);
-router.post("/reset-password", resetPassword);
 
 // ========================================
 // SESSION MANAGEMENT (Device Binding)
@@ -109,10 +101,62 @@ router.get(
         return res.redirect(`${process.env.CLIENT_URL}/register?error=no_user`);
       }
 
+      // ✅ CHECK: Is this account deactivated (soft-deleted)?
+      if (user.deletedAt) {
+        const now = new Date();
+
+        // Grace period expired — permanent deletion
+        if (now > user.scheduledDeletionAt) {
+          return res.redirect(
+            `${process.env.CLIENT_URL}/login?error=account_permanently_deleted`
+          );
+        }
+
+        if ((user.reactivationAttempts || 0) >= 3) {
+          return res.redirect(
+            `${process.env.CLIENT_URL}/login?error=too_many_attempts`
+          );
+        }
+
+        // ✅ Still in grace period — issue one-time reactivation token
+        const daysRemaining = Math.ceil(
+          (user.scheduledDeletionAt - now) / (1000 * 60 * 60 * 24)
+        );
+
+        const attemptsRemaining = 3 - (user.reactivationAttempts || 0);
+        user.reactivationAttempts = (user.reactivationAttempts || 0) + 1;
+        await user.save();
+
+        const reactivationToken = generateReactivationToken(
+          user._id.toString()
+        );
+
+        const params = new URLSearchParams({
+          reactivate: "1",
+          token: reactivationToken,
+          days: String(daysRemaining),
+          attempts: String(attemptsRemaining),
+        });
+
+        return res.redirect(
+          `${process.env.CLIENT_URL}/login?${params.toString()}`
+        );
+      }
+
+      // ✅ CHECK: Is the email blocked?
+      if (user.emailBlockedUntil && user.emailBlockedUntil > new Date()) {
+        return res.redirect(
+          `${process.env.CLIENT_URL}/login?error=email_blocked`
+        );
+      }
+
+      // ========================================
+      // Normal flow — user is active
+      // ========================================
+
       const accessToken = generateAccessToken(user._id.toString());
       const refreshToken = generateRefreshToken(user._id.toString());
 
-      // ✅ DEVICE BINDING for Google OAuth
       const deviceId = getDeviceId(req);
 
       await RefreshToken.create({
@@ -130,10 +174,9 @@ router.get(
         secure: process.env.NODE_ENV === "production",
         sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         maxAge: 30 * 24 * 60 * 60 * 1000,
-        path: "/", // ✅ Always set path
+        path: "/",
       });
 
-      // Pass user data as base64 so frontend doesn't need to call /auth/me
       const userB64 = Buffer.from(
         JSON.stringify({
           _id: user._id,
