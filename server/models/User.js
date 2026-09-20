@@ -184,7 +184,38 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-  }, // ← This closing brace is for the schema fields object
+    lastLoginIp: {
+      type: String,
+      default: null,
+    },
+    lastLoginCountry: {
+      type: String,
+      default: null,
+    },
+    lastLoginCity: {
+      type: String,
+      default: null,
+    },
+    twoFactorSecret: {
+      type: String, // Encrypted with AES-256-GCM
+      default: null,
+    },
+    twoFactorEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    twoFactorBackupCodes: [
+      {
+        code: { type: String }, // Bcrypt hash
+        used: { type: Boolean, default: false },
+        usedAt: { type: Date, default: null },
+      },
+    ],
+    twoFactorEnabledAt: {
+      type: Date,
+      default: null,
+    },
+  },
   {
     timestamps: true,
   }

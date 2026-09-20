@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useRef } from "react";
 
 import {
   registerUser,
@@ -18,6 +18,9 @@ export const AuthProvider = ({ children }) => {
   );
   const [loading, setLoading] = useState(true);
 
+  // ✅ Guard against concurrent initialization (React Strict Mode)
+  const isInitializing = useRef(false);
+
   const isAuthenticated = !!user && !!accessToken;
 
   const updateUser = (updatedUser) => {
@@ -25,7 +28,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem("user", JSON.stringify(updatedUser));
   };
 
-  // Silent session restore helper
+  // Silent session restore helper (optimized — no redundant getCurrentUser)
   const trySilentRefresh = async () => {
     try {
       const refreshed = await refreshAccessToken();
@@ -33,6 +36,7 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem("accessToken", refreshed.accessToken);
         setAccessToken(refreshed.accessToken);
 
+        // ✅ Only call getCurrentUser if refresh succeeded
         const retry = await getCurrentUser();
         if (retry.success && retry.user) {
           setUser(retry.user);
@@ -50,6 +54,10 @@ export const AuthProvider = ({ children }) => {
   // INITIALIZE AUTH + EVENT LISTENERS
   // ==========================================
   useEffect(() => {
+    // ✅ Prevent double-initialization in React Strict Mode
+    if (isInitializing.current) return;
+    isInitializing.current = true;
+
     const handleAuthLogout = () => {
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
@@ -69,6 +77,7 @@ export const AuthProvider = ({ children }) => {
     window.addEventListener("auth:token-refreshed", handleTokenRefreshed);
 
     const initializeAuth = async () => {
+      // Skip auth check on OAuth success page
       if (window.location.pathname === "/oauth-success") {
         setLoading(false);
         return;
@@ -95,7 +104,6 @@ export const AuthProvider = ({ children }) => {
         const errorData = error.response?.data;
 
         // ✅ CRITICAL: If account is deactivated (403), DON'T try refresh
-        // Just clean up and let the user login fresh
         if (statusCode === 403 && errorData?.deactivated) {
           console.log(
             "🔒 Account deactivated — clearing session, waiting for login"
@@ -133,10 +141,11 @@ export const AuthProvider = ({ children }) => {
     initializeAuth();
 
     return () => {
+      isInitializing.current = false;
       window.removeEventListener("auth:logout", handleAuthLogout);
       window.removeEventListener("auth:token-refreshed", handleTokenRefreshed);
     };
-  }, []);
+  }, []); // Empty deps = runs once on mount
 
   // ==========================================
   // REGISTER
@@ -159,7 +168,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   // ==========================================
-  // LOGIN
+  // LOGIN (optimized — no redundant getCurrentUser)
   // ==========================================
   const login = async (credentials) => {
     try {
@@ -167,24 +176,17 @@ export const AuthProvider = ({ children }) => {
 
       if (response.success) {
         const newToken = response.accessToken;
+        const newUser = response.user;
 
         localStorage.setItem("accessToken", newToken);
+        localStorage.setItem("user", JSON.stringify(newUser));
+
         setAccessToken(newToken);
+        setUser(newUser);
 
-        try {
-          const freshData = await getCurrentUser();
-          if (freshData.success && freshData.user) {
-            const freshUser = freshData.user;
-            localStorage.setItem("user", JSON.stringify(freshUser));
-            setUser(freshUser);
-            return { ...response, user: freshUser };
-          }
-        } catch (err) {
-          console.warn("Falling back to login response user:", err);
-        }
-
-        localStorage.setItem("user", JSON.stringify(response.user));
-        setUser(response.user);
+        // ✅ Return immediately — no need to call getCurrentUser again
+        // The login endpoint already returns the full user object
+        return response;
       }
 
       return response;

@@ -25,10 +25,12 @@ export const registerSchema = z.object({
     "friendship",
     "not-sure",
   ]),
+  turnstileToken: z.string().optional(),
 });
 
 export const loginSchema = z.object({
   email: z.string().trim().email("Please provide a valid email").toLowerCase(),
 
   password: z.string().min(1, "Password is required"),
+  turnstileToken: z.string().optional(),
 });

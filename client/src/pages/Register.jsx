@@ -6,6 +6,7 @@ import SEO from "../components/SEO";
 import { useAlert } from "../context/AlertContext";
 import DatePicker from "react-datepicker";
 import { subYears } from "date-fns";
+import { useTurnstile } from "../hooks/useTurnstile";
 
 function Register() {
   const navigate = useNavigate();
@@ -25,6 +26,14 @@ function Register() {
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
+
+  // ✅ Turnstile hook
+  const {
+    containerRef: turnstileRef,
+    token: turnstileToken,
+    reset: resetTurnstile,
+    isEnabled: turnstileEnabled,
+  } = useTurnstile();
 
   const [formData, setFormData] = useState({
     name: "",
@@ -77,7 +86,7 @@ function Register() {
 
     if (!formData.email) {
       setError("Please enter your email");
-      toast.warning("Please enter your email"); // 👈 ADD
+      toast.warning("Please enter your email");
       return;
     }
 
@@ -87,10 +96,9 @@ function Register() {
       await sendOTP(formData.email, formData.name);
       setOtpSent(true);
       setSuccess("OTP sent to your email!");
-      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000); // 👈 ADD
+      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000);
       setResendTimer(60);
 
-      // Countdown timer
       const interval = setInterval(() => {
         setResendTimer((prev) => {
           if (prev <= 1) {
@@ -103,7 +111,7 @@ function Register() {
     } catch (err) {
       const msg = err.response?.data?.message || "Failed to send OTP";
       setError(msg);
-      toast.error(msg, "Error", 5000); // 👈 ADD
+      toast.error(msg, "Error", 5000);
     } finally {
       setOtpLoading(false);
     }
@@ -113,9 +121,16 @@ function Register() {
     setError("");
     setSuccess("");
 
+    // ✅ Turnstile check before final registration
+    if (turnstileEnabled && !turnstileToken) {
+      setError("Please complete the security check below.");
+      toast.error("Security check required", "Error", 3000);
+      return;
+    }
+
     if (!otp || otp.length !== 6) {
       setError("Please enter a valid 6-digit OTP");
-      toast.warning("Please enter the complete 6-digit code"); // 👈 ADD
+      toast.warning("Please enter the complete 6-digit code");
       return;
     }
 
@@ -124,14 +139,15 @@ function Register() {
     try {
       await verifyOTP(formData.email, otp);
       setSuccess("Email verified successfully!");
-      toast.success("Email verified! ✅", "Almost done", 3000); // 👈 ADD
+      toast.success("Email verified! ✅", "Almost done", 3000);
 
-      // Now complete registration
+      // Now complete registration (with Turnstile token)
       await handleCompleteRegistration();
     } catch (err) {
       const msg = err.response?.data?.message || "Invalid OTP";
       setError(msg);
-      toast.error(msg, "Verification failed", 5000); // 👈 ADD
+      toast.error(msg, "Verification failed", 5000);
+      resetTurnstile(); // ✅ Reset on failure
     } finally {
       setOtpLoading(false);
     }
@@ -148,22 +164,32 @@ function Register() {
         dateOfBirth: formData.dateOfBirth,
         gender: formData.gender,
         relationshipGoal: formData.relationshipGoal,
+        turnstileToken: turnstileToken || undefined, // ✅ Send token
       });
 
       toast.success(
         `Welcome to Maya Milan, ${formData.name}! 🎉`,
         "Account created",
         4000
-      ); // 👈 ADD
+      );
       window.location.href = "/discover";
     } catch (err) {
+      // ✅ Handle bot detection
+      if (err.response?.data?.botDetected) {
+        resetTurnstile(); 
+        setError("Security verification failed. Please refresh and try again.");
+        toast.error("Bot detection triggered", "Security", 5000);
+        resetTurnstile();
+        setLoading(false);
+        return;
+      }
+
       const msg =
         err.response?.data?.message ||
         err.response?.data?.errors?.[0]?.message ||
         "Registration failed. Please try again.";
       setError(msg);
-      toast.error(msg, "Registration failed", 6000); // 👈 ADD
-    } finally {
+      toast.error(msg, "Registration failed", 6000);
       setLoading(false);
     }
   };
@@ -175,31 +201,27 @@ function Register() {
     if (step === 1) {
       if (!formData.name.trim()) {
         setError("Please enter your name.");
-        toast.warning("Please enter your name"); // 👈 ADD
+        toast.warning("Please enter your name");
         return;
       }
-
       if (!formData.email.trim()) {
         setError("Please enter your email.");
-        toast.warning("Please enter your email"); // 👈 ADD
+        toast.warning("Please enter your email");
         return;
       }
-
       if (!formData.password) {
         setError("Please enter a password.");
-        toast.warning("Please enter a password"); // 👈 ADD
+        toast.warning("Please enter a password");
         return;
       }
-
       if (formData.password.length < 8) {
         setError("Password must be at least 8 characters.");
-        toast.warning("Password must be at least 8 characters"); // 👈 ADD
+        toast.warning("Password must be at least 8 characters");
         return;
       }
-
       if (formData.password !== formData.confirmPassword) {
         setError("Passwords do not match.");
-        toast.warning("Passwords do not match"); // 👈 ADD
+        toast.warning("Passwords do not match");
         return;
       }
     }
@@ -207,13 +229,12 @@ function Register() {
     if (step === 2) {
       if (!formData.dateOfBirth) {
         setError("Please select your date of birth.");
-        toast.warning("Please select your date of birth"); // 👈 ADD
+        toast.warning("Please select your date of birth");
         return;
       }
-
       if (!formData.gender) {
         setError("Please select your gender.");
-        toast.warning("Please select your gender"); // 👈 ADD
+        toast.warning("Please select your gender");
         return;
       }
     }
@@ -221,14 +242,13 @@ function Register() {
     if (step === 3) {
       if (!formData.relationshipGoal) {
         setError("Please select your relationship goal.");
-        toast.warning("Please select your relationship goal"); // 👈 ADD
+        toast.warning("Please select your relationship goal");
         return;
       }
-
-      // Send OTP before moving to verification step
       if (!otpSent) {
         handleSendOTP();
         setStep(4);
+        resetTurnstile();
         return;
       }
     }
@@ -300,7 +320,6 @@ function Register() {
                       <span>{error}</span>
                     </div>
                   )}
-
                   {success && (
                     <div
                       className="alert alert-success d-flex align-items-center"
@@ -514,12 +533,12 @@ function Register() {
                               minDate={subYears(new Date(), 100)}
                               showYearDropdown
                               showMonthDropdown
-                              dropdownMode="select" // ← ADD THIS
+                              dropdownMode="select"
                               yearDropdownItemNumber={80}
                               className="form-control"
-                              wrapperClassName="datepicker-wrapper" // ← ADD THIS
-                              popperPlacement="bottom-start" // ← ADD THIS
-                              popperClassName="date-picker-popper" // ← ADD THIS
+                              wrapperClassName="datepicker-wrapper"
+                              popperPlacement="bottom-start"
+                              popperClassName="date-picker-popper"
                               required
                             />
                           </div>
@@ -680,11 +699,22 @@ function Register() {
                           />
                         </div>
 
+                        {/* ✅ TURNSTILE WIDGET — shown on verify step */}
+                        {turnstileEnabled && (
+                          <div className="mb-3 d-flex justify-content-center">
+                            <div ref={turnstileRef}></div>
+                          </div>
+                        )}
+
                         <button
                           type="button"
                           className="btn btn-primary w-100 mb-3"
                           onClick={handleVerifyOTP}
-                          disabled={otpLoading || otp.length !== 6}
+                          disabled={
+                            otpLoading ||
+                            otp.length !== 6 ||
+                            (turnstileEnabled && !turnstileToken)
+                          }
                         >
                           {otpLoading ? (
                             <>
@@ -693,8 +723,8 @@ function Register() {
                             </>
                           ) : (
                             <>
-                              <i className="bi bi-check-circle me-2"></i>
-                              Verify & Create Account
+                              <i className="bi bi-check-circle me-2"></i>Verify
+                              & Create Account
                             </>
                           )}
                         </button>

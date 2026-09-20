@@ -715,6 +715,17 @@ function Navbar() {
                       <i className="bi bi-shield-lock"></i>
                       <span>Change Password</span>
                     </NavLink>
+
+                    {/* NEW: Settings */}
+                    <NavLink
+                      to="/settings"
+                      className="profile-dropdown-item"
+                      onClick={() => setProfileOpen(false)}
+                    >
+                      <i className="bi bi-gear"></i>
+                      <span>Settings</span>
+                    </NavLink>
+
                     <div className="profile-dropdown-divider"></div>
                     <button
                       type="button"

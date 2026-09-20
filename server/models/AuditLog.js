@@ -6,7 +6,8 @@ const auditLogSchema = new mongoose.Schema(
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: false, // ✅ Optional for pre-registration events (OTP, registration)
+      default: null,
     },
     action: {
       type: String,
@@ -39,12 +40,20 @@ const auditLogSchema = new mongoose.Schema(
         "user_reported",
         "user_blocked",
         "user_unblocked",
-
-        // ✅ NEW: Soft delete actions
         "account_soft_deleted",
         "account_reactivated",
         "account_deletion_failed",
         "data_exported",
+        "suspicious_login",
+        "photo_gps_stripped",
+        "2fa_setup_initiated",
+        "2fa_setup_failed",
+        "2fa_enabled",
+        "2fa_disabled",
+        "2fa_disable_failed",
+        "2fa_backup_codes_regenerated",
+        "login_2fa_required",
+        "login_2fa_failed",
       ],
     },
     ip: { type: String, required: true },

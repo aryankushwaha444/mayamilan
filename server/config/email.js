@@ -1,9 +1,61 @@
 import { BrevoClient } from "@getbrevo/brevo";
+import { suspiciousLoginTemplate } from "../templates/suspiciousLoginEmail.js";
 
+// ✅ Brevo client FIRST (used by both functions below)
 const brevo = new BrevoClient({
   apiKey: process.env.BREVO_API_KEY,
 });
 
+// ========================================
+// SUSPICIOUS LOGIN ALERT (Brevo version)
+// ========================================
+export const sendSuspiciousLoginEmail = async (
+  to,
+  { name, ip, city, country, userAgent }
+) => {
+  try {
+    const time = new Date().toLocaleString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+    });
+
+    const html = suspiciousLoginTemplate({
+      name,
+      ip,
+      city,
+      country,
+      userAgent,
+      time,
+    });
+
+    // ✅ Use Brevo instead of transporter.sendMail
+    const response = await brevo.transactionalEmails.sendTransacEmail({
+      sender: {
+        name: "Maya~Milan Security",
+        email: process.env.BREVO_SENDER_EMAIL,
+      },
+      to: [{ email: to, name: name }],
+      subject: `🔔 New login from ${city}, ${country}`,
+      htmlContent: html,
+    });
+
+    console.log(`📧 Suspicious login email sent to ${to}:`, response.messageId);
+    return true;
+  } catch (err) {
+    // Never crash login because of an email failure
+    console.error("Failed to send suspicious login email:", err.message);
+    return false;
+  }
+};
+
+// ========================================
+// OTP EMAIL (unchanged)
+// ========================================
 export const sendOTP = async (email, otp, userName) => {
   try {
     const response = await brevo.transactionalEmails.sendTransacEmail({

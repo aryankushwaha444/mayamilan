@@ -1,11 +1,11 @@
 import { verifyAccessToken } from "../utils/generateToken.js";
 import User from "../models/User.js";
+import RefreshToken from "../models/RefreshToken.js";
 
 export const protect = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
-    // ✅ Check for Bearer token
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({
         success: false,
@@ -22,10 +22,8 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // ✅ Use the secure verification helper
     const decoded = verifyAccessToken(token);
 
-    // ✅ Double-check token type (belt and suspenders)
     if (decoded.type !== "access") {
       return res.status(401).json({
         success: false,
@@ -33,7 +31,21 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // ✅ Fetch user and validate status
+    // ✅ INSTANT REVOCATION: reject if session was revoked
+    if (decoded.sid) {
+      const alive = await RefreshToken.exists({
+        _id: decoded.sid,
+        revokedAt: null,
+      });
+      if (!alive) {
+        return res.status(401).json({
+          success: false,
+          message: "Session has been revoked. Please login again.",
+          sessionRevoked: true, // ✅ Add this flag for frontend
+        });
+      }
+    }
+
     const user = await User.findById(decoded.userId).select("-password");
 
     if (!user) {
@@ -50,18 +62,14 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // ✅ Attach user to request
     req.user = user;
-
     next();
   } catch (error) {
     console.error("Auth middleware error:", error.message);
 
-    // ✅ Provide specific error messages for debugging
     const isExpired = error.message.includes("expired");
-    const statusCode = isExpired ? 401 : 401;
 
-    return res.status(statusCode).json({
+    return res.status(401).json({
       success: false,
       message: isExpired ? "Token expired" : "Invalid or expired token",
     });
@@ -86,7 +94,6 @@ export const adminOnly = (req, res, next) => {
   next();
 };
 
-// ✅ Optional: Add a middleware for checking if user is verified
 export const requireVerified = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({

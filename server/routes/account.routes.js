@@ -10,7 +10,7 @@ const router = express.Router();
 
 const deletionLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 10,
+  max: 3,
   message: {
     success: false,
     message: "Too many account deletion attempts. Please try again later.",

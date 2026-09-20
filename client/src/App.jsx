@@ -23,6 +23,7 @@ import UserProfile from "./pages/UserProfile";
 import Notifications from "./pages/Notifications";
 import Feed from "./pages/Feed.jsx";
 import ScrollToTop from "./components/ScrollToTop";
+import Settings from "./pages/Settings.jsx";
 
 // LAZY IMPORTS (loaded on demand — shrinks initial bundle)
 const ChangePassword = lazy(() => import("./pages/ChangePassword"));
@@ -118,6 +119,15 @@ function AppContent() {
           <Route path="/blog/:slug" element={<BlogPost />} />
 
           {/* PROTECTED (any logged-in user) */}
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <Settings />
+              </ProtectedRoute>
+            }
+          />
+
           <Route
             path="/profile"
             element={

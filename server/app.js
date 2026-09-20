@@ -1,15 +1,14 @@
 import dotenv from "dotenv";
-
 dotenv.config();
 
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
-import rateLimit from "express-rate-limit";
 import compression from "compression";
 import * as Sentry from "@sentry/node";
 
+// Import all routes
 import userRoutes from "./routes/user.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import discoveryRoutes from "./routes/discovery.routes.js";
@@ -24,9 +23,14 @@ import bootstrapRoutes from "./routes/bootstrap.routes.js";
 import pushRoutes from "./routes/push.routes.js";
 import accountRoutes from "./routes/account.routes.js";
 import passport from "./config/passport.js";
+import twoFactorRoutes from "./routes/twoFactor.routes.js";
+
+// ✅ Import the per-user rate limiter
+import { generalApiLimiter } from "./middleware/rateLimits.js";
 
 const app = express();
 
+// Sentry setup
 if (process.env.SENTRY_DSN) {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
@@ -46,6 +50,7 @@ if (process.env.SENTRY_DSN) {
   app.use(Sentry.Handlers.tracingHandler());
 }
 
+// CORS
 app.use(
   cors({
     origin: [process.env.CLIENT_URL || "http://localhost:5173"].filter(Boolean),
@@ -56,8 +61,10 @@ app.use(
   })
 );
 
+// ✅ Trust proxy (MUST be before rate limiter)
 app.set("trust proxy", 1);
 
+// Security headers
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -103,26 +110,13 @@ app.use(
   })
 );
 
+// Body parsers
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(passport.initialize());
-
 app.use(cookieParser());
 
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 1000,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    success: false,
-    message: "Too many requests. Please try again later.",
-  },
-  skip: (req) => req.path.startsWith("/api/auth"),
-});
-
-app.use("/api", limiter);
-
+// ✅ Health check BEFORE rate limiter (no limit)
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
@@ -132,6 +126,11 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// ✅ Apply per-user rate limiter to all /api routes
+app.use("/api", generalApiLimiter);
+
+// Routes
+app.use("/api/2fa", twoFactorRoutes);
 app.use("/api/suggestions", suggestionRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
@@ -146,6 +145,7 @@ app.use("/api/push", pushRoutes);
 app.use("/api/account", accountRoutes);
 app.use("/api/admin", adminRoutes);
 
+// 404 handler
 app.use((req, res, next) => {
   res.status(404).json({
     success: false,
@@ -153,6 +153,7 @@ app.use((req, res, next) => {
   });
 });
 
+// Error handlers
 if (process.env.SENTRY_DSN) {
   app.use(Sentry.Handlers.errorHandler());
 }

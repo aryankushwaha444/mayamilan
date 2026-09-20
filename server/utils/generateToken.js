@@ -19,22 +19,18 @@ if (!REFRESH_SECRET || REFRESH_SECRET.length < 64) {
   );
 }
 
-export const generateAccessToken = (userId) => {
+export const generateAccessToken = (userId, sessionId = null) => {
   if (!userId) {
     throw new Error("userId is required to generate access token");
   }
 
-  return jwt.sign(
-    {
-      userId,
-      type: "access",
-    },
-    ACCESS_SECRET,
-    {
-      expiresIn: "15m",
-      algorithm: "HS256", // ✅ Explicitly specify algorithm (prevents algorithm confusion attacks)
-    }
-  );
+  const payload = { userId, type: "access" };
+  if (sessionId) payload.sid = sessionId.toString(); // ✅ Bind to session for instant revocation
+
+  return jwt.sign(payload, ACCESS_SECRET, {
+    expiresIn: "15m",
+    algorithm: "HS256",
+  });
 };
 
 export const generateRefreshToken = (userId) => {
@@ -46,7 +42,7 @@ export const generateRefreshToken = (userId) => {
     {
       userId,
       type: "refresh",
-      jti: crypto.randomUUID(), // ✅ Unique token ID for revocation tracking
+      jti: crypto.randomUUID(),
     },
     REFRESH_SECRET,
     {
@@ -64,11 +60,10 @@ export const hashToken = (token) => {
   return crypto.createHash("sha256").update(token).digest("hex");
 };
 
-// ✅ Add verification helpers
 export const verifyAccessToken = (token) => {
   try {
     const decoded = jwt.verify(token, ACCESS_SECRET, {
-      algorithms: ["HS256"], // ✅ Only accept HS256 (prevents algorithm attacks)
+      algorithms: ["HS256"],
     });
 
     if (decoded.type !== "access") {
@@ -117,11 +112,11 @@ export const generateReactivationToken = (userId) => {
   return jwt.sign(
     {
       userId,
-      type: "reactivation", // ✅ Single-purpose token
+      type: "reactivation",
     },
     REFRESH_SECRET,
     {
-      expiresIn: "10m", // Short-lived
+      expiresIn: "10m",
       algorithm: "HS256",
     }
   );

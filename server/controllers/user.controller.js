@@ -486,3 +486,78 @@ export const getBlockStatus = async (req, res, next) => {
     next(error);
   }
 };
+
+// GET /api/users/blocked?search=name
+export const getBlockedUsers = async (req, res) => {
+  try {
+    const search = (req.query.search || "").trim();
+    const me = await User.findById(req.user._id).select("blockedUsers");
+
+    if (!me || me.blockedUsers.length === 0) {
+      return res
+        .status(200)
+        .json({ success: true, blockedUsers: [], count: 0 });
+    }
+
+    const query = { _id: { $in: me.blockedUsers } };
+    if (search) {
+      // Escape regex special chars to prevent ReDoS/injection
+      const safe = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      query.name = { $regex: safe, $options: "i" };
+    }
+
+    const blockedUsers = await User.find(query)
+      .select("name photos gender relationshipGoal createdAt")
+      .sort({ name: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      blockedUsers,
+      count: blockedUsers.length,
+      total: me.blockedUsers.length,
+    });
+  } catch (error) {
+    console.error("Get blocked users error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load blocked users" });
+  }
+};
+
+// GET /api/users/search/blockable?q=name
+export const searchBlockableUsers = async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    if (q.length < 2) return res.status(200).json({ success: true, users: [] });
+
+    const safe = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const me = await User.findById(req.user._id).select("blockedUsers");
+
+    const users = await User.find({
+      _id: { $ne: req.user._id },
+      isActive: true,
+      deletedAt: null,
+      name: { $regex: safe, $options: "i" },
+    })
+      .select("name photos gender relationshipGoal")
+      .sort({ name: 1 })
+      .limit(10)
+      .lean();
+
+    const blockedSet = new Set(
+      (me?.blockedUsers || []).map((id) => id.toString())
+    );
+
+    return res.status(200).json({
+      success: true,
+      users: users.map((u) => ({
+        ...u,
+        isBlocked: blockedSet.has(u._id.toString()),
+      })),
+    });
+  } catch (error) {
+    console.error("Search blockable users error:", error);
+    return res.status(500).json({ success: false, message: "Search failed" });
+  }
+};

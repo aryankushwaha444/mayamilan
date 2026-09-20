@@ -20,14 +20,27 @@ const refreshClient = axios.create({
 // ==========================================
 let isRefreshing = false;
 let failedQueue = [];
+let lastRefreshTime = 0;
+const REFRESH_COOLDOWN = 5000; // ✅ Minimum 5s between refresh attempts
+
+// Endpoints that should NEVER trigger a refresh
+const SKIP_REFRESH_URLS = [
+  "/auth/login",
+  "/auth/login/2fa",
+  "/auth/register",
+  "/auth/refresh",
+  "/auth/logout",
+  "/auth/reactivate",
+  "/auth/send-otp",
+  "/auth/verify-otp",
+  "/auth/forgot-password",
+  "/auth/reset-password",
+];
 
 const processQueue = (error, token = null) => {
   failedQueue.forEach(({ resolve, reject }) => {
-    if (error) {
-      reject(error);
-    } else {
-      resolve(token);
-    }
+    if (error) reject(error);
+    else resolve(token);
   });
   failedQueue = [];
 };
@@ -47,9 +60,31 @@ const isTokenExpiringSoon = (token, bufferSeconds = 60) => {
 };
 
 // ==========================================
-// HELPER: Perform silent refresh
+// HELPER: Check if URL should skip refresh
+// ==========================================
+const shouldSkipRefresh = (url) => {
+  if (!url) return false;
+  return SKIP_REFRESH_URLS.some((skip) => url.includes(skip));
+};
+
+// ==========================================
+// HELPER: Perform silent refresh (with cooldown)
 // ==========================================
 const performRefresh = async () => {
+  // ✅ Cooldown guard: don't spam refresh endpoint
+  const now = Date.now();
+  if (now - lastRefreshTime < REFRESH_COOLDOWN) {
+    const existing = localStorage.getItem("accessToken");
+    if (existing) {
+      // Return existing token — don't hit server again
+      return existing;
+    }
+    // No token at all — wait a tick and try once
+    await new Promise((r) =>
+      setTimeout(r, REFRESH_COOLDOWN - (now - lastRefreshTime))
+    );
+  }
+
   const response = await refreshClient.post("/auth/refresh");
   const newToken = response.data.accessToken;
 
@@ -58,6 +93,7 @@ const performRefresh = async () => {
   }
 
   localStorage.setItem("accessToken", newToken);
+  lastRefreshTime = Date.now();
 
   // 🔔 Notify AuthContext about the refresh
   window.dispatchEvent(
@@ -84,17 +120,25 @@ api.interceptors.request.use(
       if (
         isTokenExpiringSoon(accessToken, 60) &&
         !config._isRetry &&
-        !config.url?.includes("/auth/refresh") &&
-        !config.url?.includes("/auth/login")
+        !shouldSkipRefresh(config.url)
       ) {
+        // If another refresh is in flight, wait for it
         if (isRefreshing) {
-          // Wait for ongoing refresh
-          return new Promise((resolve, reject) => {
-            failedQueue.push({ resolve, reject });
-          }).then((token) => {
+          try {
+            const token = await new Promise((resolve, reject) => {
+              failedQueue.push({ resolve, reject });
+            });
             config.headers.Authorization = `Bearer ${token}`;
             return config;
-          });
+          } catch (err) {
+            return Promise.reject(err);
+          }
+        }
+
+        // Cooldown check
+        const now = Date.now();
+        if (now - lastRefreshTime < REFRESH_COOLDOWN) {
+          return config; // Too soon — just use existing token
         }
 
         isRefreshing = true;
@@ -104,6 +148,7 @@ api.interceptors.request.use(
           processQueue(null, newToken);
         } catch (err) {
           processQueue(err, null);
+          console.warn("Proactive refresh failed:", err.message);
         } finally {
           isRefreshing = false;
         }
@@ -124,8 +169,22 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    // No server response
     if (!error.response) {
+      return Promise.reject(error);
+    }
+
+    // ✅ INSTANT LOGOUT: If session was revoked, force logout immediately
+    if (error.response.data?.sessionRevoked) {
+      console.warn("Session revoked - forcing logout");
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("user");
+      window.dispatchEvent(new Event("auth:logout"));
+
+      // Redirect to login with reason
+      if (!window.location.pathname.includes("/login")) {
+        window.location.href = "/login?reason=session_revoked";
+      }
+
       return Promise.reject(error);
     }
 
@@ -136,18 +195,10 @@ api.interceptors.response.use(
 
     const requestUrl = originalRequest?.url || "";
 
-    // Skip auth endpoints (no refresh for login/register/refresh/logout)
-    if (
-      requestUrl.includes("/auth/login") ||
-      requestUrl.includes("/auth/register") ||
-      requestUrl.includes("/auth/refresh") ||
-      requestUrl.includes("/auth/logout") ||
-      requestUrl.includes("/auth/reactivate")
-    ) {
+    if (shouldSkipRefresh(requestUrl)) {
       return Promise.reject(error);
     }
 
-    // ✅ SMART CHECK: Only refresh for token-related 401s
     const errorMessage = (error.response.data?.message || "").toLowerCase();
     const isTokenError =
       errorMessage.includes("token") ||
@@ -157,17 +208,13 @@ api.interceptors.response.use(
       errorMessage.includes("no refresh");
 
     if (!isTokenError) {
-      // This is a permission/account 401 (e.g., user deactivated)
-      // Don't refresh — just reject
       return Promise.reject(error);
     }
 
-    // Prevent infinite retry loop
     if (originalRequest._isRetry) {
       return Promise.reject(error);
     }
 
-    // If refresh already in progress, queue this request
     if (isRefreshing) {
       return new Promise((resolve, reject) => {
         failedQueue.push({ resolve, reject });
@@ -179,24 +226,17 @@ api.interceptors.response.use(
         .catch((queueError) => Promise.reject(queueError));
     }
 
-    // START REFRESH
     originalRequest._isRetry = true;
     isRefreshing = true;
 
     try {
       const newToken = await performRefresh();
-
-      // Resolve waiting requests
       processQueue(null, newToken);
-
-      // Retry original request
       originalRequest.headers.Authorization = `Bearer ${newToken}`;
       return api(originalRequest);
     } catch (refreshError) {
-      // Reject waiting requests
       processQueue(refreshError, null);
 
-      // Refresh failed — force logout
       if (
         refreshError.response?.status === 401 ||
         refreshError.response?.status === 403
@@ -204,6 +244,10 @@ api.interceptors.response.use(
         localStorage.removeItem("accessToken");
         localStorage.removeItem("user");
         window.dispatchEvent(new Event("auth:logout"));
+
+        if (!window.location.pathname.includes("/login")) {
+          window.location.href = "/login";
+        }
       }
 
       return Promise.reject(refreshError);

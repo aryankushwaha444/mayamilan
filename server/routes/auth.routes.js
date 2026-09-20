@@ -1,10 +1,13 @@
 import express from "express";
+import jwt from "jsonwebtoken";
 import passport from "passport";
 import RefreshToken from "../models/RefreshToken.js";
+import { logAudit } from "../utils/auditLogger.js";
 
 import {
   register,
   login,
+  loginWith2FA,
   getMe,
   logout,
   refreshAccessToken,
@@ -17,12 +20,13 @@ import {
   revokeSession,
   revokeAllOtherSessions,
   reactivateAccount,
+  completeOAuth2FA,
 } from "../controllers/auth.controller.js";
 
 import {
   generateAccessToken,
   generateRefreshToken,
-  generateReactivationToken, // ✅ ADD: for Google OAuth reactivation
+  generateReactivationToken,
   hashToken,
 } from "../utils/generateToken.js";
 
@@ -32,9 +36,8 @@ import {
   describeDevice,
 } from "../utils/device.js";
 
-import { protect } from "../middleware/auth.middleware.js";
+import { protect, adminOnly } from "../middleware/auth.middleware.js";
 
-// ✅ Centralized rate limiters
 import {
   loginLimiter,
   registerLimiter,
@@ -52,6 +55,8 @@ const router = express.Router();
 
 router.post("/register", registerLimiter, register);
 router.post("/login", loginLimiter, login);
+router.post("/login/2fa", loginLimiter, loginWith2FA);
+router.post("/oauth/2fa", loginLimiter, completeOAuth2FA);
 router.post("/reactivate", reactivateAccount);
 router.post("/logout", logout);
 router.post("/refresh", refreshLimiter, refreshAccessToken);
@@ -105,7 +110,6 @@ router.get(
       if (user.deletedAt) {
         const now = new Date();
 
-        // Grace period expired — permanent deletion
         if (now > user.scheduledDeletionAt) {
           return res.redirect(
             `${process.env.CLIENT_URL}/login?error=account_permanently_deleted`
@@ -118,7 +122,6 @@ router.get(
           );
         }
 
-        // ✅ Still in grace period — issue one-time reactivation token
         const daysRemaining = Math.ceil(
           (user.scheduledDeletionAt - now) / (1000 * 60 * 60 * 24)
         );
@@ -154,12 +157,32 @@ router.get(
       // Normal flow — user is active
       // ========================================
 
-      const accessToken = generateAccessToken(user._id.toString());
-      const refreshToken = generateRefreshToken(user._id.toString());
+      // ✅ NEW: Check if 2FA is enabled — require verification
+      if (user.twoFactorEnabled) {
+        const tempToken = jwt.sign(
+          { userId: user._id.toString(), type: "oauth-2fa-pending" },
+          process.env.JWT_ACCESS_SECRET,
+          { expiresIn: "5m" }
+        );
 
+        await logAudit(req, "oauth_2fa_required", {
+          email: user.email,
+          userId: user._id,
+          ip: req.ip,
+        });
+
+        // Redirect back to login with the pending token
+        return res.redirect(
+          `${process.env.CLIENT_URL}/login?oauth2fa=1&tempToken=${tempToken}`
+        );
+      }
+
+      // No 2FA — issue tokens directly (original behavior)
+      const refreshToken = generateRefreshToken(user._id.toString());
       const deviceId = getDeviceId(req);
 
-      await RefreshToken.create({
+      // ✅ Create session FIRST to get _id for access token binding
+      const session = await RefreshToken.create({
         user: user._id,
         tokenHash: hashToken(refreshToken),
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -176,6 +199,9 @@ router.get(
         maxAge: 30 * 24 * 60 * 60 * 1000,
         path: "/",
       });
+
+      // ✅ Access token now BOUND to session ID for instant revocation
+      const accessToken = generateAccessToken(user._id.toString(), session._id);
 
       const userB64 = Buffer.from(
         JSON.stringify({

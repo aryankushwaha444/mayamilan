@@ -68,3 +68,18 @@ export const getBlockStatus = async (userId) => {
   const response = await api.get(`/users/${userId}/block-status`);
   return response.data;
 };
+
+export const getBlockedUsers = async (search = "") => {
+  const res = await api.get(`/users/blocked?search=${encodeURIComponent(search)}`);
+  return res.data;
+};
+
+export const unblockUser = async (userId) => {
+  const res = await api.post(`/users/${userId}/block`); // match your existing unblock route
+  return res.data;
+};
+
+export const searchBlockableUsers = async (q) => {
+  const res = await api.get(`/users/search/blockable?q=${encodeURIComponent(q)}`);
+  return res.data;
+};

@@ -4,6 +4,7 @@ import { useAuth } from "../hooks/useAuth";
 import SEO from "../components/SEO";
 import { useAlert } from "../context/AlertContext";
 import api from "../utils/api";
+import { useTurnstile } from "../hooks/useTurnstile";
 
 function Login() {
   const navigate = useNavigate();
@@ -20,6 +21,18 @@ function Login() {
   const [reactivateLoading, setReactivateLoading] = useState(false);
   const [pendingCredentials, setPendingCredentials] = useState(null);
   const [reactivateError, setReactivateError] = useState("");
+  const [twoFaStep, setTwoFaStep] = useState(false);
+  const [tempToken, setTempToken] = useState("");
+  const [totpCode, setTotpCode] = useState("");
+  const [twoFaLoading, setTwoFaLoading] = useState(false);
+  const [oauth2faToken, setOauth2faToken] = useState("");
+
+  const {
+    containerRef: turnstileRef,
+    token: turnstileToken,
+    reset: resetTurnstile,
+    isEnabled: turnstileEnabled,
+  } = useTurnstile();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -27,6 +40,16 @@ function Login() {
     const reactivateToken = params.get("token");
     const days = params.get("days");
     const attempts = params.get("attempts");
+
+    // ✅ NEW: Detect OAuth 2FA redirect
+    const oauth2faFlag = params.get("oauth2fa");
+    const oauthTempToken = params.get("tempToken");
+
+    if (oauth2faFlag === "1" && oauthTempToken) {
+      setOauth2faToken(oauthTempToken);
+      setTwoFaStep(true); // Switch to 2FA UI immediately
+      window.history.replaceState({}, document.title, "/login");
+    }
 
     if (reactivateFlag === "1" && reactivateToken) {
       setReactivateData({
@@ -113,14 +136,14 @@ function Login() {
       window.location.replace(
         data.user?.role === "admin" ? "/admin" : "/discover"
       );
-    } catch (error) {
+    } catch (err) {
       console.error(
         "❌ Reactivate failed:",
-        error.response?.status,
-        error.response?.data
+        err.response?.status,
+        err.response?.data
       );
       setReactivateError(
-        error.response?.data?.message || "Reactivation failed. Try again."
+        err.response?.data?.message || "Reactivation failed. Try again."
       );
     } finally {
       setReactivateLoading(false);
@@ -130,10 +153,23 @@ function Login() {
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError("");
+
+    // ✅ Turnstile check
+    if (turnstileEnabled && !turnstileToken) {
+      setError("Please complete the security check.");
+      toast.error("Security check required", "Error", 3000);
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const response = await login({ email, password });
+      const response = await login({
+        email,
+        password,
+        turnstileToken: turnstileToken || undefined,
+      });
+
       if (response.success) {
         toast.success(
           `Welcome back, ${response.user?.name || "there"}! 👋`,
@@ -145,22 +181,37 @@ function Login() {
       } else {
         setError(response.message || "Login failed");
         toast.error(response.message || "Login failed", "Login failed", 5000);
+        resetTurnstile();
       }
-    } catch (error) {
-      const errorData =
-        error.response?.data ||
-        error.data ||
-        (typeof error === "object" ? error : null);
-      const statusCode = error.response?.status || error.status;
+    } catch (err) {
+      // ✅ FIXED: Only declare errorData ONCE
+      const errorData = err.response?.data || err.data || null;
+      const statusCode = err.response?.status || err.status;
 
       console.log("🔍 Login error debug:", { statusCode, errorData });
+
+      // ✅ 2FA required
+      if (errorData?.requires2FA && errorData?.tempToken) {
+        setTempToken(errorData.tempToken);
+        setTwoFaStep(true);
+        setLoading(false);
+        return;
+      }
+
+      // Bot detected
+      if (errorData?.botDetected) {
+        setError("Security verification failed. Please refresh and try again.");
+        toast.error("Bot detection triggered", "Security", 5000);
+        resetTurnstile();
+        setLoading(false);
+        return;
+      }
 
       // Deactivated account — show reactivation modal
       if (
         (statusCode === 403 || errorData?.deactivated === true) &&
         errorData?.canReactivate === true
       ) {
-        console.log("✨ Showing reactivation modal");
         setReactivateData({
           daysRemaining: errorData.daysRemaining,
           attemptsRemaining: errorData.attemptsRemaining,
@@ -205,10 +256,115 @@ function Login() {
       const msg = errorData?.message || "Unable to login";
       setError(msg);
       toast.error(msg, "Error", 5000);
+      resetTurnstile();
     } finally {
       setLoading(false);
     }
   };
+
+  const handle2FASubmit = async () => {
+    if (!totpCode) return;
+    setTwoFaLoading(true);
+    setError("");
+
+    try {
+      // ✅ Determine which endpoint to call based on flow type
+      const isOAuthFlow = Boolean(oauth2faToken);
+      const endpoint = isOAuthFlow ? "/auth/oauth/2fa" : "/auth/login/2fa";
+      const tokenToSend = isOAuthFlow ? oauth2faToken : tempToken;
+
+      const { data } = await api.post(endpoint, {
+        tempToken: tokenToSend,
+        totpCode: totpCode.replace(/[-\s]/g, ""),
+      });
+
+      if (data.success) {
+        localStorage.setItem("accessToken", data.accessToken);
+        localStorage.setItem("user", JSON.stringify(data.user));
+        toast.success(
+          `Welcome back, ${data.user?.name}! 🎉`,
+          "Login successful",
+          3000
+        );
+
+        if (isOAuthFlow) {
+          // OAuth flow — go to discover (already have all data)
+          window.location.href =
+            data.user?.role === "admin" ? "/admin" : "/discover";
+        } else {
+          // Regular login flow
+          window.location.href =
+            data.user?.role === "admin" ? "/admin" : "/discover";
+        }
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || "Invalid code");
+      setTotpCode("");
+    } finally {
+      setTwoFaLoading(false);
+    }
+  };
+
+  if (twoFaStep) {
+    const isOAuthFlow = Boolean(oauth2faToken);
+    return (
+      <div className="auth-page">
+        <div className="container py-5">
+          <div className="row justify-content-center">
+            <div className="col-12 col-md-6 col-lg-5">
+              <div className="card auth-card border-0 shadow-lg">
+                <div className="card-body p-4 p-md-5 text-center">
+                  <div className="auth-logo mb-3">
+                    <i className="bi bi-shield-lock-fill"></i>
+                  </div>
+                  <h2 className="fw-bold mb-2">Two-Factor Authentication</h2>
+                  <p className="text-muted mb-4">
+                    {isOAuthFlow
+                      ? "Complete your Google sign-in with your 2FA code"
+                      : "Enter the 6-digit code from your authenticator app"}
+                  </p>
+
+                  {error && <div className="alert alert-danger">{error}</div>}
+
+                  <input
+                    type="text"
+                    className="form-control form-control-lg text-center mb-3"
+                    placeholder="000000"
+                    maxLength={11}
+                    value={totpCode}
+                    onChange={(e) => setTotpCode(e.target.value)}
+                    autoFocus
+                    style={{ letterSpacing: 6, fontFamily: "monospace" }}
+                  />
+
+                  <button
+                    className="btn btn-primary w-100 py-2"
+                    onClick={handle2FASubmit}
+                    disabled={twoFaLoading || !totpCode}
+                  >
+                    {twoFaLoading ? "Verifying..." : "Verify & Login"}
+                  </button>
+
+                  <button
+                    className="btn btn-link mt-3"
+                    onClick={() => {
+                      setTwoFaStep(false);
+                      setTotpCode("");
+                      setOauth2faToken("");
+                      setTempToken("");
+                      setError("");
+                    }}
+                  >
+                    ← Back to login
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -316,10 +472,19 @@ function Login() {
                       )}
                     </div>
 
+                    {/* ✅ TURNSTILE WIDGET */}
+                    {turnstileEnabled && (
+                      <div className="mb-3 d-flex justify-content-center">
+                        <div ref={turnstileRef}></div>
+                      </div>
+                    )}
+
                     <button
                       type="submit"
                       className="btn btn-primary w-100"
-                      disabled={loading}
+                      disabled={
+                        loading || (turnstileEnabled && !turnstileToken)
+                      }
                     >
                       {loading ? (
                         <>
@@ -494,9 +659,8 @@ function Login() {
 
                 <p className="text-muted mb-3">
                   Your profile is currently{" "}
-                  <strong>hidden from other users</strong>. All your data
-                  (photos, messages, matches) is safely preserved and can be
-                  restored instantly.
+                  <strong>hidden from other users</strong>. All your data is
+                  safely preserved and can be restored instantly.
                 </p>
 
                 {reactivateData?.attemptsRemaining != null && (
@@ -610,7 +774,7 @@ function Login() {
                   onClick={() => {
                     setReactivateData(null);
                     setPendingCredentials(null);
-                    setReactivateError(""); // ✅ Clear error on close
+                    setReactivateError("");
                   }}
                   disabled={reactivateLoading}
                   style={{ fontSize: "0.9rem" }}
