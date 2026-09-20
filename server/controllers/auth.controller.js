@@ -17,6 +17,10 @@ import {
 } from "../utils/device.js";
 import { logAudit } from "../utils/auditLogger.js";
 import { verifyTotp, decryptSecret, verifyBackupCode } from "../utils/totp.js";
+import {
+  checkPasswordBreach,
+  getBreachMessage,
+} from "../utils/passwordBreach.js";
 
 import {
   generateAccessToken,
@@ -115,6 +119,23 @@ export const register = async (req, res) => {
       return res.status(409).json({
         success: false,
         message: "An account with this email already exists",
+      });
+    }
+
+    // ✅ NEW: Check password against HIBP breach database
+    const breachResult = await checkPasswordBreach(password);
+    if (breachResult.breached) {
+      const message = getBreachMessage(breachResult.count);
+      await logAudit(req, "registration_failed", {
+        email,
+        reason: "breached_password",
+        breachCount: breachResult.count,
+      });
+      return res.status(400).json({
+        success: false,
+        message,
+        passwordBreached: true,
+        breachCount: breachResult.count,
       });
     }
 
@@ -820,6 +841,23 @@ export const changePassword = async (req, res, next) => {
         message: "New password must be different from current password.",
       });
 
+    // ✅ NEW: Check new password against breach database
+    const breachResult = await checkPasswordBreach(newPassword);
+    if (breachResult.breached) {
+      const message = getBreachMessage(breachResult.count);
+      await logAudit(req, "password_change_failed", {
+        userId: user._id,
+        reason: "breached_password",
+        breachCount: breachResult.count,
+      });
+      return res.status(400).json({
+        success: false,
+        message,
+        passwordBreached: true,
+        breachCount: breachResult.count,
+      });
+    }
+
     const hashedPassword = await argon2.hash(newPassword);
     user.password = hashedPassword;
     await user.save();
@@ -958,6 +996,25 @@ export const resetPassword = async (req, res, next) => {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+
+    // ✅ NEW: Check new password against breach database
+    const breachResult = await checkPasswordBreach(newPassword);
+    if (breachResult.breached) {
+      const message = getBreachMessage(breachResult.count);
+      await logAudit(req, "password_reset_failed", {
+        email,
+        userId: user._id,
+        reason: "breached_password",
+        breachCount: breachResult.count,
+      });
+      return res.status(400).json({
+        success: false,
+        message,
+        passwordBreached: true,
+        breachCount: breachResult.count,
+      });
+    }
+
     const hashedPassword = await argon2.hash(newPassword);
     user.password = hashedPassword;
     await user.save();

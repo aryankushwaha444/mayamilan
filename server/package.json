@@ -34,6 +34,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.4",
     "multer": "^2.3.0",
+    "node-fetch": "^3.3.2",
     "nodemailer": "^10.0.0",
     "otplib": "^13.5.0",
     "passport": "^0.7.0",

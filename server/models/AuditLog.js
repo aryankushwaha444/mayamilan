@@ -54,6 +54,7 @@ const auditLogSchema = new mongoose.Schema(
         "2fa_backup_codes_regenerated",
         "login_2fa_required",
         "login_2fa_failed",
+        "password_reset_failed", 
       ],
     },
     ip: { type: String, required: true },

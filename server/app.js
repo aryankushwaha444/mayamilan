@@ -83,6 +83,7 @@ app.use(
           "'self'",
           process.env.CLIENT_URL || "http://localhost:5173",
           "https://*.cloudinary.com",
+          "https://api.pwnedpasswords.com", 
           "wss:",
           "ws:",
         ],
