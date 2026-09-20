@@ -18,6 +18,7 @@ const baseConfig = (action) => ({
     xForwardedForHeader: true,
     ip: true,
     default: true,
+    keyGeneratorIpFallback: false,
   },
 });
 

@@ -26,6 +26,7 @@ export const registerSchema = z.object({
     "not-sure",
   ]),
   turnstileToken: z.string().optional(),
+  website: z.string().optional(), // honeypot field
 });
 
 export const loginSchema = z.object({
@@ -33,4 +34,5 @@ export const loginSchema = z.object({
 
   password: z.string().min(1, "Password is required"),
   turnstileToken: z.string().optional(),
+  website: z.string().optional(), // honeypot field
 });

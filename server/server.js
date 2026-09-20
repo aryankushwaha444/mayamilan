@@ -48,6 +48,25 @@ const startServer = async () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
       console.log(`📊 Environment: ${process.env.NODE_ENV || "development"}`);
     });
+
+    // ✅ Graceful shutdown handling
+    const gracefulShutdown = async (signal) => {
+      console.log(`\n${signal} received. Shutting down gracefully...`);
+
+      server.close(async () => {
+        console.log("✅ HTTP server closed");
+        process.exit(0);
+      });
+
+      // Force shutdown after 10 seconds
+      setTimeout(() => {
+        console.error("⚠️  Forced shutdown after timeout");
+        process.exit(1);
+      }, 10000);
+    };
+
+    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
   } catch (error) {
     console.error("Server startup error:", error);
     process.exit(1);

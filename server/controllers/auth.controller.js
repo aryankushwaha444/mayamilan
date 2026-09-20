@@ -29,6 +29,9 @@ import {
   generateReactivationToken,
 } from "../utils/generateToken.js";
 
+// ✅ ADD: Import cache utility for email verification tracking
+import { cached } from "../utils/cache.js";
+
 const maskEmail = (email) => {
   try {
     const [local, domain] = email.split("@");
@@ -38,6 +41,88 @@ const maskEmail = (email) => {
   } catch {
     return "****@****";
   }
+};
+
+const checkHoneypot = async (req, action) => {
+  // Check honeypot field
+  if (req.body.website && req.body.website.trim() !== "") {
+    await logAudit(req, "honeypot_triggered", {
+      action,
+      ip: req.ip,
+      reason: "field_filled",
+      honeypotValue: req.body.website.substring(0, 50),
+    }).catch(() => {});
+
+    console.warn(`🍯 HONEYPOT (field): ${action} from ${req.ip}`);
+    return true;
+  }
+
+  // ✅ Time-based check (bots submit too fast)
+  const formLoadTime = req.headers["x-form-load-time"];
+  if (formLoadTime) {
+    const timeSpent = Date.now() - parseInt(formLoadTime, 10);
+    if (timeSpent < 2000) {
+      await logAudit(req, "honeypot_triggered", {
+        action,
+        ip: req.ip,
+        reason: "too_fast",
+        timeSpent,
+        userAgent: req.get("user-agent"),
+      }).catch(() => {});
+
+      console.warn(
+        `🍯 HONEYPOT (timing): ${action} from ${req.ip} in ${timeSpent}ms`
+      );
+      return true;
+    }
+  }
+
+  return false;
+};
+
+// ✅ NEW: Helper for suspicious login detection (reusable)
+const detectSuspiciousLogin = async (req, user) => {
+  const currentIp = req.ip;
+  const geo = lookupIp(currentIp);
+  const previousCountry = user.lastLoginCountry;
+  const currentCountry = geo.country;
+
+  if (
+    previousCountry &&
+    currentCountry &&
+    previousCountry !== "Unknown" &&
+    currentCountry !== "Unknown" &&
+    previousCountry !== currentCountry
+  ) {
+    sendSuspiciousLoginEmail(user.email, {
+      name: user.name,
+      ip: currentIp,
+      city: geo.city,
+      country: geo.country,
+      userAgent: req.get("user-agent") || "Unknown",
+    }).catch((err) => {
+      console.warn("Suspicious login email failed:", err.message);
+    });
+
+    await logAudit(req, "suspicious_login", {
+      email: user.email,
+      userId: user._id,
+      fromIp: currentIp,
+      fromCity: geo.city,
+      fromCountry: currentCountry,
+      previousCountry: previousCountry,
+      userAgent: req.get("user-agent"),
+    });
+  }
+
+  // Update login metadata
+  user.lastLoginIp = currentIp;
+  user.lastLoginCountry = currentCountry;
+  user.lastLoginCity = geo.city;
+  user.lastSeen = new Date();
+  await user.save();
+
+  return { currentIp, currentCountry, geo };
 };
 
 // ========================================
@@ -50,6 +135,14 @@ export const register = async (req, res) => {
       return res
         .status(400)
         .json({ success: false, message: validation.error.issues[0].message });
+    }
+
+    // ✅ HONEYPOT CHECK — before any expensive operations
+    if (await checkHoneypot(req, "register")) {
+      return res.status(200).json({
+        success: true,
+        message: "Account created successfully",
+      });
     }
 
     const isHuman = await verifyTurnstile(
@@ -139,6 +232,10 @@ export const register = async (req, res) => {
       });
     }
 
+    // ✅ FIX: Check if email was verified via OTP (stored in cache)
+    const emailVerifiedKey = `verified:email:${email.toLowerCase()}`;
+    const isEmailVerified = await cached.get(emailVerifiedKey);
+
     const hashedPassword = await argon2.hash(password);
     const user = await User.create({
       name,
@@ -147,12 +244,17 @@ export const register = async (req, res) => {
       dateOfBirth,
       gender,
       relationshipGoal,
+      isVerified: !!isEmailVerified, // ✅ Set based on OTP verification
     });
+
+    // Clean up verification flag
+    if (isEmailVerified) {
+      await cached.del(emailVerifiedKey);
+    }
 
     const refreshToken = generateRefreshToken(user._id.toString());
     const deviceId = getDeviceId(req);
 
-    // ✅ Create session FIRST to get _id for access token binding
     const session = await RefreshToken.create({
       user: user._id,
       tokenHash: hashToken(refreshToken),
@@ -171,13 +273,22 @@ export const register = async (req, res) => {
       path: "/",
     });
 
-    // ✅ Access token now BOUND to session ID for instant revocation
     const accessToken = generateAccessToken(user._id.toString(), session._id);
 
     await logAudit(req, "account_created", {
       userId: user._id,
       email: user.email,
       deviceInfo: describeDevice(req),
+      isVerified: user.isVerified,
+      ipReputation: req.ipReputation
+        ? {
+            score: req.ipReputation.confidenceScore,
+            country: req.ipReputation.country,
+            isp: req.ipReputation.isp,
+            isTor: req.ipReputation.isTor,
+            isVpn: req.ipReputation.isVpn,
+          }
+        : null,
     });
 
     try {
@@ -242,6 +353,13 @@ export const login = async (req, res) => {
         .json({ success: false, message: validation.error.issues[0].message });
     }
 
+    if (await checkHoneypot(req, "login")) {
+      return res.status(200).json({
+        success: true,
+        message: "Login successful",
+      });
+    }
+
     const isHuman = await verifyTurnstile(
       validation.data.turnstileToken,
       req.ip
@@ -285,7 +403,6 @@ export const login = async (req, res) => {
         .json({ success: false, message: "Invalid email or password" });
     }
 
-    // Handle deactivated accounts
     if (user.deletedAt) {
       const now = new Date();
 
@@ -400,7 +517,6 @@ export const login = async (req, res) => {
         .json({ success: false, message: "Invalid email or password" });
     }
 
-    // ✅ 2FA CHECK — BEFORE issuing any tokens
     if (user.twoFactorEnabled) {
       const tempToken = jwt.sign(
         { userId: user._id.toString(), type: "2fa-pending" },
@@ -422,7 +538,6 @@ export const login = async (req, res) => {
       });
     }
 
-    // ✅ Password correct + no 2FA: issue tokens
     const refreshToken = generateRefreshToken(user._id.toString());
     const deviceId = getDeviceId(req);
 
@@ -446,46 +561,11 @@ export const login = async (req, res) => {
 
     const accessToken = generateAccessToken(user._id.toString(), session._id);
 
-    user.lastSeen = new Date();
-
-    // ✅ SUSPICIOUS LOGIN DETECTION
-    const currentIp = req.ip;
-    const geo = lookupIp(currentIp);
-    const previousCountry = user.lastLoginCountry;
-    const currentCountry = geo.country;
-
-    if (
-      previousCountry &&
-      currentCountry &&
-      previousCountry !== "Unknown" &&
-      currentCountry !== "Unknown" &&
-      previousCountry !== currentCountry
-    ) {
-      sendSuspiciousLoginEmail(user.email, {
-        name: user.name,
-        ip: currentIp,
-        city: geo.city,
-        country: geo.country,
-        userAgent: req.get("user-agent") || "Unknown",
-      }).catch((err) => {
-        console.warn("Suspicious login email failed:", err.message);
-      });
-
-      await logAudit(req, "suspicious_login", {
-        email: user.email,
-        userId: user._id,
-        fromIp: currentIp,
-        fromCity: geo.city,
-        fromCountry: currentCountry,
-        previousCountry: previousCountry,
-        userAgent: req.get("user-agent"),
-      });
-    }
-
-    user.lastLoginIp = currentIp;
-    user.lastLoginCountry = currentCountry;
-    user.lastLoginCity = geo.city;
-    await user.save();
+    // ✅ Suspicious login detection
+    const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
+      req,
+      user
+    );
 
     await logAudit(req, "login_success", {
       email: user.email,
@@ -494,6 +574,13 @@ export const login = async (req, res) => {
       ip: currentIp,
       country: currentCountry,
       city: geo.city,
+      ipReputation: req.ipReputation
+        ? {
+            score: req.ipReputation.confidenceScore,
+            country: req.ipReputation.country,
+            isp: req.ipReputation.isp,
+          }
+        : null,
     });
 
     return res.status(200).json({
@@ -569,10 +656,9 @@ export const refreshAccessToken = async (req, res) => {
     const storedToken = await RefreshToken.findOne({
       tokenHash,
       user: decoded.userId,
-      revokedAt: null, // ✅ Only find non-revoked tokens
+      revokedAt: null,
     });
 
-    // ✅ Check if token was revoked or doesn't exist
     if (!storedToken) {
       return res.status(401).json({
         success: false,
@@ -581,7 +667,6 @@ export const refreshAccessToken = async (req, res) => {
       });
     }
 
-    // ✅ Check if token expired
     if (storedToken.expiresAt < new Date()) {
       await storedToken.updateOne({ revokedAt: new Date() });
       return res
@@ -589,7 +674,6 @@ export const refreshAccessToken = async (req, res) => {
         .json({ success: false, message: "Refresh token expired" });
     }
 
-    // Check for token replay
     const revokedToken = await RefreshToken.findOne({
       tokenHash,
       revokedAt: { $ne: null },
@@ -616,7 +700,6 @@ export const refreshAccessToken = async (req, res) => {
         .status(401)
         .json({ success: false, message: "Account unavailable" });
 
-    // Reject refresh tokens created BEFORE 2FA was enabled
     if (
       user.twoFactorEnabled &&
       user.twoFactorEnabledAt &&
@@ -807,15 +890,11 @@ export const reactivateAccount = async (req, res) => {
 export const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
+
     if (!currentPassword || !newPassword)
       return res.status(400).json({
         success: false,
         message: "Current password and new password are required.",
-      });
-    if (newPassword.length < 6)
-      return res.status(400).json({
-        success: false,
-        message: "New password must be at least 6 characters.",
       });
 
     const user = await User.findById(req.user._id).select("+password");
@@ -823,6 +902,29 @@ export const changePassword = async (req, res, next) => {
       return res
         .status(404)
         .json({ success: false, message: "User not found." });
+
+    const isOAuthUser = user.oauthProvider && user.oauthProvider !== "local";
+    if (isOAuthUser) {
+      await logAudit(req, "password_change_failed", {
+        userId: user._id,
+        reason: "oauth_user",
+        provider: user.oauthProvider,
+      });
+      return res.status(403).json({
+        success: false,
+        message: `You signed in with ${
+          user.oauthProvider === "google" ? "Google" : user.oauthProvider
+        }. Please use that method to manage your account.`,
+        oauthUser: true,
+      });
+    }
+
+    // ✅ FIX: Changed from 6 to 8 to match register/reset
+    if (newPassword.length < 8)
+      return res.status(400).json({
+        success: false,
+        message: "New password must be at least 8 characters.",
+      });
 
     const isMatch = await argon2.verify(user.password, currentPassword);
     if (!isMatch) {
@@ -841,7 +943,6 @@ export const changePassword = async (req, res, next) => {
         message: "New password must be different from current password.",
       });
 
-    // ✅ NEW: Check new password against breach database
     const breachResult = await checkPasswordBreach(newPassword);
     if (breachResult.breached) {
       const message = getBreachMessage(breachResult.count);
@@ -892,17 +993,33 @@ export const changePassword = async (req, res, next) => {
 
 export const sendOTPCode = async (req, res, next) => {
   try {
+    if (await checkHoneypot(req, "send_otp")) {
+      return res.status(200).json({
+        success: true,
+        message: "OTP sent to your email",
+      });
+    }
     const { email, name } = req.body;
     if (!email || !name)
       return res
         .status(400)
         .json({ success: false, message: "Email and name are required" });
+
     const existingUser = await User.findOne({ email });
-    if (existingUser && existingUser.isVerified)
-      return res.status(409).json({
-        success: false,
-        message: "Email already registered and verified",
+
+    // ✅ FIX: Don't reveal if email is already verified (prevent enumeration)
+    if (existingUser && existingUser.isVerified) {
+      await logAudit(req, "otp_request_blocked", {
+        email,
+        reason: "email_already_verified",
       });
+      // Return success anyway to prevent enumeration
+      return res.status(200).json({
+        success: true,
+        message: "OTP sent to your email",
+      });
+    }
+
     const otp = generateOTP();
     await saveOTP(email, otp);
     await sendOTP(email, otp, name);
@@ -918,11 +1035,20 @@ export const sendOTPCode = async (req, res, next) => {
 
 export const verifyOTPCode = async (req, res, next) => {
   try {
+    // ✅ FIX: Add honeypot check to prevent OTP brute force
+    if (await checkHoneypot(req, "verify_otp")) {
+      return res.status(200).json({
+        success: true,
+        message: "Email verified successfully",
+      });
+    }
+
     const { email, otp } = req.body;
     if (!email || !otp)
       return res
         .status(400)
         .json({ success: false, message: "Email and OTP are required" });
+
     const result = await verifyOTP(email, otp);
     if (!result.valid) {
       await logAudit(req, "otp_verification_failed", {
@@ -931,12 +1057,21 @@ export const verifyOTPCode = async (req, res, next) => {
       });
       return res.status(400).json({ success: false, message: result.message });
     }
+
     const user = await User.findOne({ email });
     if (user && !user.isVerified) {
       user.isVerified = true;
       await user.save();
       await logAudit(req, "email_verified", { email, userId: user._id });
     }
+
+    // ✅ FIX: If no user exists yet (registration flow), store verification flag in cache
+    if (!user) {
+      const emailVerifiedKey = `verified:email:${email.toLowerCase()}`;
+      await cached.set(emailVerifiedKey, "true", "EX", 600); // 10 minutes
+      await logAudit(req, "email_verified_pre_registration", { email });
+    }
+
     return res
       .status(200)
       .json({ success: true, message: "Email verified successfully" });
@@ -948,16 +1083,50 @@ export const verifyOTPCode = async (req, res, next) => {
 
 export const forgotPassword = async (req, res, next) => {
   try {
+    if (await checkHoneypot(req, "forgot_password")) {
+      return res.status(200).json({
+        success: true,
+        message: "Password reset OTP sent to your email",
+      });
+    }
     const { email } = req.body;
     if (!email)
       return res
         .status(400)
         .json({ success: false, message: "Email is required" });
+
     const user = await User.findOne({ email });
-    if (!user)
-      return res
-        .status(404)
-        .json({ success: false, message: "No account found with this email" });
+
+    // ✅ FIX: Don't reveal if email exists (prevent enumeration)
+    if (!user) {
+      await logAudit(req, "password_reset_requested", {
+        email,
+        reason: "user_not_found",
+      });
+      // Return success anyway to prevent enumeration
+      return res.status(200).json({
+        success: true,
+        message: "Password reset OTP sent to your email",
+      });
+    }
+
+    // ✅ FIX: Don't allow password reset for OAuth users
+    if (user.oauthProvider && user.oauthProvider !== "local") {
+      await logAudit(req, "password_reset_blocked", {
+        email,
+        userId: user._id,
+        reason: "oauth_user",
+        provider: user.oauthProvider,
+      });
+      return res.status(400).json({
+        success: false,
+        message: `This account uses ${
+          user.oauthProvider === "google" ? "Google" : user.oauthProvider
+        } sign-in. Password reset is not available.`,
+        oauthUser: true,
+      });
+    }
+
     const otp = generateOTP();
     await saveOTP(email, otp);
     await sendOTP(email, otp, user.name);
@@ -977,6 +1146,12 @@ export const forgotPassword = async (req, res, next) => {
 
 export const resetPassword = async (req, res, next) => {
   try {
+    if (await checkHoneypot(req, "reset_password")) {
+      return res.status(200).json({
+        success: true,
+        message: "Password reset successfully",
+      });
+    }
     const { email, otp, newPassword } = req.body;
     if (!email || !otp || !newPassword)
       return res.status(400).json({
@@ -988,16 +1163,34 @@ export const resetPassword = async (req, res, next) => {
         success: false,
         message: "Password must be at least 8 characters",
       });
-    const result = await verifyOTP(email, otp);
-    if (!result.valid)
-      return res.status(400).json({ success: false, message: result.message });
+
     const user = await User.findOne({ email });
     if (!user)
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
 
-    // ✅ NEW: Check new password against breach database
+    // ✅ FIX: Don't allow password reset for OAuth users
+    if (user.oauthProvider && user.oauthProvider !== "local") {
+      await logAudit(req, "password_reset_blocked", {
+        email,
+        userId: user._id,
+        reason: "oauth_user",
+        provider: user.oauthProvider,
+      });
+      return res.status(403).json({
+        success: false,
+        message: `This account uses ${
+          user.oauthProvider === "google" ? "Google" : user.oauthProvider
+        } sign-in. Password reset is not available.`,
+        oauthUser: true,
+      });
+    }
+
+    const result = await verifyOTP(email, otp);
+    if (!result.valid)
+      return res.status(400).json({ success: false, message: result.message });
+
     const breachResult = await checkPasswordBreach(newPassword);
     if (breachResult.breached) {
       const message = getBreachMessage(breachResult.count);
@@ -1189,15 +1382,27 @@ export const loginWith2FA = async (req, res) => {
 
     const accessToken = generateAccessToken(user._id.toString(), session._id);
 
-    user.lastSeen = new Date();
-    await user.save();
+    // ✅ FIX: Add suspicious login detection for 2FA flow
+    const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
+      req,
+      user
+    );
 
     await logAudit(req, "login_success", {
       email: user.email,
       userId: user._id,
       deviceInfo: describeDevice(req),
-      ip: req.ip,
+      ip: currentIp,
+      country: currentCountry,
+      city: geo.city,
       twoFactorMethod: usedMethod,
+      ipReputation: req.ipReputation
+        ? {
+            score: req.ipReputation.confidenceScore,
+            country: req.ipReputation.country,
+            isp: req.ipReputation.isp,
+          }
+        : null,
     });
 
     return res.status(200).json({
@@ -1223,7 +1428,6 @@ export const loginWith2FA = async (req, res) => {
 
 export const forceReauthAllUsers = async (req, res) => {
   try {
-    // Only allow admin to run this
     if (req.user?.role !== "admin") {
       return res.status(403).json({
         success: false,
@@ -1246,9 +1450,6 @@ export const forceReauthAllUsers = async (req, res) => {
   }
 };
 
-// ========================================
-// COMPLETE GOOGLE OAUTH WITH 2FA
-// ========================================
 export const completeOAuth2FA = async (req, res) => {
   try {
     const { tempToken, totpCode } = req.body;
@@ -1259,7 +1460,6 @@ export const completeOAuth2FA = async (req, res) => {
       });
     }
 
-    // Verify temp token
     let decoded;
     try {
       decoded = jwt.verify(tempToken, process.env.JWT_ACCESS_SECRET);
@@ -1285,12 +1485,10 @@ export const completeOAuth2FA = async (req, res) => {
       });
     }
 
-    // Try TOTP first
     const secret = decryptSecret(user.twoFactorSecret);
     let isValid = verifyTotp(totpCode, secret);
     let usedMethod = "totp";
 
-    // Fallback to backup code
     if (!isValid) {
       const backupIndex = await verifyBackupCode(
         totpCode,
@@ -1316,7 +1514,6 @@ export const completeOAuth2FA = async (req, res) => {
       });
     }
 
-    // ✅ 2FA verified — issue real tokens (same as normal Google flow)
     const refreshToken = generateRefreshToken(user._id.toString());
     const deviceId = getDeviceId(req);
 
@@ -1340,17 +1537,28 @@ export const completeOAuth2FA = async (req, res) => {
       path: "/",
     });
 
-    user.lastSeen = new Date();
-    user.lastLoginIp = req.ip;
-    await user.save();
+    // ✅ FIX: Add suspicious login detection for OAuth 2FA flow
+    const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
+      req,
+      user
+    );
 
     await logAudit(req, "login_success", {
       email: user.email,
       userId: user._id,
       provider: "google",
       deviceInfo: describeDevice(req),
-      ip: req.ip,
+      ip: currentIp,
+      country: currentCountry,
+      city: geo.city,
       twoFactorMethod: usedMethod,
+      ipReputation: req.ipReputation
+        ? {
+            score: req.ipReputation.confidenceScore,
+            country: req.ipReputation.country,
+            isp: req.ipReputation.isp,
+          }
+        : null,
     });
 
     return res.status(200).json({

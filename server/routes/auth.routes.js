@@ -3,6 +3,8 @@ import jwt from "jsonwebtoken";
 import passport from "passport";
 import RefreshToken from "../models/RefreshToken.js";
 import { logAudit } from "../utils/auditLogger.js";
+import { checkIpReputationMiddleware } from "../middleware/ipReputation.middleware.js";
+import { verifySignature } from "../middleware/verifySignature.js";
 
 import {
   register,
@@ -53,15 +55,32 @@ const router = express.Router();
 // AUTH ROUTES
 // ========================================
 
-router.post("/register", registerLimiter, register);
-router.post("/login", loginLimiter, login);
-router.post("/login/2fa", loginLimiter, loginWith2FA);
-router.post("/oauth/2fa", loginLimiter, completeOAuth2FA);
-router.post("/reactivate", reactivateAccount);
+// Entry points — IP reputation + rate limit (no signature required)
+router.post(
+  "/register",
+  registerLimiter,
+  checkIpReputationMiddleware,
+  register
+);
+router.post("/login", loginLimiter, checkIpReputationMiddleware, login);
+
+// Critical auth completion — signature required
+router.post("/login/2fa", loginLimiter, verifySignature, loginWith2FA);
+router.post("/oauth/2fa", loginLimiter, verifySignature, completeOAuth2FA);
+router.post("/reactivate", verifySignature, reactivateAccount);
+
+// Session management
 router.post("/logout", logout);
 router.post("/refresh", refreshLimiter, refreshAccessToken);
 router.get("/me", protect, getMe);
-router.put("/change-password", protect, changePassword);
+
+// ✅ FIXED: change-password now has verifySignature
+router.put(
+  "/change-password",
+  protect,
+  verifySignature, // ✅ ADD THIS — prevents password change tampering
+  changePassword
+);
 
 // ========================================
 // OTP & PASSWORD RESET (rate-limited)
@@ -69,16 +88,40 @@ router.put("/change-password", protect, changePassword);
 
 router.post("/send-otp", sendOTPLimiter, sendOTPCode);
 router.post("/verify-otp", verifyOTPLimiter, verifyOTPCode);
-router.post("/forgot-password", sendOTPLimiter, forgotPassword);
-router.post("/reset-password", passwordResetLimiter, resetPassword);
+router.post(
+  "/forgot-password",
+  sendOTPLimiter,
+  checkIpReputationMiddleware,
+  verifySignature,
+  forgotPassword
+);
+router.post(
+  "/reset-password",
+  passwordResetLimiter,
+  checkIpReputationMiddleware,
+  verifySignature,
+  resetPassword
+);
 
 // ========================================
 // SESSION MANAGEMENT (Device Binding)
 // ========================================
 
 router.get("/sessions", protect, getSessions);
-router.delete("/sessions/:sessionId", protect, revokeSession);
-router.post("/sessions/revoke-others", protect, revokeAllOtherSessions);
+
+// ✅ FIXED: Session revocation endpoints now have verifySignature
+router.delete(
+  "/sessions/:sessionId",
+  protect,
+  verifySignature, // ✅ ADD THIS — prevents session hijacking via tampered requests
+  revokeSession
+);
+router.post(
+  "/sessions/revoke-others",
+  protect,
+  verifySignature, // ✅ ADD THIS — mass revocation is high-value target
+  revokeAllOtherSessions
+);
 
 // ========================================
 // GOOGLE OAUTH

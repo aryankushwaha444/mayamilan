@@ -2,6 +2,8 @@
 import express from "express";
 import { protect } from "../middleware/auth.middleware.js";
 import rateLimit from "express-rate-limit";
+import { verifySignature } from "../middleware/verifySignature.js"; // ✅ ADD
+
 import {
   setup2FA,
   verify2FASetup,
@@ -24,8 +26,8 @@ const twoFaLimiter = rateLimit({
 
 router.get("/status", protect, get2FAStatus);
 router.post("/setup", protect, twoFaLimiter, setup2FA);
-router.post("/verify-setup", protect, twoFaLimiter, verify2FASetup);
-router.post("/disable", protect, twoFaLimiter, disable2FA);
-router.post("/regenerate-backup", protect, twoFaLimiter, regenerateBackupCodes);
+router.post("/verify-setup", protect, twoFaLimiter,verifySignature, verify2FASetup);
+router.post("/disable", protect, twoFaLimiter,verifySignature, disable2FA);
+router.post("/regenerate-backup", protect, twoFaLimiter,verifySignature, regenerateBackupCodes);
 
 export default router;

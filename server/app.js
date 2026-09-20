@@ -65,6 +65,8 @@ app.use(
 app.set("trust proxy", 1);
 
 // Security headers
+// server/app.js - Update your existing Helmet config
+
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -83,7 +85,6 @@ app.use(
           "'self'",
           process.env.CLIENT_URL || "http://localhost:5173",
           "https://*.cloudinary.com",
-          "https://api.pwnedpasswords.com", 
           "wss:",
           "ws:",
         ],
@@ -108,6 +109,35 @@ app.use(
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
     frameguard: { action: "deny" },
+
+    // ✅ ADD THIS: Permissions-Policy Header
+    permissionsPolicy: {
+      policy: {
+        // Allow only your own origin to access these APIs
+        camera: ["self"],
+        microphone: ["self"],
+        geolocation: ["self"],
+
+        // Block these completely (empty array = no origins allowed)
+        payment: [], // Payment Request API
+        "interest-cohort": [], // Opt out of FLoC tracking
+        accelerometer: [], // Motion sensors
+        gyroscope: [], // Orientation sensors
+        magnetometer: [], // Magnetic sensors
+        fullscreen: ["self"], // Fullscreen API
+        autoplay: ["self"], // Autoplay media
+        "display-capture": [], // Screen sharing
+        "document-domain": [], // Prevent document.domain manipulation
+        "encrypted-media": ["self"], // DRM content
+        "execution-while-not-rendered": [], // Background execution
+        "execution-while-out-of-viewport": [], // Off-screen execution
+        "publickey-credentials-get": ["self"], // WebAuthn
+        usb: [], // USB device access
+        "xr-spatial-tracking": [], // WebXR
+        "clipboard-read": ["self"], // Clipboard access
+        "clipboard-write": ["self"], // Clipboard write
+      },
+    },
   })
 );
 
