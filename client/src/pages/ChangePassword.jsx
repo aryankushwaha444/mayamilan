@@ -1,16 +1,37 @@
-import { useState } from "react";
+import { useState, useEffect } from "react"; // ✅ FIXED: Added useEffect
 import { useNavigate } from "react-router-dom";
 import { changePassword } from "../services/authService";
-import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import { useAlert } from "../context/AlertContext";
+import { useAuth } from "../hooks/useAuth";
+import HoneypotField from "../components/HoneypotField";
 
 function ChangePassword() {
   const navigate = useNavigate();
-  const toast = useAlert(); // 👈 ADD
+  const toast = useAlert();
+  const { user } = useAuth();
+
+  // ✅ Capture form load time for timing-based honeypot
+  const [formLoadTime] = useState(Date.now());
+
+  // ✅ Redirect OAuth users immediately
+  useEffect(() => {
+    if (user?.oauthProvider && user.oauthProvider !== "local") {
+      toast.warning(
+        `You signed in with ${
+          user.oauthProvider === "google" ? "Google" : user.oauthProvider
+        }. Password changes are not available.`,
+        "OAuth Account",
+        5000
+      );
+      navigate("/settings");
+    }
+  }, [user, navigate, toast]);
 
   const [formData, setFormData] = useState({
     currentPassword: "",
     newPassword: "",
     confirmPassword: "",
+    website: "", // ✅ Honeypot value
   });
 
   const [showCurrent, setShowCurrent] = useState(false);
@@ -30,8 +51,8 @@ function ChangePassword() {
   // PASSWORD STRENGTH METER
   const getStrength = (password) => {
     let score = 0;
-    if (password.length >= 6) score++;
-    if (password.length >= 10) score++;
+    if (password.length >= 8) score++; // ✅ FIXED: Match server requirement (8 chars)
+    if (password.length >= 12) score++;
     if (/[A-Z]/.test(password)) score++;
     if (/[0-9]/.test(password)) score++;
     if (/[^A-Za-z0-9]/.test(password)) score++;
@@ -63,42 +84,98 @@ function ChangePassword() {
 
     if (!formData.currentPassword) {
       setError("Please enter your current password.");
-      toast.warning("Please enter your current password"); // 👈 ADD
+      toast.warning("Please enter your current password");
       return;
     }
-    if (formData.newPassword.length < 6) {
-      setError("New password must be at least 6 characters.");
-      toast.warning("New password must be at least 6 characters"); // 👈 ADD
+    if (formData.newPassword.length < 8) {
+      // ✅ FIXED: Match server requirement
+      setError("New password must be at least 8 characters.");
+      toast.warning("New password must be at least 8 characters");
       return;
     }
     if (formData.newPassword !== formData.confirmPassword) {
       setError("New passwords do not match.");
-      toast.warning("New passwords do not match"); // 👈 ADD
+      toast.warning("New passwords do not match");
       return;
     }
 
     try {
       setSaving(true);
 
-      await changePassword({
-        currentPassword: formData.currentPassword,
-        newPassword: formData.newPassword,
-      });
+      // ✅ FIXED: Send honeypot + timing header
+      await changePassword(
+        {
+          currentPassword: formData.currentPassword,
+          newPassword: formData.newPassword,
+          website: formData.website, // ✅ Honeypot value
+        },
+        formLoadTime // ✅ Form load time for timing check
+      );
 
       setSuccess(true);
-      toast.success("Password changed successfully! 🔐", "Success", 3000); // 👈 ADD
+      toast.success("Password changed successfully! 🔐", "Success", 3000);
 
       setTimeout(() => {
         navigate("/profile");
       }, 1500);
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to change password.");
-      toast.error(
-        err.response?.data?.message || "Failed to change password",
-        "Error",
-        5000
-      ); // 👈 ADD
-    } finally {
+      const data = err.response?.data || {};
+
+      // ✅ Handle OAuth user trying to change password
+      if (data.oauthUser) {
+        setError(data.message);
+        toast.warning(data.message, "OAuth Account", 5000);
+        setTimeout(() => navigate("/settings"), 2000);
+        return;
+      }
+
+      // ✅ Handle IP block
+      if (data.ipBlocked) {
+        setError(data.message);
+        toast.error(data.message, "🚫 Access Denied", 8000);
+        setSaving(false);
+        return;
+      }
+
+      // ✅ Handle signature errors (tampering detection)
+      if (data.signatureExpired || data.signatureInvalid) {
+        toast.warning(
+          "Request expired or invalid. Please refresh and try again.",
+          "Security",
+          5000
+        );
+        window.location.reload();
+        return;
+      }
+
+      // ✅ Handle breached password
+      if (data.passwordBreached) {
+        setError(data.message);
+        toast.error(
+          data.message,
+          `⚠️ Breached Password (${data.breachCount?.toLocaleString()} breaches)`,
+          8000
+        );
+        setFormData((prev) => ({
+          ...prev,
+          newPassword: "",
+          confirmPassword: "",
+        }));
+        setSaving(false);
+        return;
+      }
+
+      // ✅ Handle wrong current password
+      if (err.response?.status === 401) {
+        setError("Current password is incorrect.");
+        toast.error("Current password is incorrect", "Error", 5000);
+        setFormData((prev) => ({ ...prev, currentPassword: "" }));
+        setSaving(false);
+        return;
+      }
+
+      setError(data.message || "Failed to change password.");
+      toast.error(data.message || "Failed to change password", "Error", 5000);
       setSaving(false);
     }
   };
@@ -136,6 +213,9 @@ function ChangePassword() {
                 )}
 
                 <form onSubmit={handleSubmit}>
+                  {/* ✅ Honeypot field */}
+                  <HoneypotField />
+
                   {/* Current Password */}
                   <div className="mb-3">
                     <label htmlFor="currentPassword" className="form-label">
@@ -187,7 +267,7 @@ function ChangePassword() {
                         className="form-control"
                         value={formData.newPassword}
                         onChange={handleChange}
-                        placeholder="At least 6 characters"
+                        placeholder="At least 8 characters"
                         disabled={saving || success}
                         autoComplete="new-password"
                       />
@@ -273,7 +353,7 @@ function ChangePassword() {
                     <button
                       type="button"
                       className="btn btn-outline-secondary flex-fill"
-                      onClick={() => navigate("/profile")}
+                      onClick={() => navigate("/settings")} // ✅ Navigate to settings, not profile
                       disabled={saving || success}
                     >
                       Cancel

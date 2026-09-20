@@ -7,6 +7,7 @@ import { useAlert } from "../context/AlertContext";
 import DatePicker from "react-datepicker";
 import { subYears } from "date-fns";
 import { useTurnstile } from "../hooks/useTurnstile";
+import HoneypotField from "../components/HoneypotField";
 
 function Register() {
   const navigate = useNavigate();
@@ -18,6 +19,9 @@ function Register() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
+  // ✅ Capture form load time for timing-based honeypot
+  const [formLoadTime] = useState(Date.now());
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -35,6 +39,7 @@ function Register() {
     isEnabled: turnstileEnabled,
   } = useTurnstile();
 
+  // ✅ Include website in formData for honeypot
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -43,6 +48,7 @@ function Register() {
     dateOfBirth: "",
     gender: "",
     relationshipGoal: "",
+    website: "", // ✅ Honeypot field in state
   });
 
   const handleChange = (e) => {
@@ -93,7 +99,13 @@ function Register() {
     setOtpLoading(true);
 
     try {
-      await sendOTP(formData.email, formData.name);
+      // ✅ Send honeypot + timing header
+      await sendOTP(
+        formData.email,
+        formData.name,
+        formData.website,
+        formLoadTime
+      );
       setOtpSent(true);
       setSuccess("OTP sent to your email!");
       toast.success("OTP sent to your email! 📧", "Check your inbox", 5000);
@@ -109,7 +121,28 @@ function Register() {
         });
       }, 1000);
     } catch (err) {
-      const msg = err.response?.data?.message || "Failed to send OTP";
+      const data = err.response?.data || {};
+
+      // ✅ Handle signature errors
+      if (data.signatureExpired || data.signatureInvalid) {
+        toast.warning(
+          "Request expired. Please refresh and try again.",
+          "Security",
+          5000
+        );
+        window.location.reload();
+        return;
+      }
+
+      // ✅ Handle IP block
+      if (data.ipBlocked) {
+        setError(data.message);
+        toast.error(data.message, "🚫 Access Denied", 8000);
+        setOtpLoading(false);
+        return;
+      }
+
+      const msg = data.message || "Failed to send OTP";
       setError(msg);
       toast.error(msg, "Error", 5000);
     } finally {
@@ -137,7 +170,7 @@ function Register() {
     setOtpLoading(true);
 
     try {
-      await verifyOTP(formData.email, otp);
+      await verifyOTP(formData.email, otp,formData.website);
       setSuccess("Email verified successfully!");
       toast.success("Email verified! ✅", "Almost done", 3000);
 
@@ -147,7 +180,7 @@ function Register() {
       const msg = err.response?.data?.message || "Invalid OTP";
       setError(msg);
       toast.error(msg, "Verification failed", 5000);
-      resetTurnstile(); // ✅ Reset on failure
+      resetTurnstile();
     } finally {
       setOtpLoading(false);
     }
@@ -157,6 +190,7 @@ function Register() {
     try {
       setLoading(true);
 
+      // ✅ Send all security data: honeypot, timing, turnstile
       await register({
         name: formData.name,
         email: formData.email,
@@ -164,7 +198,9 @@ function Register() {
         dateOfBirth: formData.dateOfBirth,
         gender: formData.gender,
         relationshipGoal: formData.relationshipGoal,
-        turnstileToken: turnstileToken || undefined, // ✅ Send token
+        turnstileToken: turnstileToken || undefined,
+        website: formData.website, // ✅ Honeypot from state
+        _formLoadTime: formLoadTime, // ✅ Timing data
       });
 
       toast.success(
@@ -174,19 +210,59 @@ function Register() {
       );
       window.location.href = "/discover";
     } catch (err) {
-      // ✅ Handle bot detection
-      if (err.response?.data?.botDetected) {
-        resetTurnstile(); 
-        setError("Security verification failed. Please refresh and try again.");
-        toast.error("Bot detection triggered", "Security", 5000);
+      const data = err.response?.data || {};
+
+      // ✅ Handle signature errors (tampering detection)
+      if (data.signatureExpired || data.signatureInvalid) {
+        toast.warning(
+          "Request expired or invalid. Please refresh and try again.",
+          "Security",
+          5000
+        );
+        window.location.reload();
+        setLoading(false);
+        return;
+      }
+
+      // ✅ Handle IP reputation block
+      if (data.ipBlocked) {
+        const reputation = data.reputation;
+        setError(data.message);
+        toast.error(
+          data.message,
+          `🚫 Access Denied (Score: ${reputation?.score || 0}%)`,
+          8000
+        );
         resetTurnstile();
         setLoading(false);
         return;
       }
 
+      // ✅ Handle breached password
+      if (data.passwordBreached) {
+        setError(data.message);
+        toast.error(
+          data.message,
+          `⚠️ Breached Password (${data.breachCount?.toLocaleString()} breaches)`,
+          8000
+        );
+        setFormData((prev) => ({ ...prev, password: "", confirmPassword: "" }));
+        setLoading(false);
+        return;
+      }
+
+      // ✅ Handle bot detection
+      if (data.botDetected) {
+        resetTurnstile();
+        setError("Security verification failed. Please refresh and try again.");
+        toast.error("Bot detection triggered", "Security", 5000);
+        setLoading(false);
+        return;
+      }
+
       const msg =
-        err.response?.data?.message ||
-        err.response?.data?.errors?.[0]?.message ||
+        data.message ||
+        data.errors?.[0]?.message ||
         "Registration failed. Please try again.";
       setError(msg);
       toast.error(msg, "Registration failed", 6000);
@@ -336,6 +412,9 @@ function Register() {
                         <h5 className="fw-bold mb-3">
                           Let's create your account
                         </h5>
+
+                        {/* ✅ FIXED: Use ONLY the component, remove duplicate */}
+                        <HoneypotField />
 
                         <div className="mb-3">
                           <label htmlFor="name" className="form-label">

@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { forgotPassword, resetPassword } from "../services/authService";
-import { useAlert } from "../context/AlertContext"; // 👈 ADD
+import { useAlert } from "../context/AlertContext";
+import HoneypotField from "../components/HoneypotField";
 
 function ForgotPassword() {
   const navigate = useNavigate();
-  const toast = useAlert(); // 👈 ADD
+  const toast = useAlert();
 
   const [step, setStep] = useState(1);
   const [email, setEmail] = useState("");
+  const [formLoadTime] = useState(Date.now()); // ✅ Captured for honeypot timing
   const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -54,16 +56,17 @@ function ForgotPassword() {
 
     if (!email) {
       setError("Please enter your email");
-      toast.warning("Please enter your email"); // 👈 ADD
+      toast.warning("Please enter your email");
       return;
     }
 
     setLoading(true);
 
     try {
-      await forgotPassword(email);
+      // ✅ FIXED: Send honeypot + timing header
+      await forgotPassword(email, "", formLoadTime);
       setSuccess("OTP sent to your email!");
-      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000); // 👈 ADD
+      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000);
       setStep(2);
       setResendTimer(60);
 
@@ -77,9 +80,25 @@ function ForgotPassword() {
         });
       }, 1000);
     } catch (err) {
-      const msg = err.response?.data?.message || "Failed to send OTP";
+      const data = err.response?.data || {};
+
+      // ✅ Handle IP block
+      if (data.ipBlocked) {
+        setError(data.message);
+        toast.error(data.message, "🚫 Access Denied", 8000);
+        setLoading(false);
+        return;
+      }
+
+      // ✅ Handle signature errors
+      if (data.signatureExpired) {
+        window.location.reload();
+        return;
+      }
+
+      const msg = data.message || "Failed to send OTP";
       setError(msg);
-      toast.error(msg, "Error", 5000); // 👈 ADD
+      toast.error(msg, "Error", 5000);
     } finally {
       setLoading(false);
     }
@@ -90,7 +109,7 @@ function ForgotPassword() {
     setSuccess("");
     if (otp.length !== 6) {
       setError("Please enter the 6-digit code");
-      toast.warning("Please enter the complete 6-digit code"); // 👈 ADD
+      toast.warning("Please enter the complete 6-digit code");
       return;
     }
     setStep(3);
@@ -102,30 +121,66 @@ function ForgotPassword() {
 
     if (!newPassword || newPassword.length < 8) {
       setError("Password must be at least 8 characters");
-      toast.warning("Password must be at least 8 characters"); // 👈 ADD
+      toast.warning("Password must be at least 8 characters");
       return;
     }
 
     if (newPassword !== confirmPassword) {
       setError("Passwords do not match");
-      toast.warning("Passwords do not match"); // 👈 ADD
+      toast.warning("Passwords do not match");
       return;
     }
 
     setLoading(true);
 
     try {
-      await resetPassword(email, otp, newPassword);
+      // ✅ FIXED: Send honeypot + timing header
+      await resetPassword(email, otp, newPassword, "", formLoadTime);
       setSuccess("Password reset successfully! Redirecting to login...");
-      toast.success("Password reset successfully! 🔐", "All done", 4000); // 👈 ADD
+      toast.success("Password reset successfully! 🔐", "All done", 4000);
 
       setTimeout(() => {
         navigate("/login");
       }, 2000);
     } catch (err) {
-      const msg = err.response?.data?.message || "Failed to reset password";
+      const data = err.response?.data || {};
+
+      // ✅ FIXED: Proper error handling with defined variables
+      if (data.ipBlocked) {
+        setError(data.message);
+        toast.error(data.message, "🚫 Access Denied", 8000);
+        setLoading(false);
+        return;
+      }
+
+      // ✅ NEW: Handle breached password
+      if (data.passwordBreached) {
+        setError(data.message);
+        toast.error(
+          data.message,
+          `⚠️ Breached Password (${data.breachCount?.toLocaleString()} breaches)`,
+          8000
+        );
+        setNewPassword("");
+        setConfirmPassword("");
+        setLoading(false);
+        return;
+      }
+
+      // ✅ Handle signature errors
+      if (data.signatureExpired || data.signatureInvalid) {
+        toast.warning(
+          "Request expired. Please refresh and try again.",
+          "Security",
+          5000
+        );
+        window.location.reload();
+        return;
+      }
+
+      const msg = data.message || "Failed to reset password";
       setError(msg);
-      toast.error(msg, "Error", 5000); // 👈 ADD
+      toast.error(msg, "Error", 5000);
     } finally {
       setLoading(false);
     }
@@ -191,6 +246,7 @@ function ForgotPassword() {
                 <form onSubmit={(e) => e.preventDefault()}>
                   {step === 1 && (
                     <div>
+                      <HoneypotField />
                       <div className="mb-4">
                         <label htmlFor="email" className="form-label">
                           Email Address

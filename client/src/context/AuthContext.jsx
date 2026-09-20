@@ -18,47 +18,66 @@ export const AuthProvider = ({ children }) => {
   );
   const [loading, setLoading] = useState(true);
 
-  // ✅ Guard against concurrent initialization (React Strict Mode)
-  const isInitializing = useRef(false);
+  // ✅ Track mounted state to prevent updates after unmount
+  const isMountedRef = useRef(true);
+  // ✅ Mutex for silent refresh to prevent parallel calls
+  const refreshPromiseRef = useRef(null);
 
   const isAuthenticated = !!user && !!accessToken;
 
   const updateUser = (updatedUser) => {
+    if (!isMountedRef.current) return;
     setUser(updatedUser);
     localStorage.setItem("user", JSON.stringify(updatedUser));
   };
 
-  // Silent session restore helper (optimized — no redundant getCurrentUser)
+  // ==========================================
+  // SILENT SESSION RESTORE (with mutex)
+  // ==========================================
   const trySilentRefresh = async () => {
-    try {
-      const refreshed = await refreshAccessToken();
-      if (refreshed.success && refreshed.accessToken) {
-        localStorage.setItem("accessToken", refreshed.accessToken);
-        setAccessToken(refreshed.accessToken);
-
-        // ✅ Only call getCurrentUser if refresh succeeded
-        const retry = await getCurrentUser();
-        if (retry.success && retry.user) {
-          setUser(retry.user);
-          localStorage.setItem("user", JSON.stringify(retry.user));
-          return true;
-        }
-      }
-      return false;
-    } catch {
-      return false;
+    // ✅ Mutex: if refresh already in flight, wait for it instead of starting new one
+    if (refreshPromiseRef.current) {
+      return refreshPromiseRef.current;
     }
+
+    refreshPromiseRef.current = (async () => {
+      try {
+        const refreshed = await refreshAccessToken();
+        if (!isMountedRef.current) return false;
+
+        if (refreshed.success && refreshed.accessToken) {
+          localStorage.setItem("accessToken", refreshed.accessToken);
+          setAccessToken(refreshed.accessToken);
+
+          const retry = await getCurrentUser();
+          if (!isMountedRef.current) return false;
+
+          if (retry.success && retry.user) {
+            setUser(retry.user);
+            localStorage.setItem("user", JSON.stringify(retry.user));
+            return true;
+          }
+        }
+        return false;
+      } catch {
+        return false;
+      } finally {
+        refreshPromiseRef.current = null;
+      }
+    })();
+
+    return refreshPromiseRef.current;
   };
 
   // ==========================================
   // INITIALIZE AUTH + EVENT LISTENERS
   // ==========================================
   useEffect(() => {
-    // ✅ Prevent double-initialization in React Strict Mode
-    if (isInitializing.current) return;
-    isInitializing.current = true;
+    isMountedRef.current = true;
+    const abortController = new AbortController();
 
     const handleAuthLogout = () => {
+      if (!isMountedRef.current) return;
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
       setAccessToken(null);
@@ -66,6 +85,7 @@ export const AuthProvider = ({ children }) => {
     };
 
     const handleTokenRefreshed = (event) => {
+      if (!isMountedRef.current) return;
       const { accessToken: newToken } = event.detail || {};
       if (newToken) {
         setAccessToken(newToken);
@@ -79,20 +99,23 @@ export const AuthProvider = ({ children }) => {
     const initializeAuth = async () => {
       // Skip auth check on OAuth success page
       if (window.location.pathname === "/oauth-success") {
-        setLoading(false);
+        if (isMountedRef.current) setLoading(false);
         return;
       }
 
       const storedToken = localStorage.getItem("accessToken");
 
       if (!storedToken) {
-        setLoading(false);
+        if (isMountedRef.current) setLoading(false);
         return;
       }
 
       try {
+        if (!isMountedRef.current) return;
         setAccessToken(storedToken);
         const response = await getCurrentUser();
+
+        if (abortController.signal.aborted) return;
 
         if (response.success) {
           setUser(response.user);
@@ -100,8 +123,23 @@ export const AuthProvider = ({ children }) => {
           throw new Error("invalid-token");
         }
       } catch (error) {
+        if (abortController.signal.aborted) return;
+
         const statusCode = error.response?.status;
         const errorData = error.response?.data;
+
+        // ✅ CRITICAL: Session revoked — don't try refresh, just logout
+        if (errorData?.sessionRevoked) {
+          console.log("🔒 Session revoked — clearing session");
+          localStorage.removeItem("accessToken");
+          localStorage.removeItem("user");
+          if (isMountedRef.current) {
+            setAccessToken(null);
+            setUser(null);
+            setLoading(false);
+          }
+          return;
+        }
 
         // ✅ CRITICAL: If account is deactivated (403), DON'T try refresh
         if (statusCode === 403 && errorData?.deactivated) {
@@ -110,9 +148,11 @@ export const AuthProvider = ({ children }) => {
           );
           localStorage.removeItem("accessToken");
           localStorage.removeItem("user");
-          setAccessToken(null);
-          setUser(null);
-          setLoading(false);
+          if (isMountedRef.current) {
+            setAccessToken(null);
+            setUser(null);
+            setLoading(false);
+          }
           return;
         }
 
@@ -120,38 +160,49 @@ export const AuthProvider = ({ children }) => {
         if (statusCode === 401) {
           const restored = await trySilentRefresh();
 
+          if (abortController.signal.aborted) return;
+
           if (!restored) {
             localStorage.removeItem("accessToken");
             localStorage.removeItem("user");
-            setAccessToken(null);
-            setUser(null);
+            if (isMountedRef.current) {
+              setAccessToken(null);
+              setUser(null);
+            }
           }
         } else {
           // Any other error — just clean up
           localStorage.removeItem("accessToken");
           localStorage.removeItem("user");
-          setAccessToken(null);
-          setUser(null);
+          if (isMountedRef.current) {
+            setAccessToken(null);
+            setUser(null);
+          }
         }
       } finally {
-        setLoading(false);
+        if (isMountedRef.current && !abortController.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
 
     initializeAuth();
 
     return () => {
-      isInitializing.current = false;
+      isMountedRef.current = false;
+      abortController.abort();
       window.removeEventListener("auth:logout", handleAuthLogout);
       window.removeEventListener("auth:token-refreshed", handleTokenRefreshed);
     };
-  }, []); // Empty deps = runs once on mount
+  }, []);
 
   // ==========================================
   // REGISTER
   // ==========================================
   const register = async (userData) => {
     const response = await registerUser(userData);
+
+    if (!isMountedRef.current) return response;
 
     if (response.success) {
       const newToken = response.accessToken;
@@ -172,7 +223,10 @@ export const AuthProvider = ({ children }) => {
   // ==========================================
   const login = async (credentials) => {
     try {
-      const response = await loginUser(credentials);
+      const { _formLoadTime, ...loginData } = credentials;
+      const response = await loginUser(loginData, _formLoadTime);
+
+      if (!isMountedRef.current) return response;
 
       if (response.success) {
         const newToken = response.accessToken;
@@ -184,14 +238,11 @@ export const AuthProvider = ({ children }) => {
         setAccessToken(newToken);
         setUser(newUser);
 
-        // ✅ Return immediately — no need to call getCurrentUser again
-        // The login endpoint already returns the full user object
         return response;
       }
 
       return response;
     } catch (error) {
-      // ✅ CRITICAL: Re-throw the FULL error so Login.jsx can detect deactivated accounts
       console.error("AuthContext login error:", error);
       throw error;
     }
@@ -215,6 +266,7 @@ export const AuthProvider = ({ children }) => {
         error.response?.data?.message || error.message
       );
     } finally {
+      if (!isMountedRef.current) return;
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
       setAccessToken(null);

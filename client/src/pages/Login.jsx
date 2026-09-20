@@ -5,6 +5,7 @@ import SEO from "../components/SEO";
 import { useAlert } from "../context/AlertContext";
 import api from "../utils/api";
 import { useTurnstile } from "../hooks/useTurnstile";
+import HoneypotField from "../components/HoneypotField";
 
 function Login() {
   const navigate = useNavigate();
@@ -17,6 +18,9 @@ function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // ✅ Capture form load time for timing-based honeypot
+  const [formLoadTime] = useState(Date.now());
+
   const [reactivateData, setReactivateData] = useState(null);
   const [reactivateLoading, setReactivateLoading] = useState(false);
   const [pendingCredentials, setPendingCredentials] = useState(null);
@@ -26,6 +30,9 @@ function Login() {
   const [totpCode, setTotpCode] = useState("");
   const [twoFaLoading, setTwoFaLoading] = useState(false);
   const [oauth2faToken, setOauth2faToken] = useState("");
+
+  // ✅ Honeypot value in state
+  const [honeypotValue, setHoneypotValue] = useState("");
 
   const {
     containerRef: turnstileRef,
@@ -164,10 +171,13 @@ function Login() {
     setLoading(true);
 
     try {
+      // ✅ Send honeypot + timing header
       const response = await login({
         email,
         password,
         turnstileToken: turnstileToken || undefined,
+        website: honeypotValue, // ✅ Honeypot from state
+        _formLoadTime: formLoadTime, // ✅ Timing data
       });
 
       if (response.success) {
@@ -184,11 +194,32 @@ function Login() {
         resetTurnstile();
       }
     } catch (err) {
-      // ✅ FIXED: Only declare errorData ONCE
+      // ✅ FIXED: Declare errorData FIRST before using it
       const errorData = err.response?.data || err.data || null;
       const statusCode = err.response?.status || err.status;
 
       console.log("🔍 Login error debug:", { statusCode, errorData });
+
+      // ✅ Handle signature errors (tampering detection)
+      if (errorData?.signatureExpired || errorData?.signatureInvalid) {
+        toast.warning(
+          "Request expired or invalid. Please refresh and try again.",
+          "Security",
+          5000
+        );
+        window.location.reload();
+        setLoading(false);
+        return;
+      }
+
+      // ✅ Handle IP block
+      if (errorData?.ipBlocked) {
+        setError(errorData.message);
+        toast.error(errorData.message, "🚫 Access Denied", 8000);
+        resetTurnstile();
+        setLoading(false);
+        return;
+      }
 
       // ✅ 2FA required
       if (errorData?.requires2FA && errorData?.tempToken) {
@@ -287,18 +318,26 @@ function Login() {
           3000
         );
 
-        if (isOAuthFlow) {
-          // OAuth flow — go to discover (already have all data)
-          window.location.href =
-            data.user?.role === "admin" ? "/admin" : "/discover";
-        } else {
-          // Regular login flow
-          window.location.href =
-            data.user?.role === "admin" ? "/admin" : "/discover";
-        }
+        // ✅ FIXED: Single redirect logic for both flows
+        window.location.href =
+          data.user?.role === "admin" ? "/admin" : "/discover";
       }
     } catch (err) {
-      setError(err.response?.data?.message || "Invalid code");
+      const data = err.response?.data || {};
+
+      // ✅ Handle signature errors
+      if (data.signatureExpired || data.signatureInvalid) {
+        toast.warning(
+          "Request expired. Please refresh and try again.",
+          "Security",
+          5000
+        );
+        window.location.reload();
+        setTwoFaLoading(false);
+        return;
+      }
+
+      setError(data.message || "Invalid code");
       setTotpCode("");
     } finally {
       setTwoFaLoading(false);
@@ -402,6 +441,8 @@ function Login() {
                       <label htmlFor="email" className="form-label">
                         Email Address
                       </label>
+                      {/* ✅ HONEYPOT FIELD — invisible to humans, bots will fill it */}
+                      <HoneypotField />
                       <div className="input-group">
                         <span className="input-group-text">
                           <i className="bi bi-envelope"></i>

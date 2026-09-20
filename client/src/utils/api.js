@@ -1,5 +1,6 @@
 import axios from "axios";
 import { getDeviceId } from "./deviceId";
+import { signRequest } from "./signRequest.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
@@ -21,7 +22,7 @@ const refreshClient = axios.create({
 let isRefreshing = false;
 let failedQueue = [];
 let lastRefreshTime = 0;
-const REFRESH_COOLDOWN = 5000; // ✅ Minimum 5s between refresh attempts
+const REFRESH_COOLDOWN = 5000; // Minimum 5s between refresh attempts
 
 // Endpoints that should NEVER trigger a refresh
 const SKIP_REFRESH_URLS = [
@@ -71,15 +72,12 @@ const shouldSkipRefresh = (url) => {
 // HELPER: Perform silent refresh (with cooldown)
 // ==========================================
 const performRefresh = async () => {
-  // ✅ Cooldown guard: don't spam refresh endpoint
   const now = Date.now();
   if (now - lastRefreshTime < REFRESH_COOLDOWN) {
     const existing = localStorage.getItem("accessToken");
     if (existing) {
-      // Return existing token — don't hit server again
       return existing;
     }
-    // No token at all — wait a tick and try once
     await new Promise((r) =>
       setTimeout(r, REFRESH_COOLDOWN - (now - lastRefreshTime))
     );
@@ -95,7 +93,6 @@ const performRefresh = async () => {
   localStorage.setItem("accessToken", newToken);
   lastRefreshTime = Date.now();
 
-  // 🔔 Notify AuthContext about the refresh
   window.dispatchEvent(
     new CustomEvent("auth:token-refreshed", {
       detail: { accessToken: newToken },
@@ -116,13 +113,12 @@ api.interceptors.request.use(
       config.headers.Authorization = `Bearer ${accessToken}`;
       config.headers["X-Device-Id"] = getDeviceId();
 
-      // ✅ PROACTIVE REFRESH: refresh 60s before expiry
+      // PROACTIVE REFRESH: refresh 60s before expiry
       if (
         isTokenExpiringSoon(accessToken, 60) &&
         !config._isRetry &&
         !shouldSkipRefresh(config.url)
       ) {
-        // If another refresh is in flight, wait for it
         if (isRefreshing) {
           try {
             const token = await new Promise((resolve, reject) => {
@@ -135,10 +131,9 @@ api.interceptors.request.use(
           }
         }
 
-        // Cooldown check
         const now = Date.now();
         if (now - lastRefreshTime < REFRESH_COOLDOWN) {
-          return config; // Too soon — just use existing token
+          return config;
         }
 
         isRefreshing = true;
@@ -154,6 +149,9 @@ api.interceptors.request.use(
         }
       }
     }
+
+    // ✅ Sign critical requests (HMAC anti-tampering)
+    config = await signRequest(config);
 
     return config;
   },
@@ -173,33 +171,59 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // ✅ INSTANT LOGOUT: If session was revoked, force logout immediately
-    if (error.response.data?.sessionRevoked) {
+    const data = error.response.data || {};
+
+    // ✅ 1. SIGNATURE ERRORS — handle FIRST (tampering / expiry / missing)
+    if (
+      data.signatureInvalid ||
+      data.signatureMissing ||
+      data.signatureExpired
+    ) {
+      console.error("🔐 Signature error:", data.message);
+
+      if (data.signatureExpired) {
+        // Clock skew or page open too long — reload to get fresh time
+        window.location.reload();
+        return Promise.reject(error);
+      }
+
+      if (data.signatureInvalid || data.signatureMissing) {
+        // Possible tampering — force logout and warn user
+        localStorage.removeItem("accessToken");
+        localStorage.removeItem("user");
+        window.dispatchEvent(new Event("auth:logout"));
+        alert(
+          "⚠️ Security Warning: Your request was blocked due to a potential security issue. Please log in again."
+        );
+        window.location.href = "/login";
+        return Promise.reject(error);
+      }
+    }
+
+    // ✅ 2. INSTANT LOGOUT — session revoked
+    if (data.sessionRevoked) {
       console.warn("Session revoked - forcing logout");
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
       window.dispatchEvent(new Event("auth:logout"));
 
-      // Redirect to login with reason
       if (!window.location.pathname.includes("/login")) {
         window.location.href = "/login?reason=session_revoked";
       }
-
       return Promise.reject(error);
     }
 
-    // Only handle 401
+    // ✅ 3. Only handle 401 for token refresh
     if (error.response.status !== 401) {
       return Promise.reject(error);
     }
 
     const requestUrl = originalRequest?.url || "";
-
     if (shouldSkipRefresh(requestUrl)) {
       return Promise.reject(error);
     }
 
-    const errorMessage = (error.response.data?.message || "").toLowerCase();
+    const errorMessage = (data.message || "").toLowerCase();
     const isTokenError =
       errorMessage.includes("token") ||
       errorMessage.includes("expired") ||
@@ -215,17 +239,22 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
+    // Queue if another refresh is in flight
     if (isRefreshing) {
       return new Promise((resolve, reject) => {
         failedQueue.push({ resolve, reject });
       })
         .then((newToken) => {
           originalRequest.headers.Authorization = `Bearer ${newToken}`;
-          return api(originalRequest);
+          // ✅ Re-sign the retried request (new timestamp + signature)
+          return signRequest(originalRequest).then((signedConfig) =>
+            api(signedConfig)
+          );
         })
         .catch((queueError) => Promise.reject(queueError));
     }
 
+    // Start refresh
     originalRequest._isRetry = true;
     isRefreshing = true;
 
@@ -233,7 +262,9 @@ api.interceptors.response.use(
       const newToken = await performRefresh();
       processQueue(null, newToken);
       originalRequest.headers.Authorization = `Bearer ${newToken}`;
-      return api(originalRequest);
+      // ✅ Re-sign the retried request with fresh timestamp
+      const signedConfig = await signRequest(originalRequest);
+      return api(signedConfig);
     } catch (refreshError) {
       processQueue(refreshError, null);
 

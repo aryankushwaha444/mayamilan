@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import SEO from "../components/SEO.jsx";
 import { useAlert } from "../context/AlertContext.jsx";
@@ -28,6 +28,10 @@ function Settings() {
   const [unblockTarget, setUnblockTarget] = useState(null);
   const [unblockLoading, setUnblockLoading] = useState(false);
 
+  // ✅ Use refs for loading states to avoid stale closures
+  const blockedLoadingRef = useRef(false);
+  const securityLoadingRef = useRef(false);
+
   // ---- Security state ----
   const [twoFa, setTwoFa] = useState({
     enabled: false,
@@ -48,11 +52,26 @@ function Settings() {
   const [blockResults, setBlockResults] = useState([]);
   const [blockSearchLoading, setBlockSearchLoading] = useState(false);
 
+  // ✅ Track which sessions are being revoked
+  const [revokingSessionId, setRevokingSessionId] = useState(null);
+  const [revokeOthersLoading, setRevokeOthersLoading] = useState(false);
+
+  // ✅ Track which block actions are in progress
+  const [blockingUserId, setBlockingUserId] = useState(null);
+
+  // ✅ Confirmation dialogs for session revocation
+  const [revokeTarget, setRevokeTarget] = useState(null);
+  const [revokeOthersConfirm, setRevokeOthersConfirm] = useState(false);
+
   // ================= BLOCKED USERS =================
   const loadBlocked = useCallback(
     async (query = "") => {
-      if (blockedLoading) return;
+      // ✅ Use ref to avoid stale closure
+      if (blockedLoadingRef.current) return;
+
+      blockedLoadingRef.current = true;
       setBlockedLoading(true);
+
       try {
         const data = await getBlockedUsers(query);
         setBlockedUsers(data.blockedUsers || []);
@@ -64,13 +83,14 @@ function Settings() {
           4000
         );
       } finally {
+        blockedLoadingRef.current = false;
         setBlockedLoading(false);
       }
     },
-    [toast, blockedLoading]
-  );
+    [toast]
+  ); // ✅ Remove blockedLoading from deps
 
-  // ✅ Debounced search (ONLY ONE)
+  // ✅ Debounced search
   useEffect(() => {
     const t = setTimeout(() => {
       setSearch(searchInput);
@@ -78,12 +98,12 @@ function Settings() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // ✅ Load blocked users when tab changes or search changes (ONLY ONE)
+  // ✅ Load blocked users when tab changes or search changes
   useEffect(() => {
-    if (activeTab === "blocked" && !blockedLoading) {
+    if (activeTab === "blocked") {
       loadBlocked(search);
     }
-  }, [activeTab, search]); // ✅ NO loadBlocked in deps
+  }, [activeTab, search, loadBlocked]);
 
   const handleUnblock = async () => {
     if (!unblockTarget) return;
@@ -110,8 +130,12 @@ function Settings() {
 
   // ================= SECURITY =================
   const loadSecurity = useCallback(async () => {
-    if (securityLoading) return;
+    // ✅ Use ref to avoid stale closure
+    if (securityLoadingRef.current) return;
+
+    securityLoadingRef.current = true;
     setSecurityLoading(true);
+
     try {
       const [faRes, sessRes] = await Promise.all([
         api.get("/2fa/status"),
@@ -125,15 +149,16 @@ function Settings() {
     } catch (err) {
       console.error("Load security error:", err);
     } finally {
+      securityLoadingRef.current = false;
       setSecurityLoading(false);
     }
-  }, [securityLoading]);
+  }, []); // ✅ Remove securityLoading from deps
 
   useEffect(() => {
-    if (activeTab === "security" && !securityLoading) {
+    if (activeTab === "security") {
       loadSecurity();
     }
-  }, [activeTab]);
+  }, [activeTab, loadSecurity]);
 
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -145,7 +170,13 @@ function Settings() {
       setBlockSearchLoading(true);
       try {
         const data = await searchBlockableUsers(q);
-        setBlockResults(data.users || []);
+        // ✅ Check which users are already blocked
+        const blockedIds = new Set(blockedUsers.map((u) => u._id));
+        const usersWithStatus = (data.users || []).map((u) => ({
+          ...u,
+          isBlocked: blockedIds.has(u._id),
+        }));
+        setBlockResults(usersWithStatus);
       } catch {
         setBlockResults([]);
       } finally {
@@ -153,9 +184,10 @@ function Settings() {
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [blockQuery]);
+  }, [blockQuery, blockedUsers]); // ✅ Add blockedUsers to update status
 
   const handleToggleBlock = async (target) => {
+    setBlockingUserId(target._id);
     try {
       await api.post(`/users/${target._id}/block`);
       toast.success(
@@ -167,13 +199,23 @@ function Settings() {
       );
       loadBlocked(search);
       const data = await searchBlockableUsers(blockQuery.trim());
-      setBlockResults(data.users || []);
+      // ✅ Update block status in search results
+      const blockedIds = new Set(
+        (await getBlockedUsers("")).blockedUsers.map((u) => u._id)
+      );
+      const usersWithStatus = (data.users || []).map((u) => ({
+        ...u,
+        isBlocked: blockedIds.has(u._id),
+      }));
+      setBlockResults(usersWithStatus);
     } catch (err) {
       toast.error(
         err.response?.data?.message || "Action failed",
         "Error",
         4000
       );
+    } finally {
+      setBlockingUserId(null);
     }
   };
 
@@ -218,13 +260,14 @@ function Settings() {
     setTwoFaBusy(true);
     try {
       const payload = { totpCode: disableCode };
-      
+
       // ✅ Only include password for local users
-      const isLocalUser = !user?.oauthProvider || user.oauthProvider === "local";
+      const isLocalUser =
+        !user?.oauthProvider || user.oauthProvider === "local";
       if (isLocalUser && disablePassword) {
         payload.password = disablePassword;
       }
-      
+
       await api.post("/2fa/disable", payload);
       toast.success("2FA has been disabled", "Success", 3000);
       setDisableModal(false);
@@ -232,6 +275,16 @@ function Settings() {
       setDisableCode("");
       loadSecurity();
     } catch (err) {
+      // ✅ Handle signature errors
+      if (err.response?.data?.signatureExpired) {
+        toast.warning(
+          "Request expired. Please try again.",
+          "Session expired",
+          5000
+        );
+        setTwoFaBusy(false);
+        return;
+      }
       toast.error(
         err.response?.data?.message || "Failed to disable 2FA",
         "Error",
@@ -242,23 +295,32 @@ function Settings() {
     }
   };
 
+  // ✅ Session revocation with confirmation
   const revokeSession = async (id) => {
+    setRevokingSessionId(id);
     try {
       await api.delete(`/auth/sessions/${id}`);
       toast.success("Session revoked", "Success", 3000);
+      setRevokeTarget(null);
       loadSecurity();
     } catch (err) {
       toast.error("Failed to revoke session", "Error", 4000);
+    } finally {
+      setRevokingSessionId(null);
     }
   };
 
   const revokeOthers = async () => {
+    setRevokeOthersLoading(true);
     try {
       await api.post("/auth/sessions/revoke-others");
       toast.success("All other sessions revoked", "Success", 3000);
+      setRevokeOthersConfirm(false);
       loadSecurity();
     } catch (err) {
       toast.error("Failed to revoke sessions", "Error", 4000);
+    } finally {
+      setRevokeOthersLoading(false);
     }
   };
 
@@ -336,27 +398,68 @@ function Settings() {
             </div>
 
             {/* Password Card */}
-            <div className="card border-0 shadow-sm">
-              <div className="card-body p-4">
-                <div className="d-flex justify-content-between align-items-center flex-wrap gap-3">
-                  <div>
-                    <h5 className="fw-bold mb-1">
-                      <i className="bi bi-key me-2 text-primary"></i>Password
-                    </h5>
-                    <p className="text-muted mb-0 small">
-                      Change your password regularly to stay safe
-                    </p>
+            {/* Password Card - Only show for local (non-OAuth) users */}
+            {(!user?.oauthProvider || user.oauthProvider === "local") && (
+              <div className="card border-0 shadow-sm">
+                <div className="card-body p-4">
+                  <div className="d-flex justify-content-between align-items-center flex-wrap gap-3">
+                    <div>
+                      <h5 className="fw-bold mb-1">
+                        <i className="bi bi-key me-2 text-primary"></i>Password
+                      </h5>
+                      <p className="text-muted mb-0 small">
+                        Change your password regularly to stay safe
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-outline-primary"
+                      onClick={() => navigate("/change-password")}
+                    >
+                      Change Password
+                    </button>
                   </div>
-                  <button
-                    className="btn btn-outline-primary"
-                    onClick={() => navigate("/change-password")}
-                  >
-                    Change Password
-                  </button>
                 </div>
               </div>
-            </div>
+            )}
 
+            {/* ✅ NEW: OAuth Info Card - Show for OAuth users */}
+            {user?.oauthProvider && user.oauthProvider !== "local" && (
+              <div className="card border-0 shadow-sm">
+                <div className="card-body p-4">
+                  <div className="d-flex align-items-center gap-3">
+                    <div
+                      style={{
+                        width: 48,
+                        height: 48,
+                        borderRadius: 12,
+                        background: "linear-gradient(135deg, #4285F4, #34A853)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <i
+                        className="bi bi-google text-white"
+                        style={{ fontSize: "1.5rem" }}
+                      ></i>
+                    </div>
+                    <div>
+                      <h5 className="fw-bold mb-1">
+                        Signed in with{" "}
+                        {user.oauthProvider === "google"
+                          ? "Google"
+                          : user.oauthProvider}
+                      </h5>
+                      <p className="text-muted mb-0 small">
+                        Your account is managed through Google. Password changes
+                        are not available.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             {/* Sessions Card */}
             <div className="card border-0 shadow-sm">
               <div className="card-body p-4">
@@ -373,9 +476,17 @@ function Settings() {
                   {sessions.length > 1 && (
                     <button
                       className="btn btn-outline-danger btn-sm"
-                      onClick={revokeOthers}
+                      onClick={() => setRevokeOthersConfirm(true)}
+                      disabled={revokeOthersLoading}
                     >
-                      Log out all other devices
+                      {revokeOthersLoading ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm me-2"></span>
+                          Revoking...
+                        </>
+                      ) : (
+                        "Log out all other devices"
+                      )}
                     </button>
                   )}
                 </div>
@@ -404,9 +515,14 @@ function Settings() {
                         </div>
                         <button
                           className="btn btn-outline-danger btn-sm"
-                          onClick={() => revokeSession(s._id)}
+                          onClick={() => setRevokeTarget(s)}
+                          disabled={revokingSessionId === s._id}
                         >
-                          Revoke
+                          {revokingSessionId === s._id ? (
+                            <span className="spinner-border spinner-border-sm"></span>
+                          ) : (
+                            "Revoke"
+                          )}
                         </button>
                       </div>
                     ))}
@@ -511,8 +627,15 @@ function Settings() {
                         <button
                           className="btn btn-outline-primary btn-sm"
                           onClick={() => setUnblockTarget(bu)}
+                          disabled={unblockLoading}
                         >
-                          <i className="bi bi-unlock me-1"></i>Unblock
+                          {unblockLoading ? (
+                            <span className="spinner-border spinner-border-sm"></span>
+                          ) : (
+                            <>
+                              <i className="bi bi-unlock me-1"></i>Unblock
+                            </>
+                          )}
                         </button>
                       </div>
                     );
@@ -756,6 +879,36 @@ function Settings() {
         icon="bi-unlock"
         onCancel={() => setUnblockTarget(null)}
         onConfirm={handleUnblock}
+      />
+
+      {/* ✅ NEW: Revoke Session Confirmation */}
+      <ConfirmDialog
+        open={revokeTarget !== null}
+        title="Revoke Session?"
+        message={`This will log out the device: ${
+          revokeTarget?.deviceInfo || "Unknown"
+        }. The user will need to log in again on that device.`}
+        confirmText="Revoke"
+        cancelText="Cancel"
+        icon="bi-laptop"
+        danger
+        onCancel={() => setRevokeTarget(null)}
+        onConfirm={() => revokeSession(revokeTarget._id)}
+      />
+
+      {/* ✅ NEW: Revoke All Other Sessions Confirmation */}
+      <ConfirmDialog
+        open={revokeOthersConfirm}
+        title="Log Out All Other Devices?"
+        message={`This will revoke ${
+          sessions.length - 1
+        } other session(s). You will remain logged in on this device, but all other devices will be logged out.`}
+        confirmText="Log Out All"
+        cancelText="Cancel"
+        icon="bi-shield-exclamation"
+        danger
+        onCancel={() => setRevokeOthersConfirm(false)}
+        onConfirm={revokeOthers}
       />
     </>
   );

@@ -707,14 +707,6 @@ function Navbar() {
                       <i className="bi bi-pencil-square"></i>
                       <span>Edit Profile</span>
                     </NavLink>
-                    <NavLink
-                      to="/change-password"
-                      className="profile-dropdown-item"
-                      onClick={() => setProfileOpen(false)}
-                    >
-                      <i className="bi bi-shield-lock"></i>
-                      <span>Change Password</span>
-                    </NavLink>
 
                     {/* NEW: Settings */}
                     <NavLink
