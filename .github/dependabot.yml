@@ -1,0 +1,64 @@
+version: 2
+updates:
+  # ========================================
+  # Backend dependencies (server/)
+  # ========================================
+  - package-ecosystem: "npm"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"  # Adjust to your timezone
+    open-pull-requests-limit: 10
+    reviewers:
+      - "aryankushwaha444"  # Replace with your GitHub username
+    labels:
+      - "dependencies"
+      - "security"
+      - "backend"
+    commit-message:
+      prefix: "chore(server)"
+      include: "scope"
+    # Ignore major version updates for stability
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ========================================
+  # Frontend dependencies (client/)
+  # ========================================
+  - package-ecosystem: "npm"
+    directory: "/client"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"  # Adjust to your timezone
+    open-pull-requests-limit: 10
+    reviewers:
+      - "aryankushwaha444"  # Replace with your GitHub username
+    labels:
+      - "dependencies"
+      - "security"
+      - "frontend"
+    commit-message:
+      prefix: "chore(client)"
+      include: "scope"
+    # Ignore major version updates for stability
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ========================================
+  # GitHub Actions workflows
+  # ========================================
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "ci-cd"
+    commit-message:
+      prefix: "ci"

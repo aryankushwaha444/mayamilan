@@ -1,0 +1,152 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  audit-backend:
+    name: Backend Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./server
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: ./server
+        run: |
+          npm audit --audit-level=moderate --json > audit-results.json || true
+          cat audit-results.json | jq '.metadata.vulnerabilities // empty'
+        continue-on-error: true
+
+      - name: Run Snyk test
+        if: env.SNYK_TOKEN != ''
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --json > snyk-results.json || true
+          command: test
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-audit-results
+          path: |
+            server/audit-results.json
+            server/snyk-results.json
+          retention-days: 30
+
+  audit-frontend:
+    name: Frontend Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./client
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: ./client
+        run: |
+          npm audit --audit-level=moderate --json > audit-results.json || true
+          cat audit-results.json | jq '.metadata.vulnerabilities // empty'
+        continue-on-error: true
+
+      - name: Run Snyk test
+        if: env.SNYK_TOKEN != ''
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --json > snyk-results.json || true
+          command: test
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-audit-results
+          path: |
+            client/audit-results.json
+            client/snyk-results.json
+          retention-days: 30
+
+  security-report:
+    name: Generate Security Report
+    needs: [audit-backend, audit-frontend]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+
+      - name: Generate summary
+        run: |
+          echo "# 🔒 Security Audit Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Backend (server/)" >> $GITHUB_STEP_SUMMARY
+          if [ -f backend-audit-results/audit-results.json ]; then
+            CRITICAL=$(cat backend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.critical // 0')
+            HIGH=$(cat backend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.high // 0')
+            MODERATE=$(cat backend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.moderate // 0')
+            LOW=$(cat backend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.low // 0')
+            echo "- 🔴 Critical: $CRITICAL" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟠 High: $HIGH" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟡 Moderate: $MODERATE" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟢 Low: $LOW" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Backend audit did not produce results" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Frontend (client/)" >> $GITHUB_STEP_SUMMARY
+          if [ -f frontend-audit-results/audit-results.json ]; then
+            CRITICAL=$(cat frontend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.critical // 0')
+            HIGH=$(cat frontend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.high // 0')
+            MODERATE=$(cat frontend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.moderate // 0')
+            LOW=$(cat frontend-audit-results/audit-results.json | jq '.metadata.vulnerabilities.low // 0')
+            echo "- 🔴 Critical: $CRITICAL" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟠 High: $HIGH" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟡 Moderate: $MODERATE" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟢 Low: $LOW" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Frontend audit did not produce results" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "📅 Report generated: $(date -u)" >> $GITHUB_STEP_SUMMARY

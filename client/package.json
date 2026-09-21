@@ -8,7 +8,10 @@
     "build": "vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "start": "node server.js"
+    "start": "node server.js",
+    "audit": "npm audit --audit-level=moderate",
+    "snyk:test": "snyk test",
+    "security:check": "npm run audit && npm run snyk:test"
   },
   "dependencies": {
     "axios": "^1.20.0",
@@ -30,6 +33,7 @@
     "@vitejs/plugin-react": "^6.1.0",
     "oxlint": "^1.79.0",
     "rollup-plugin-visualizer": "^7.1.1",
+    "snyk": "^1.1307.3",
     "vite": "^8.2.2"
   }
 }

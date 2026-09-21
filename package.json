@@ -1,0 +1,10 @@
+{
+    "name": "dating-portal",
+    "version": "1.0.0",
+    "description": "Dating portal - Maya Milan",
+    "scripts": {
+      "security": "node scripts/security-report.cjs",
+      "dev:server": "cd server && npm run dev",
+      "dev:client": "cd client && npm run dev"
+    }
+  }

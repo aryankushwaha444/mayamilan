@@ -1,0 +1,15 @@
+{
+    "resolutions": {
+      "//": "Document accepted vulnerabilities with justification",
+      "example-package": {
+        "reason": "No fix available, mitigated by input validation",
+        "expires": "2026-12-31"
+      }
+    },
+    "ignore": [
+      {
+        "id": "GHSA-xxxx-xxxx-xxxx",
+        "reason": "Not exploitable in our use case - we don't use the vulnerable function"
+      }
+    ]
+  }
