@@ -1,5 +1,10 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "rewrites": [
+    {
+      "source": "/((?!api|assets|vercel\\.json|.*\\..*).*)",
+      "destination": "/index.html"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
@@ -18,11 +23,11 @@
         },
         {
           "key": "Permissions-Policy",
-          "value": "camera=(self), microphone=(self), geolocation=(self), payment=(), accelerometer=(), gyroscope=(), magnetometer=(), usb=(), xr-spatial-tracking=(), display-capture=(), document-domain=(), interest-cohort=(), fullscreen=(self), autoplay=(self), clipboard-read=(self), clipboard-write=(self), encrypted-media=(self), publickey-credentials-get=(self)"
+          "value": "camera=(self), microphone=(self), geolocation=(self), payment=(), accelerometer=(), gyroscope=(), magnetometer=()"
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' https://mayamilan.onrender.com wss://mayamilan.onrender.com https://challenges.cloudflare.com https://res.cloudinary.com https://*.cloudinary.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'; worker-src 'self'; upgrade-insecure-requests"
+          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' https://mayamilan.onrender.com wss://mayamilan.onrender.com https://challenges.cloudflare.com https://res.cloudinary.com https://accounts.google.com https://www.google-analytics.com; frame-src https://challenges.cloudflare.com https://accounts.google.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
         },
         {
           "key": "Cross-Origin-Opener-Policy",
