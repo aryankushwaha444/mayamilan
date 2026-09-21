@@ -183,3 +183,65 @@ export const generalApiLimiter = rateLimit({
     return req.path === "/api/health" || req.path.startsWith("/uploads/");
   },
 });
+
+
+// ========================================
+// USER ACTION LIMITS (per-user, falls back to IP)
+// ========================================
+
+export const reportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // 10 reports per hour per user
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("reports"),
+});
+
+export const blockLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 30, // 30 block/unblock actions per hour per user
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("block actions"),
+});
+
+export const profileUpdateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 20, // 20 profile updates per hour per user
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("profile updates"),
+});
+
+export const accountDeletionLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000, // 24 hours
+  max: 3, // 3 deletion attempts per day
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("account deletion attempts"),
+});
+
+export const dataExportLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000, // 24 hours
+  max: 2, // 2 exports per day (GDPR allows reasonable limits)
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("data exports"),
+});
+
+export const sessionManagementLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 operations per 15 minutes
+  message: {
+    success: false,
+    message: "Too many session management requests. Please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+export const reactivationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // 5 reactivation attempts per hour
+  message: {
+    success: false,
+    message: "Too many reactivation attempts. Please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

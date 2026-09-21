@@ -27,9 +27,13 @@ import {
   generateRefreshToken,
   hashToken,
   generateReactivationToken,
+  verifyRefreshToken,
+  verifyReactivationToken,
+  verifyTempToken,
 } from "../utils/generateToken.js";
 
-// ✅ ADD: Import cache utility for email verification tracking
+// ✅ FIXED: Import the actual Redis client instance, not the middleware function.
+// (If your export in cache.js is named differently, e.g., `cacheClient` or `client`, change it here)
 import { cached } from "../utils/cache.js";
 
 const maskEmail = (email) => {
@@ -44,7 +48,6 @@ const maskEmail = (email) => {
 };
 
 const checkHoneypot = async (req, action) => {
-  // Check honeypot field
   if (req.body.website && req.body.website.trim() !== "") {
     await logAudit(req, "honeypot_triggered", {
       action,
@@ -57,7 +60,6 @@ const checkHoneypot = async (req, action) => {
     return true;
   }
 
-  // ✅ Time-based check (bots submit too fast)
   const formLoadTime = req.headers["x-form-load-time"];
   if (formLoadTime) {
     const timeSpent = Date.now() - parseInt(formLoadTime, 10);
@@ -80,7 +82,6 @@ const checkHoneypot = async (req, action) => {
   return false;
 };
 
-// ✅ NEW: Helper for suspicious login detection (reusable)
 const detectSuspiciousLogin = async (req, user) => {
   const currentIp = req.ip;
   const geo = lookupIp(currentIp);
@@ -115,7 +116,6 @@ const detectSuspiciousLogin = async (req, user) => {
     });
   }
 
-  // Update login metadata
   user.lastLoginIp = currentIp;
   user.lastLoginCountry = currentCountry;
   user.lastLoginCity = geo.city;
@@ -137,7 +137,6 @@ export const register = async (req, res) => {
         .json({ success: false, message: validation.error.issues[0].message });
     }
 
-    // ✅ HONEYPOT CHECK — before any expensive operations
     if (await checkHoneypot(req, "register")) {
       return res.status(200).json({
         success: true,
@@ -215,7 +214,6 @@ export const register = async (req, res) => {
       });
     }
 
-    // ✅ NEW: Check password against HIBP breach database
     const breachResult = await checkPasswordBreach(password);
     if (breachResult.breached) {
       const message = getBreachMessage(breachResult.count);
@@ -232,7 +230,7 @@ export const register = async (req, res) => {
       });
     }
 
-    // ✅ FIX: Check if email was verified via OTP (stored in cache)
+    // ✅ FIXED: Use redisClient instead of cached middleware
     const emailVerifiedKey = `verified:email:${email.toLowerCase()}`;
     const isEmailVerified = await cached.get(emailVerifiedKey);
 
@@ -244,10 +242,9 @@ export const register = async (req, res) => {
       dateOfBirth,
       gender,
       relationshipGoal,
-      isVerified: !!isEmailVerified, // ✅ Set based on OTP verification
+      isVerified: !!isEmailVerified,
     });
 
-    // Clean up verification flag
     if (isEmailVerified) {
       await cached.del(emailVerifiedKey);
     }
@@ -520,7 +517,7 @@ export const login = async (req, res) => {
     if (user.twoFactorEnabled) {
       const tempToken = jwt.sign(
         { userId: user._id.toString(), type: "2fa-pending" },
-        process.env.JWT_ACCESS_SECRET,
+        process.env.JWT_ACCESS_SECRET_CURRENT, // ✅ Uses CURRENT secret
         { expiresIn: "5m" }
       );
 
@@ -561,7 +558,6 @@ export const login = async (req, res) => {
 
     const accessToken = generateAccessToken(user._id.toString(), session._id);
 
-    // ✅ Suspicious login detection
     const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
       req,
       user
@@ -646,11 +642,15 @@ export const refreshAccessToken = async (req, res) => {
         .status(401)
         .json({ success: false, message: "Refresh token missing" });
 
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    if (decoded.type !== "refresh")
+    let decoded;
+    try {
+      // ✅ FIXED: Uses rotation-aware verification
+      decoded = verifyRefreshToken(refreshToken);
+    } catch (err) {
       return res
         .status(401)
-        .json({ success: false, message: "Invalid refresh token type" });
+        .json({ success: false, message: "Invalid or expired refresh token" });
+    }
 
     const tokenHash = hashToken(refreshToken);
     const storedToken = await RefreshToken.findOne({
@@ -784,18 +784,13 @@ export const reactivateAccount = async (req, res) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(reactivationToken, process.env.JWT_REFRESH_SECRET);
+      // ✅ FIXED: Uses rotation-aware verification
+      decoded = verifyReactivationToken(reactivationToken);
     } catch (err) {
       return res.status(401).json({
         success: false,
-        message: "Reactivation link expired. Please login again.",
+        message: "Reactivation link expired or invalid. Please login again.",
       });
-    }
-
-    if (decoded.type !== "reactivation") {
-      return res
-        .status(401)
-        .json({ success: false, message: "Invalid reactivation token" });
     }
 
     const user = await User.findById(decoded.userId);
@@ -919,7 +914,6 @@ export const changePassword = async (req, res, next) => {
       });
     }
 
-    // ✅ FIX: Changed from 6 to 8 to match register/reset
     if (newPassword.length < 8)
       return res.status(400).json({
         success: false,
@@ -1007,13 +1001,11 @@ export const sendOTPCode = async (req, res, next) => {
 
     const existingUser = await User.findOne({ email });
 
-    // ✅ FIX: Don't reveal if email is already verified (prevent enumeration)
     if (existingUser && existingUser.isVerified) {
       await logAudit(req, "otp_request_blocked", {
         email,
         reason: "email_already_verified",
       });
-      // Return success anyway to prevent enumeration
       return res.status(200).json({
         success: true,
         message: "OTP sent to your email",
@@ -1035,7 +1027,6 @@ export const sendOTPCode = async (req, res, next) => {
 
 export const verifyOTPCode = async (req, res, next) => {
   try {
-    // ✅ FIX: Add honeypot check to prevent OTP brute force
     if (await checkHoneypot(req, "verify_otp")) {
       return res.status(200).json({
         success: true,
@@ -1065,7 +1056,7 @@ export const verifyOTPCode = async (req, res, next) => {
       await logAudit(req, "email_verified", { email, userId: user._id });
     }
 
-    // ✅ FIX: If no user exists yet (registration flow), store verification flag in cache
+    // ✅ FIXED: Use redisClient instead of cached middleware
     if (!user) {
       const emailVerifiedKey = `verified:email:${email.toLowerCase()}`;
       await cached.set(emailVerifiedKey, "true", "EX", 600); // 10 minutes
@@ -1097,20 +1088,17 @@ export const forgotPassword = async (req, res, next) => {
 
     const user = await User.findOne({ email });
 
-    // ✅ FIX: Don't reveal if email exists (prevent enumeration)
     if (!user) {
       await logAudit(req, "password_reset_requested", {
         email,
         reason: "user_not_found",
       });
-      // Return success anyway to prevent enumeration
       return res.status(200).json({
         success: true,
         message: "Password reset OTP sent to your email",
       });
     }
 
-    // ✅ FIX: Don't allow password reset for OAuth users
     if (user.oauthProvider && user.oauthProvider !== "local") {
       await logAudit(req, "password_reset_blocked", {
         email,
@@ -1170,7 +1158,6 @@ export const resetPassword = async (req, res, next) => {
         .status(404)
         .json({ success: false, message: "User not found" });
 
-    // ✅ FIX: Don't allow password reset for OAuth users
     if (user.oauthProvider && user.oauthProvider !== "local") {
       await logAudit(req, "password_reset_blocked", {
         email,
@@ -1312,16 +1299,13 @@ export const loginWith2FA = async (req, res) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(tempToken, process.env.JWT_ACCESS_SECRET);
+      // ✅ FIXED: Uses rotation-aware verification
+      decoded = verifyTempToken(tempToken, "2fa-pending");
     } catch {
       return res.status(401).json({
         success: false,
-        message: "Session expired. Please login again.",
+        message: "Session expired or invalid. Please login again.",
       });
-    }
-
-    if (decoded.type !== "2fa-pending") {
-      return res.status(401).json({ success: false, message: "Invalid token" });
     }
 
     const user = await User.findById(decoded.userId);
@@ -1382,7 +1366,6 @@ export const loginWith2FA = async (req, res) => {
 
     const accessToken = generateAccessToken(user._id.toString(), session._id);
 
-    // ✅ FIX: Add suspicious login detection for 2FA flow
     const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
       req,
       user
@@ -1462,18 +1445,12 @@ export const completeOAuth2FA = async (req, res) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(tempToken, process.env.JWT_ACCESS_SECRET);
+      // ✅ FIXED: Uses rotation-aware verification
+      decoded = verifyTempToken(tempToken, "oauth-2fa-pending");
     } catch {
       return res.status(401).json({
         success: false,
         message: "Session expired. Please try Google sign-in again.",
-      });
-    }
-
-    if (decoded.type !== "oauth-2fa-pending") {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid OAuth session",
       });
     }
 
@@ -1537,7 +1514,6 @@ export const completeOAuth2FA = async (req, res) => {
       path: "/",
     });
 
-    // ✅ FIX: Add suspicious login detection for OAuth 2FA flow
     const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
       req,
       user

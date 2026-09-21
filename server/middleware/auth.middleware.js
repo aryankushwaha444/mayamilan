@@ -10,6 +10,7 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Authentication required",
+        code: "NO_TOKEN",
       });
     }
 
@@ -19,29 +20,28 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Token is required",
+        code: "EMPTY_TOKEN",
       });
     }
 
+    // ✅ verifyAccessToken now handles the fallback (Current -> Previous secret)
+    // and throws an error if the token type is not "access"
     const decoded = verifyAccessToken(token);
 
-    if (decoded.type !== "access") {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid access token",
-      });
-    }
-
-    // ✅ INSTANT REVOCATION: reject if session was revoked
-    if (decoded.sid) {
+    // ✅ FIXED: Changed `decoded.sid` to `decoded.sessionId` to match generateToken.js
+    // INSTANT REVOCATION: reject if session was revoked or deleted
+    if (decoded.sessionId) {
       const alive = await RefreshToken.exists({
-        _id: decoded.sid,
+        _id: decoded.sessionId,
         revokedAt: null,
       });
+
       if (!alive) {
         return res.status(401).json({
           success: false,
           message: "Session has been revoked. Please login again.",
-          sessionRevoked: true, // ✅ Add this flag for frontend
+          code: "SESSION_REVOKED",
+          sessionRevoked: true, // ✅ Flag for frontend to force redirect to login
         });
       }
     }
@@ -52,13 +52,16 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "User no longer exists",
+        code: "USER_NOT_FOUND",
       });
     }
 
-    if (!user.isActive) {
+    // ✅ IMPROVED: Check both isActive and deletedAt (soft delete)
+    if (!user.isActive || user.deletedAt) {
       return res.status(403).json({
         success: false,
-        message: "Your account is inactive",
+        message: "Your account is inactive or has been deleted",
+        code: "ACCOUNT_INACTIVE",
       });
     }
 
@@ -67,11 +70,28 @@ export const protect = async (req, res, next) => {
   } catch (error) {
     console.error("Auth middleware error:", error.message);
 
-    const isExpired = error.message.includes("expired");
+    // ✅ IMPROVED: Exact error matching instead of fragile `.includes()`
+    if (error.message === "Access token expired") {
+      return res.status(401).json({
+        success: false,
+        message: "Token expired",
+        code: "TOKEN_EXPIRED",
+      });
+    }
 
+    if (error.message === "Invalid access token") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token",
+        code: "INVALID_TOKEN",
+      });
+    }
+
+    // Catch-all for other verification errors
     return res.status(401).json({
       success: false,
-      message: isExpired ? "Token expired" : "Invalid or expired token",
+      message: "Authentication failed",
+      code: "AUTH_FAILED",
     });
   }
 };
@@ -81,6 +101,7 @@ export const adminOnly = (req, res, next) => {
     return res.status(401).json({
       success: false,
       message: "Authentication required",
+      code: "NO_USER",
     });
   }
 
@@ -88,6 +109,7 @@ export const adminOnly = (req, res, next) => {
     return res.status(403).json({
       success: false,
       message: "Admin access required",
+      code: "FORBIDDEN",
     });
   }
 
@@ -99,6 +121,7 @@ export const requireVerified = (req, res, next) => {
     return res.status(401).json({
       success: false,
       message: "Authentication required",
+      code: "NO_USER",
     });
   }
 
@@ -106,6 +129,7 @@ export const requireVerified = (req, res, next) => {
     return res.status(403).json({
       success: false,
       message: "Email verification required",
+      code: "EMAIL_NOT_VERIFIED",
     });
   }
 

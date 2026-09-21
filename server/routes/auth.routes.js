@@ -5,6 +5,7 @@ import RefreshToken from "../models/RefreshToken.js";
 import { logAudit } from "../utils/auditLogger.js";
 import { checkIpReputationMiddleware } from "../middleware/ipReputation.middleware.js";
 import { verifySignature } from "../middleware/verifySignature.js";
+import { jsonLimit } from "../middleware/bodyLimit.js";
 
 import {
   register,
@@ -38,7 +39,7 @@ import {
   describeDevice,
 } from "../utils/device.js";
 
-import { protect, adminOnly } from "../middleware/auth.middleware.js";
+import { protect } from "../middleware/auth.middleware.js";
 
 import {
   loginLimiter,
@@ -47,6 +48,8 @@ import {
   sendOTPLimiter,
   verifyOTPLimiter,
   passwordResetLimiter,
+  reactivationLimiter,
+  sessionManagementLimiter
 } from "../middleware/rateLimits.js";
 
 const router = express.Router();
@@ -60,25 +63,57 @@ router.post(
   "/register",
   registerLimiter,
   checkIpReputationMiddleware,
+  jsonLimit("2kb"),
   register
 );
-router.post("/login", loginLimiter, checkIpReputationMiddleware, login);
+
+router.post(
+  "/login",
+  loginLimiter,
+  checkIpReputationMiddleware,
+  jsonLimit("1kb"),
+  login
+);
 
 // Critical auth completion — signature required
-router.post("/login/2fa", loginLimiter, verifySignature, loginWith2FA);
-router.post("/oauth/2fa", loginLimiter, verifySignature, completeOAuth2FA);
-router.post("/reactivate", verifySignature, reactivateAccount);
+router.post(
+  "/login/2fa",
+  loginLimiter,
+  jsonLimit("500b"),
+  verifySignature,
+  loginWith2FA
+);
+
+router.post(
+  "/oauth/2fa",
+  loginLimiter,
+  jsonLimit("500b"),
+  verifySignature,
+  completeOAuth2FA
+);
+
+// ✅ FIXED: Added rate limiter to prevent abuse
+router.post(
+  "/reactivate",
+  reactivationLimiter,
+  jsonLimit("500b"),
+  verifySignature,
+  reactivateAccount
+);
 
 // Session management
-router.post("/logout", logout);
-router.post("/refresh", refreshLimiter, refreshAccessToken);
+router.post("/logout", jsonLimit("100b"), logout);
+
+router.post("/refresh", refreshLimiter, jsonLimit("100b"), refreshAccessToken);
+
 router.get("/me", protect, getMe);
 
-// ✅ FIXED: change-password now has verifySignature
+// Change password with body limit
 router.put(
   "/change-password",
   protect,
-  verifySignature, // ✅ ADD THIS — prevents password change tampering
+  jsonLimit("1kb"),
+  verifySignature,
   changePassword
 );
 
@@ -86,19 +121,24 @@ router.put(
 // OTP & PASSWORD RESET (rate-limited)
 // ========================================
 
-router.post("/send-otp", sendOTPLimiter, sendOTPCode);
-router.post("/verify-otp", verifyOTPLimiter, verifyOTPCode);
+router.post("/send-otp", sendOTPLimiter, jsonLimit("500b"), sendOTPCode);
+
+router.post("/verify-otp", verifyOTPLimiter, jsonLimit("500b"), verifyOTPCode);
+
 router.post(
   "/forgot-password",
   sendOTPLimiter,
   checkIpReputationMiddleware,
+  jsonLimit("500b"),
   verifySignature,
   forgotPassword
 );
+
 router.post(
   "/reset-password",
   passwordResetLimiter,
   checkIpReputationMiddleware,
+  jsonLimit("1kb"),
   verifySignature,
   resetPassword
 );
@@ -109,17 +149,22 @@ router.post(
 
 router.get("/sessions", protect, getSessions);
 
-// ✅ FIXED: Session revocation endpoints now have verifySignature
+// ✅ FIXED: Added rate limiter to session management
 router.delete(
   "/sessions/:sessionId",
   protect,
-  verifySignature, // ✅ ADD THIS — prevents session hijacking via tampered requests
+  sessionManagementLimiter,
+  jsonLimit("100b"),
+  verifySignature,
   revokeSession
 );
+
 router.post(
   "/sessions/revoke-others",
   protect,
-  verifySignature, // ✅ ADD THIS — mass revocation is high-value target
+  sessionManagementLimiter,
+  jsonLimit("100b"),
+  verifySignature,
   revokeAllOtherSessions
 );
 
@@ -149,7 +194,7 @@ router.get(
         return res.redirect(`${process.env.CLIENT_URL}/register?error=no_user`);
       }
 
-      // ✅ CHECK: Is this account deactivated (soft-deleted)?
+      // CHECK: Is this account deactivated (soft-deleted)?
       if (user.deletedAt) {
         const now = new Date();
 
@@ -189,7 +234,7 @@ router.get(
         );
       }
 
-      // ✅ CHECK: Is the email blocked?
+      // CHECK: Is the email blocked?
       if (user.emailBlockedUntil && user.emailBlockedUntil > new Date()) {
         return res.redirect(
           `${process.env.CLIENT_URL}/login?error=email_blocked`
@@ -200,7 +245,7 @@ router.get(
       // Normal flow — user is active
       // ========================================
 
-      // ✅ NEW: Check if 2FA is enabled — require verification
+      // CHECK: Check if 2FA is enabled — require verification
       if (user.twoFactorEnabled) {
         const tempToken = jwt.sign(
           { userId: user._id.toString(), type: "oauth-2fa-pending" },
@@ -220,11 +265,11 @@ router.get(
         );
       }
 
-      // No 2FA — issue tokens directly (original behavior)
+      // No 2FA — issue tokens directly
       const refreshToken = generateRefreshToken(user._id.toString());
       const deviceId = getDeviceId(req);
 
-      // ✅ Create session FIRST to get _id for access token binding
+      // Create session FIRST to get _id for access token binding
       const session = await RefreshToken.create({
         user: user._id,
         tokenHash: hashToken(refreshToken),
@@ -243,25 +288,22 @@ router.get(
         path: "/",
       });
 
-      // ✅ Access token now BOUND to session ID for instant revocation
+      // Access token now BOUND to session ID for instant revocation
       const accessToken = generateAccessToken(user._id.toString(), session._id);
 
+      // ✅ IMPROVED: Only send minimal user data in URL
       const userB64 = Buffer.from(
         JSON.stringify({
           _id: user._id,
-          id: user._id,
           name: user.name,
           email: user.email,
-          photos: user.photos || [],
           oauthProvider: user.oauthProvider,
           isVerified: user.isVerified,
-          gender: user.gender,
-          dateOfBirth: user.dateOfBirth,
-          relationshipGoal: user.relationshipGoal,
           role: user.role,
         })
       ).toString("base64");
 
+      // ✅ NOTE: Sensitive data (photos, DOB, etc.) should be fetched via /api/auth/me
       res.redirect(
         `${process.env.CLIENT_URL}/oauth-success?token=${accessToken}&user=${userB64}`
       );

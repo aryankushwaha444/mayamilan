@@ -6,6 +6,10 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import compression from "compression";
+import mongoSanitize from "express-mongo-sanitize"; // ✅ ADD: Prevent NoSQL injection
+import timeout from "connect-timeout"; // ✅ ADD: npm install connect-timeout
+import morgan from "morgan"; // ✅ ADD: npm install morgan
+import { v4 as uuidv4 } from "uuid"; // ✅ ADD: npm install uuid
 import * as Sentry from "@sentry/node";
 
 // Import all routes
@@ -25,17 +29,63 @@ import accountRoutes from "./routes/account.routes.js";
 import passport from "./config/passport.js";
 import twoFactorRoutes from "./routes/twoFactor.routes.js";
 
-// ✅ Import the per-user rate limiter
 import { generalApiLimiter } from "./middleware/rateLimits.js";
 
 const app = express();
+
+// ========================================
+// ENVIRONMENT VARIABLES (centralized)
+// ========================================
+const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+const SITE_URL = process.env.SITE_URL || "https://mayamilan.vercel.app";
+const NODE_ENV = process.env.NODE_ENV || "development";
+const COOKIE_SECRET = process.env.COOKIE_SECRET || "your-cookie-secret-here"; // ✅ ADD
+
+// ========================================
+// REQUEST TIMEOUT (prevents hanging requests)
+// ========================================
+app.use(timeout("30s")); // ✅ ADD: 30 second timeout for all requests
+
+// ========================================
+// REQUEST ID (for log correlation)
+// ========================================
+app.use((req, res, next) => {
+  req.id = req.headers["x-request-id"] || uuidv4();
+  res.setHeader("X-Request-ID", req.id);
+  next();
+});
+
+// ========================================
+// REQUEST LOGGING (development only)
+// ========================================
+if (NODE_ENV === "development") {
+  app.use(
+    morgan(
+      ":method :url :status :res[content-length] - :response-time ms [:id]"
+    )
+  );
+}
+
+// ========================================
+// SECURITY.TXT (RFC 9116)
+// ========================================
+const SECURITY_TXT = `Contact: mailto:${
+  process.env.SECURITY_EMAIL || "rupnarayan444@gmail.com"
+}
+Contact: ${SITE_URL}/security-report
+Expires: 2027-12-31T23:59:59.000Z
+Preferred-Languages: en, hi, np
+Canonical: ${SITE_URL}/.well-known/security.txt
+Policy: ${SITE_URL}/security-policy
+Acknowledgments: ${SITE_URL}/hall-of-fame
+`;
 
 // Sentry setup
 if (process.env.SENTRY_DSN) {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || "development",
-    tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
+    environment: NODE_ENV,
+    tracesSampleRate: NODE_ENV === "production" ? 0.1 : 1.0,
     integrations: [
       new Sentry.Integrations.Http({ tracing: true }),
       new Sentry.Integrations.Express({ app }),
@@ -50,29 +100,48 @@ if (process.env.SENTRY_DSN) {
   app.use(Sentry.Handlers.tracingHandler());
 }
 
-// CORS
+// ✅ FIXED CORS
 app.use(
   cors({
-    origin: [process.env.CLIENT_URL || "http://localhost:5173"].filter(Boolean),
+    origin: [CLIENT_URL].filter(Boolean),
     credentials: true,
     maxAge: 86400,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Device-Id"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Device-Id",
+      "X-Signature",
+      "X-Timestamp",
+      "X-Form-Load-Time",
+      "X-Requested-With",
+      "X-Request-ID", // ✅ ADD: Allow custom request IDs
+    ],
+    exposedHeaders: [
+      "X-Cache",
+      "X-RateLimit-Limit",
+      "X-RateLimit-Remaining",
+      "X-RateLimit-Reset",
+      "X-Request-ID", // ✅ ADD: Expose request ID to client
+    ],
   })
 );
 
-// ✅ Trust proxy (MUST be before rate limiter)
-app.set("trust proxy", 1);
+// ✅ Trust proxy
+app.set("trust proxy", NODE_ENV === "production" ? true : 1);
 
-// Security headers
-// server/app.js - Update your existing Helmet config
-
+// ✅ IMPROVED Security headers
 app.use(
   helmet({
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
+        scriptSrc: [
+          "'self'",
+          "https://cdn.jsdelivr.net",
+          "https://challenges.cloudflare.com",
+          ...(NODE_ENV === "production" ? [] : ["'unsafe-eval'"]), // ✅ Allow eval in dev
+        ],
         styleSrc: [
           "'self'",
           "'unsafe-inline'",
@@ -83,10 +152,13 @@ app.use(
         mediaSrc: ["'self'", "https:", "blob:"],
         connectSrc: [
           "'self'",
-          process.env.CLIENT_URL || "http://localhost:5173",
+          CLIENT_URL,
           "https://*.cloudinary.com",
+          "https://res.cloudinary.com",
           "wss:",
           "ws:",
+          ...(process.env.SENTRY_DSN ? ["https://*.ingest.sentry.io"] : []),
+          "https://challenges.cloudflare.com",
         ],
         fontSrc: [
           "'self'",
@@ -94,70 +166,108 @@ app.use(
           "https://fonts.gstatic.com",
           "data:",
         ],
+        frameSrc: ["'self'", "https://challenges.cloudflare.com"],
         objectSrc: ["'none'"],
-        frameSrc: ["'none'"],
         frameAncestors: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
+        upgradeInsecureRequests: NODE_ENV === "production" ? [] : null, // ✅ ADD: Force HTTPS in production
       },
     },
     hsts:
-      process.env.NODE_ENV === "production"
-        ? { maxAge: 31536000, includeSubDomains: true }
+      NODE_ENV === "production"
+        ? { maxAge: 31536000, includeSubDomains: true, preload: true }
         : false,
     referrerPolicy: { policy: "strict-origin-when-cross-origin" },
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
     frameguard: { action: "deny" },
 
-    // ✅ ADD THIS: Permissions-Policy Header
     permissionsPolicy: {
       policy: {
-        // Allow only your own origin to access these APIs
         camera: ["self"],
         microphone: ["self"],
         geolocation: ["self"],
-
-        // Block these completely (empty array = no origins allowed)
-        payment: [], // Payment Request API
-        "interest-cohort": [], // Opt out of FLoC tracking
-        accelerometer: [], // Motion sensors
-        gyroscope: [], // Orientation sensors
-        magnetometer: [], // Magnetic sensors
-        fullscreen: ["self"], // Fullscreen API
-        autoplay: ["self"], // Autoplay media
-        "display-capture": [], // Screen sharing
-        "document-domain": [], // Prevent document.domain manipulation
-        "encrypted-media": ["self"], // DRM content
-        "execution-while-not-rendered": [], // Background execution
-        "execution-while-out-of-viewport": [], // Off-screen execution
-        "publickey-credentials-get": ["self"], // WebAuthn
-        usb: [], // USB device access
-        "xr-spatial-tracking": [], // WebXR
-        "clipboard-read": ["self"], // Clipboard access
-        "clipboard-write": ["self"], // Clipboard write
+        payment: [],
+        "interest-cohort": [],
+        accelerometer: [],
+        gyroscope: [],
+        magnetometer: [],
+        fullscreen: ["self"],
+        autoplay: ["self"],
+        "display-capture": [],
+        "document-domain": [],
+        "encrypted-media": ["self"],
+        "execution-while-not-rendered": [],
+        "execution-while-out-of-viewport": [],
+        "publickey-credentials-get": ["self"],
+        usb: [],
+        "xr-spatial-tracking": [],
+        "clipboard-read": ["self"],
+        "clipboard-write": ["self"],
       },
     },
   })
 );
 
-// Body parsers
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+// ✅ FIXED: Body parsers with NoSQL injection protection
+app.use(express.json({ limit: "10kb" }));
+app.use(express.urlencoded({ extended: true, limit: "10kb" }));
+app.use(mongoSanitize()); // ✅ ADD: Remove $ operators from user input
 app.use(passport.initialize());
-app.use(cookieParser());
+app.use(cookieParser(COOKIE_SECRET)); // ✅ FIXED: Add secret for signed cookies
 
-// ✅ Health check BEFORE rate limiter (no limit)
-app.get("/api/health", (req, res) => {
-  res.json({
-    success: true,
-    message: "Dating Portal API is running",
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || "development",
-  });
+// Security.txt routes
+app.get("/.well-known/security.txt", (req, res) => {
+  res.type("text/plain; charset=utf-8");
+  res.set("Cache-Control", "public, max-age=86400");
+  res.send(SECURITY_TXT);
 });
 
-// ✅ Apply per-user rate limiter to all /api routes
+app.get("/security.txt", (req, res) => {
+  res.redirect(301, "/.well-known/security.txt");
+});
+
+// ✅ IMPROVED: Health check with diagnostics
+app.get("/api/health", async (req, res) => {
+  try {
+    // Check MongoDB connection
+    const mongoose = (await import("mongoose")).default;
+    const dbState = mongoose.connection.readyState;
+    const dbStates = {
+      0: "disconnected",
+      1: "connected",
+      2: "connecting",
+      3: "disconnecting",
+    };
+
+    res.json({
+      success: true,
+      message: "Dating Portal API is running",
+      timestamp: new Date().toISOString(),
+      environment: NODE_ENV,
+      uptime: process.uptime(),
+      database: {
+        status: dbStates[dbState] || "unknown",
+        host: mongoose.connection.host,
+      },
+      memory: {
+        rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
+        heapUsed: `${Math.round(
+          process.memoryUsage().heapUsed / 1024 / 1024
+        )}MB`,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Health check failed",
+      error: NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+});
+
+// Apply per-user rate limiter to all /api routes
 app.use("/api", generalApiLimiter);
 
 // Routes
@@ -181,33 +291,87 @@ app.use((req, res, next) => {
   res.status(404).json({
     success: false,
     message: `Route ${req.originalUrl} not found`,
+    requestId: req.id, // ✅ ADD: Include request ID for debugging
   });
 });
 
-// Error handlers
+// ✅ IMPROVED: Error handlers with request context
+// 1. Timeout handler (must be first)
+app.use((err, req, res, next) => {
+  if (err.timeout) {
+    console.error(`⏱️  Request timeout: ${req.method} ${req.path} [${req.id}]`);
+    return res.status(503).json({
+      success: false,
+      message: "Request timeout. Please try again.",
+      code: "REQUEST_TIMEOUT",
+      requestId: req.id,
+    });
+  }
+  next(err);
+});
+
+// 2. Specific error handlers (body size, multer)
+app.use((err, req, res, next) => {
+  if (err.type === "entity.too.large") {
+    console.warn(`📦 Body too large: ${req.method} ${req.path} [${req.id}]`);
+    return res.status(413).json({
+      success: false,
+      message: "Request body too large",
+      code: "PAYLOAD_TOO_LARGE",
+      requestId: req.id,
+    });
+  }
+
+  if (err.type === "entity.parse.failed") {
+    console.warn(`🔍 Invalid JSON: ${req.method} ${req.path} [${req.id}]`);
+    return res.status(400).json({
+      success: false,
+      message: "Invalid JSON in request body",
+      code: "INVALID_JSON",
+      requestId: req.id,
+    });
+  }
+
+  if (err.code === "LIMIT_FILE_SIZE") {
+    console.warn(`📁 File too large: ${req.method} ${req.path} [${req.id}]`);
+    return res.status(413).json({
+      success: false,
+      message: "File too large. Maximum size is 10MB.",
+      code: "FILE_TOO_LARGE",
+      requestId: req.id,
+    });
+  }
+
+  next(err);
+});
+
+// 3. Sentry error handler (logs errors before response)
 if (process.env.SENTRY_DSN) {
   app.use(Sentry.Handlers.errorHandler());
 }
 
+// 4. General error handler (sends response to client)
 app.use((err, req, res, next) => {
   console.error("❌ Unhandled error:", {
+    requestId: req.id, // ✅ ADD: Request ID for log correlation
     message: err.message,
-    stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+    stack: NODE_ENV === "development" ? err.stack : undefined,
     path: req.path,
     method: req.method,
     userId: req.user?._id,
+    ip: req.ip,
+    userAgent: req.get("user-agent"),
   });
 
   const statusCode = err.statusCode || err.status || 500;
   const message =
-    process.env.NODE_ENV === "production"
-      ? "Internal server error"
-      : err.message;
+    NODE_ENV === "production" ? "Internal server error" : err.message;
 
   res.status(statusCode).json({
     success: false,
     message,
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+    requestId: req.id, // ✅ ADD: Include request ID in response
+    ...(NODE_ENV === "development" && { stack: err.stack }),
   });
 });
 

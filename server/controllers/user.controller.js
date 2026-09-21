@@ -1,3 +1,4 @@
+import mongoose from "mongoose"; // ✅ ADD THIS
 import User from "../models/User.js";
 import cloudinary from "../config/cloudinary.js";
 import Like from "../models/Like.js";
@@ -6,12 +7,47 @@ import Report from "../models/Report.js";
 import { invalidateUserCache } from "../utils/cache.js";
 import { sendPushToMany, getMatchIds } from "../utils/push.js";
 import { getIO } from "../sockets/socket.js";
-import { logAudit } from "../utils/auditLogger.js"; // ✅ ADD THIS IMPORT
+import { logAudit } from "../utils/auditLogger.js";
 
-/*
-GET MY PROFILE
-GET /api/users/me
-*/
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
+
+/**
+ * Validate MongoDB ObjectId format
+ */
+const isValidObjectId = (id) => {
+  return mongoose.Types.ObjectId.isValid(id);
+};
+
+/**
+ * Safe audit logging (fire-and-forget with error handling)
+ */
+const safeLogAudit = async (req, action, metadata) => {
+  try {
+    await logAudit(req, action, metadata);
+  } catch (error) {
+    console.warn(`Audit log failed for ${action}:`, error.message);
+  }
+};
+
+/**
+ * Safe cache invalidation (fire-and-forget with error handling)
+ */
+const safeInvalidateCache = async (userId, prefixes) => {
+  try {
+    await invalidateUserCache(userId, prefixes);
+  } catch (error) {
+    console.warn(
+      `Cache invalidation failed for user ${userId}:`,
+      error.message
+    );
+  }
+};
+
+// ========================================
+// GET MY PROFILE
+// ========================================
 
 export const getMyProfile = async (req, res, next) => {
   try {
@@ -19,11 +55,13 @@ export const getMyProfile = async (req, res, next) => {
 
     if (!user) {
       return res.status(404).json({
+        success: false,
         message: "User not found",
       });
     }
 
     res.status(200).json({
+      success: true,
       user,
     });
   } catch (error) {
@@ -31,10 +69,9 @@ export const getMyProfile = async (req, res, next) => {
   }
 };
 
-/*
-UPDATE MY PROFILE
-PUT /api/users/me
-*/
+// ========================================
+// UPDATE MY PROFILE
+// ========================================
 
 export const updateMyProfile = async (req, res, next) => {
   try {
@@ -59,6 +96,13 @@ export const updateMyProfile = async (req, res, next) => {
       }
     }
 
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid fields to update",
+      });
+    }
+
     const user = await User.findByIdAndUpdate(
       req.user._id,
       { $set: updates },
@@ -70,21 +114,22 @@ export const updateMyProfile = async (req, res, next) => {
 
     if (!user) {
       return res.status(404).json({
+        success: false,
         message: "User not found",
       });
     }
 
-    // ✅ AUDIT: Log profile update BEFORE notifications
-    await logAudit(req, "profile_updated", {
+    // ✅ AUDIT: Log BEFORE sending response (but don't block on it)
+    safeLogAudit(req, "profile_updated", {
       userId: user._id,
       fields: Object.keys(updates),
       deviceInfo: req.get("user-agent"),
     });
 
-    // 👇 Get match IDs for both push (offline) and socket (online)
+    // Get match IDs for notifications
     const matchIds = await getMatchIds(req.user._id);
 
-    // 👇 PUSH: notify offline matches (browser closed / phone locked)
+    // PUSH: notify offline matches
     try {
       if (matchIds.length > 0) {
         sendPushToMany(matchIds, {
@@ -97,7 +142,7 @@ export const updateMyProfile = async (req, res, next) => {
       console.warn("Profile update push failed:", pushErr.message);
     }
 
-    // 👇 SOCKET: notify online matches in real-time (they hear sound + see banner)
+    // SOCKET: notify online matches
     try {
       const io = getIO();
       if (io && matchIds.length > 0) {
@@ -114,30 +159,40 @@ export const updateMyProfile = async (req, res, next) => {
       console.warn("Profile socket emit failed:", emitErr.message);
     }
 
-    res.status(200).json({
-      message: "Profile updated successfully",
-      user,
-    });
-    await invalidateUserCache(req.user._id, [
+    // ✅ Invalidate cache BEFORE response (but don't block)
+    safeInvalidateCache(req.user._id, [
       "profile",
       "my-profile",
       "discover",
       "feed",
     ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Profile updated successfully",
+      user,
+    });
   } catch (error) {
     next(error);
   }
 };
 
-/*
-GET OTHER USER PROFILE
-GET /api/users/:userId
-*/
+// ========================================
+// GET OTHER USER PROFILE
+// ========================================
 
 export const getUserProfile = async (req, res, next) => {
   try {
     const { userId } = req.params;
     const currentUserId = req.user._id;
+
+    // ✅ Validate ObjectId format
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format",
+      });
+    }
 
     const user = await User.findById(userId).select("-password -refreshToken");
 
@@ -173,10 +228,15 @@ export const getUserProfile = async (req, res, next) => {
   }
 };
 
+// ========================================
+// UPLOAD PROFILE PHOTO
+// ========================================
+
 export const uploadProfilePhoto = async (req, res, next) => {
   try {
     if (!req.file) {
       return res.status(400).json({
+        success: false,
         message: "Please select an image",
       });
     }
@@ -185,12 +245,14 @@ export const uploadProfilePhoto = async (req, res, next) => {
 
     if (!user) {
       return res.status(404).json({
+        success: false,
         message: "User not found",
       });
     }
 
     if (user.photos.length >= 6) {
       return res.status(400).json({
+        success: false,
         message: "You can upload a maximum of 6 photos",
       });
     }
@@ -227,37 +289,53 @@ export const uploadProfilePhoto = async (req, res, next) => {
 
     await user.save();
 
-    // ✅ AUDIT: Log photo upload
-    await logAudit(req, "photo_uploaded", {
+    // ✅ AUDIT: Log BEFORE response
+    safeLogAudit(req, "photo_uploaded", {
       userId: user._id,
       photoId: result.public_id,
       isPrimary,
       totalPhotos: user.photos.length,
     });
 
-    res.status(201).json({
-      message: "Profile photo uploaded successfully",
-      photos: user.photos,
-    });
-    await invalidateUserCache(req.user._id, [
+    // ✅ Invalidate cache BEFORE response
+    safeInvalidateCache(req.user._id, [
       "profile",
       "my-profile",
       "discover",
       "feed",
     ]);
+
+    res.status(201).json({
+      success: true,
+      message: "Profile photo uploaded successfully",
+      photos: user.photos,
+    });
   } catch (error) {
     next(error);
   }
 };
 
+// ========================================
+// DELETE PROFILE PHOTO
+// ========================================
+
 export const deleteProfilePhoto = async (req, res, next) => {
   try {
     const { photoId } = req.params;
+
+    // ✅ Validate ObjectId format
+    if (!isValidObjectId(photoId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid photo ID format",
+      });
+    }
 
     const user = await User.findById(req.user._id);
 
     if (!user) {
       return res.status(404).json({
+        success: false,
         message: "User not found",
       });
     }
@@ -266,6 +344,7 @@ export const deleteProfilePhoto = async (req, res, next) => {
 
     if (!photo) {
       return res.status(404).json({
+        success: false,
         message: "Photo not found",
       });
     }
@@ -287,37 +366,53 @@ export const deleteProfilePhoto = async (req, res, next) => {
 
     await user.save();
 
-    // ✅ AUDIT: Log photo deletion
-    await logAudit(req, "photo_deleted", {
+    // ✅ AUDIT: Log BEFORE response
+    safeLogAudit(req, "photo_deleted", {
       userId: user._id,
       photoId: publicId,
       wasPrimary,
       remainingPhotos: user.photos.length,
     });
 
-    res.status(200).json({
-      message: "Profile photo deleted successfully",
-      photos: user.photos,
-    });
-    await invalidateUserCache(req.user._id, [
+    // ✅ Invalidate cache BEFORE response
+    safeInvalidateCache(req.user._id, [
       "profile",
       "my-profile",
       "discover",
       "feed",
     ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Profile photo deleted successfully",
+      photos: user.photos,
+    });
   } catch (error) {
     next(error);
   }
 };
 
+// ========================================
+// SET PRIMARY PHOTO
+// ========================================
+
 export const setPrimaryPhoto = async (req, res, next) => {
   try {
     const { photoId } = req.params;
+
+    // ✅ Validate ObjectId format
+    if (!isValidObjectId(photoId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid photo ID format",
+      });
+    }
 
     const user = await User.findById(req.user._id);
 
     if (!user) {
       return res.status(404).json({
+        success: false,
         message: "User not found",
       });
     }
@@ -326,6 +421,7 @@ export const setPrimaryPhoto = async (req, res, next) => {
 
     if (!photoExists) {
       return res.status(404).json({
+        success: false,
         message: "Photo not found",
       });
     }
@@ -340,31 +436,46 @@ export const setPrimaryPhoto = async (req, res, next) => {
 
     await user.save();
 
-    // ✅ AUDIT: Log primary photo change
-    await logAudit(req, "primary_photo_changed", {
+    // ✅ AUDIT: Log BEFORE response
+    safeLogAudit(req, "primary_photo_changed", {
       userId: user._id,
       newPrimaryPhotoId: photoId,
     });
 
-    res.status(200).json({
-      message: "Primary photo updated successfully",
-      photos: user.photos,
-    });
-    await invalidateUserCache(req.user._id, [
+    // ✅ Invalidate cache BEFORE response
+    safeInvalidateCache(req.user._id, [
       "profile",
       "my-profile",
       "discover",
       "feed",
     ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Primary photo updated successfully",
+      photos: user.photos,
+    });
   } catch (error) {
     next(error);
   }
 };
 
+// ========================================
+// REPORT USER
+// ========================================
+
 export const reportUser = async (req, res, next) => {
   try {
     const { userId } = req.params;
     const { message } = req.body;
+
+    // ✅ Validate ObjectId format
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format",
+      });
+    }
 
     if (!message || !message.trim()) {
       return res.status(400).json({
@@ -393,8 +504,8 @@ export const reportUser = async (req, res, next) => {
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
-    // ✅ AUDIT: Log user report
-    await logAudit(req, "user_reported", {
+    // ✅ AUDIT: Log BEFORE response
+    safeLogAudit(req, "user_reported", {
       reporterId: req.user._id,
       reportedUserId: userId,
       reportedUserName: target.name,
@@ -410,13 +521,21 @@ export const reportUser = async (req, res, next) => {
   }
 };
 
-/*
-BLOCK / UNBLOCK USER
-POST /api/users/:userId/block
-*/
+// ========================================
+// BLOCK / UNBLOCK USER
+// ========================================
+
 export const toggleBlock = async (req, res, next) => {
   try {
     const { userId } = req.params;
+
+    // ✅ Validate ObjectId format
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format",
+      });
+    }
 
     if (userId === req.user._id.toString()) {
       return res.status(400).json({
@@ -440,12 +559,20 @@ export const toggleBlock = async (req, res, next) => {
 
     await me.save();
 
-    // ✅ AUDIT: Log block/unblock action
-    await logAudit(req, alreadyBlocked ? "user_unblocked" : "user_blocked", {
+    const action = alreadyBlocked ? "unblocked" : "blocked";
+
+    // ✅ AUDIT: Log BEFORE response
+    safeLogAudit(req, alreadyBlocked ? "user_unblocked" : "user_blocked", {
       userId: req.user._id,
       targetUserId: userId,
-      action: alreadyBlocked ? "unblocked" : "blocked",
+      action,
     });
+
+    // ✅ Invalidate cache BEFORE response (for both users)
+    Promise.all([
+      safeInvalidateCache(req.user._id, ["discover", "feed", "matches"]),
+      safeInvalidateCache(userId, ["discover", "feed", "matches"]),
+    ]);
 
     res.status(200).json({
       success: true,
@@ -454,22 +581,26 @@ export const toggleBlock = async (req, res, next) => {
         ? "User blocked successfully"
         : "User unblocked successfully",
     });
-    await Promise.all([
-      invalidateUserCache(req.user._id, ["discover", "feed", "matches"]),
-      invalidateUserCache(userId, ["discover", "feed", "matches"]),
-    ]);
   } catch (error) {
     next(error);
   }
 };
 
-/*
-BLOCK STATUS
-GET /api/users/:userId/block-status
-*/
+// ========================================
+// BLOCK STATUS
+// ========================================
+
 export const getBlockStatus = async (req, res, next) => {
   try {
     const { userId } = req.params;
+
+    // ✅ Validate ObjectId format
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format",
+      });
+    }
 
     const me = await User.findById(req.user._id).select("blockedUsers");
     const other = await User.findById(userId).select("blockedUsers");
@@ -487,7 +618,10 @@ export const getBlockStatus = async (req, res, next) => {
   }
 };
 
-// GET /api/users/blocked?search=name
+// ========================================
+// GET BLOCKED USERS
+// ========================================
+
 export const getBlockedUsers = async (req, res) => {
   try {
     const search = (req.query.search || "").trim();
@@ -496,12 +630,11 @@ export const getBlockedUsers = async (req, res) => {
     if (!me || me.blockedUsers.length === 0) {
       return res
         .status(200)
-        .json({ success: true, blockedUsers: [], count: 0 });
+        .json({ success: true, blockedUsers: [], count: 0, total: 0 });
     }
 
     const query = { _id: { $in: me.blockedUsers } };
     if (search) {
-      // Escape regex special chars to prevent ReDoS/injection
       const safe = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       query.name = { $regex: safe, $options: "i" };
     }
@@ -525,7 +658,10 @@ export const getBlockedUsers = async (req, res) => {
   }
 };
 
-// GET /api/users/search/blockable?q=name
+// ========================================
+// SEARCH BLOCKABLE USERS
+// ========================================
+
 export const searchBlockableUsers = async (req, res) => {
   try {
     const q = (req.query.q || "").trim();

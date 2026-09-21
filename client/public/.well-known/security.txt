@@ -1,0 +1,27 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Contact: mailto:rupnarayan444@gmail.com
+Contact: https://mayamilan.vercel.app/security-report
+Expires: 2027-12-31T23:59:59.000Z
+Preferred-Languages: en, hi, np
+Canonical: https://mayamilan.vercel.app/.well-known/security.txt
+Policy: https://mayamilan.com/security-policy
+Acknowledgments: https://mayamilan.vercel.app/hall-of-fame
+-----BEGIN PGP SIGNATURE-----
+
+iQJoBAEBCABSFiEEzQLGCd0eOI/S4PcRTRK2W/xOcRYFAmqw4icbFIAAAAAABAAO
+bWFudTIsMi41KzEuMTIsMCwzGBxydXBuYXJheWFuNDQ0QGdtYWlsLmNvbQAKCRBN
+ErZb/E5xFuDWD/0YY1KOoEpidZ02H9ETS7GGGItyJQ3px/lW7VzkjS3LmXe1qdkN
+2YOy88IZDKsayNJF9g2Lm6bcnZSuAnqNShQab/yXi7LIQ7s8Uvn/A0Pd/+s8Nau1
+jRevftWT7brfAMjfCt6IZJFINzuOQZ6fK3k5pCSBuDRX5nIZUn2+EHpUHFe2+0m3
+Kxv6Rcr1Ejhf4YiZ4ix5HRe5JrErJK/+5C3qfJ/lJDBYVea2ZJ3fgRf2kpbWemhQ
+Qqff7qNXzv6cCJQuna9576nE5ZEfq9y+7KN4/viQEFHT7N0/k1KirRHh3h8o2z6Z
+MATOBYy6E1KPTVQRGsWjQ24Xdd/bQt2JuND7MXGbYHl9wvnsaQwRHZDMAs90CrbX
+7YThJHEPnBcXTAGkYqzonNXb69b5+0UOGxCCJrGu3ETeko72dyF08zC3JZ8z+H2T
+MJOiKOQvfIOlK3crxEypCyS0bQoQzLD9/RH1Jt8DnOtCsDWe7asWwab+j/tPBSRy
+qJUmKOfMwW2BSA72Th/tSeUlJNDuJOkdoeW0Jn0NYXZnU/uuL0bDyL5U2NvWBXjI
+HU6t+UZg7m7M1vHiTL8O9D7M0cCC9lpMJPDSklpD27AKne6gVhrM7AzXGDaBPPLs
+kosS4WSnKj+YXd1hr2hG80D1d00kHs831m+q2QVHlhjMfI/E1fML4ClpdQ==
+=D6hz
+-----END PGP SIGNATURE-----
