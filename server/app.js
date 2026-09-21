@@ -6,7 +6,7 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import compression from "compression";
-import mongoSanitize from "express-mongo-sanitize"; // ✅ ADD: Prevent NoSQL injection
+import { sanitizeInput } from "./middleware/sanitizeInput.js";
 import timeout from "connect-timeout"; // ✅ ADD: npm install connect-timeout
 import morgan from "morgan"; // ✅ ADD: npm install morgan
 import { v4 as uuidv4 } from "uuid"; // ✅ ADD: npm install uuid
@@ -213,7 +213,7 @@ app.use(
 // ✅ FIXED: Body parsers with NoSQL injection protection
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
-app.use(mongoSanitize()); // ✅ ADD: Remove $ operators from user input
+app.use(sanitizeInput); // ✅ ADD: Remove $ operators from user input
 app.use(passport.initialize());
 app.use(cookieParser(COOKIE_SECRET)); // ✅ FIXED: Add secret for signed cookies
 
