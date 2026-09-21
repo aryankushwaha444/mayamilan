@@ -8,6 +8,7 @@ import initializeSocket from "./sockets/socket.js";
 import { cleanupDeletedAccounts } from "./utils/cleanupDeletedAccounts.js";
 
 const PORT = process.env.PORT || 5000;
+const HOST = "0.0.0.0"; // ✅ Bind to all interfaces for cloud deployment
 
 const startServer = async () => {
   try {
@@ -44,8 +45,9 @@ const startServer = async () => {
 
     scheduleCleanup();
 
-    server.listen(PORT, () => {
-      console.log(`🚀 Server running on http://localhost:${PORT}`);
+    // ✅ Fixed: Bind to 0.0.0.0 for cloud deployment compatibility
+    server.listen(PORT, HOST, () => {
+      console.log(`🚀 Server running on ${HOST}:${PORT}`);
       console.log(`📊 Environment: ${process.env.NODE_ENV || "development"}`);
     });
 
