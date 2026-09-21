@@ -15,7 +15,7 @@
     "snyk:monitor": "snyk monitor",
     "security:check": "npm run audit",
     "precommit": "npm run audit",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "overrides": {
     "proxy-addr": "^2.0.8"
