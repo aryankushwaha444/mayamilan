@@ -48,7 +48,7 @@ jobs:
           command: test
 
       - name: Upload audit results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: backend-audit-results
@@ -94,7 +94,7 @@ jobs:
           command: test
 
       - name: Upload audit results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: frontend-audit-results
