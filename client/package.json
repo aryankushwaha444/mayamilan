@@ -20,7 +20,7 @@
     "browser-image-compression": "^2.0.2",
     "react": "^19.2.8",
     "react-datepicker": "^9.1.0",
-    "react-dom": "^19.2.8",
+    "react-dom": "^19.3.0",
     "react-helmet-async": "^3.0.0",
     "react-router-dom": "^7.18.3",
     "react-virtuoso": "^4.18.13",
@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.0",
     "oxlint": "^1.79.0",
     "rollup-plugin-visualizer": "^7.1.1",
