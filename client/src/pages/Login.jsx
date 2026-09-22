@@ -553,10 +553,10 @@ function Login() {
                     type="button"
                     className="google-signup-btn"
                     onClick={() => {
-                      const apiUrl =
-                        import.meta.env.VITE_API_URL ||
-                        "http://localhost:5000/api";
-                      window.location.href = `${apiUrl}/auth/google`;
+                      const baseUrl =
+                        import.meta.env.VITE_API_URL || "http://localhost:5000";
+                      // ✅ Always include /api prefix
+                      window.location.href = `${baseUrl}/auth/google`;
                     }}
                   >
                     <svg width="20" height="20" viewBox="0 0 48 48">

@@ -4,19 +4,30 @@ import imageCompression from "browser-image-compression";
  * Smart image compression that keeps photos clearly visible
  * @param {File} file - Original image file
  * @param {Object} options - Compression settings
- * @returns {Promise<File>} Compressed file
+ * @returns {Promise<File>} Compressed file with correct extension
  */
 export async function compressImage(file, options = {}) {
-  // Defaults tuned for quality + size balance
+  // ✅ FIXED: Don't force an invalid MIME type. Let the library preserve
+  // the original type, or convert transparent images to PNG automatically.
   const defaults = {
-    maxSizeMB: 1, // Target max 1MB (good balance)
-    maxWidthOrHeight: 1600, // HD resolution — sharp on all screens
-    useWebWorker: true, // Offload to background thread
-    initialQuality: 0.82, // 82% quality — virtually invisible quality loss
-    fileType: "image/jpeg/png", // JPEG = smallest + universal
+    maxSizeMB: 1,
+    maxWidthOrHeight: 1600,
+    useWebWorker: true,
+    initialQuality: 0.82,
+    // ✅ REMOVED: fileType: "image/jpeg/png" — this was invalid
+    // The library will preserve the input type or use JPEG for photos
     alwaysKeepResolution: false,
     lib: "browser",
   };
+
+  const ext = (file.name || "").split(".").pop()?.toLowerCase();
+  if (
+    ["heic", "heif"].includes(ext) ||
+    ["image/heic", "image/heif"].includes(file.type)
+  ) {
+    console.log("📱 HEIC/HEIF detected — skipping client compression");
+    return file;
+  }
 
   const settings = { ...defaults, ...options };
 
@@ -40,7 +51,23 @@ export async function compressImage(file, options = {}) {
       )} (${Math.round((1 - compressed.size / file.size) * 100)}% saved)`
     );
 
-    return compressed;
+    // ✅ FIXED: Ensure filename extension matches the ACTUAL output MIME type
+    // This prevents the server-side "extension doesn't match content" error
+    const extMap = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/heic": "heic",
+      "image/heif": "heif",
+    };
+
+    const outputExt = extMap[compressed.type] || "jpg";
+    const baseName = (file.name || "photo").replace(/\.[^/.]+$/, ""); // Remove old extension
+    const correctedFile = new File([compressed], `${baseName}.${outputExt}`, {
+      type: compressed.type,
+    });
+
+    return correctedFile;
   } catch (error) {
     console.error("Compression failed, using original:", error);
     return file; // Fallback to original on error

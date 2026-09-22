@@ -32,9 +32,8 @@ import {
   verifyTempToken,
 } from "../utils/generateToken.js";
 
-// ✅ FIXED: Import the actual Redis client instance, not the middleware function.
-// (If your export in cache.js is named differently, e.g., `cacheClient` or `client`, change it here)
-import { cached } from "../utils/cache.js";
+// ✅ FIXED: Import the default Redis instance (not the middleware function)
+import redis from "../utils/cache.js";
 
 const maskEmail = (email) => {
   try {
@@ -230,9 +229,9 @@ export const register = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Use redisClient instead of cached middleware
+    // ✅ FIXED: Use redis instance (optional chaining for when Redis is disabled)
     const emailVerifiedKey = `verified:email:${email.toLowerCase()}`;
-    const isEmailVerified = await cached.get(emailVerifiedKey);
+    const isEmailVerified = await redis?.get(emailVerifiedKey);
 
     const hashedPassword = await argon2.hash(password);
     const user = await User.create({
@@ -246,7 +245,7 @@ export const register = async (req, res) => {
     });
 
     if (isEmailVerified) {
-      await cached.del(emailVerifiedKey);
+      await redis?.del(emailVerifiedKey);
     }
 
     const refreshToken = generateRefreshToken(user._id.toString());
@@ -517,7 +516,7 @@ export const login = async (req, res) => {
     if (user.twoFactorEnabled) {
       const tempToken = jwt.sign(
         { userId: user._id.toString(), type: "2fa-pending" },
-        process.env.JWT_ACCESS_SECRET_CURRENT, // ✅ Uses CURRENT secret
+        process.env.JWT_ACCESS_SECRET_CURRENT,
         { expiresIn: "5m" }
       );
 
@@ -644,7 +643,6 @@ export const refreshAccessToken = async (req, res) => {
 
     let decoded;
     try {
-      // ✅ FIXED: Uses rotation-aware verification
       decoded = verifyRefreshToken(refreshToken);
     } catch (err) {
       return res
@@ -784,7 +782,6 @@ export const reactivateAccount = async (req, res) => {
 
     let decoded;
     try {
-      // ✅ FIXED: Uses rotation-aware verification
       decoded = verifyReactivationToken(reactivationToken);
     } catch (err) {
       return res.status(401).json({
@@ -1056,10 +1053,10 @@ export const verifyOTPCode = async (req, res, next) => {
       await logAudit(req, "email_verified", { email, userId: user._id });
     }
 
-    // ✅ FIXED: Use redisClient instead of cached middleware
+    // ✅ FIXED: Use redis instance (optional chaining for when Redis is disabled)
     if (!user) {
       const emailVerifiedKey = `verified:email:${email.toLowerCase()}`;
-      await cached.set(emailVerifiedKey, "true", "EX", 600); // 10 minutes
+      await redis?.set(emailVerifiedKey, "true", "EX", 600); // 10 minutes
       await logAudit(req, "email_verified_pre_registration", { email });
     }
 
@@ -1299,7 +1296,6 @@ export const loginWith2FA = async (req, res) => {
 
     let decoded;
     try {
-      // ✅ FIXED: Uses rotation-aware verification
       decoded = verifyTempToken(tempToken, "2fa-pending");
     } catch {
       return res.status(401).json({
@@ -1445,7 +1441,6 @@ export const completeOAuth2FA = async (req, res) => {
 
     let decoded;
     try {
-      // ✅ FIXED: Uses rotation-aware verification
       decoded = verifyTempToken(tempToken, "oauth-2fa-pending");
     } catch {
       return res.status(401).json({

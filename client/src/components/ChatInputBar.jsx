@@ -22,6 +22,7 @@ const EMOJIS = [
   "✨",
   "👀",
 ];
+
 const STICKERS = [
   "😂",
   "😍",
@@ -36,6 +37,7 @@ const STICKERS = [
   "🎂",
   "🐱",
 ];
+
 const GIFS = [
   "https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif",
   "https://media.giphy.com/media/3o7aCSPqXE5C6T8tBC/giphy.gif",
@@ -44,6 +46,11 @@ const GIFS = [
   "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif",
   "https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif",
 ];
+
+// ✅ UX-only constants
+const MAX_TEXT_LENGTH = 2000;
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 function ChatInputBar({ onSend, disabled }) {
   const toast = useAlert();
@@ -54,6 +61,7 @@ function ChatInputBar({ onSend, disabled }) {
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [compressing, setCompressing] = useState(false);
+  const [sendingMedia, setSendingMedia] = useState(false);
 
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -61,9 +69,19 @@ function ChatInputBar({ onSend, disabled }) {
   const cancelRef = useRef(false);
   const fileRef = useRef(null);
   const composerRef = useRef(null);
-  const inputRef = useRef(null); // 👈 NEW: input ref for focus control
+  const inputRef = useRef(null);
 
-  // CLOSE PANELS + PLUS MENU ON OUTSIDE CLICK
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (recorderRef.current?.state === "recording") {
+        recorderRef.current.stop();
+      }
+    };
+  }, []);
+
+  // Close panels on outside click
   useEffect(() => {
     if (!panel && !plusOpen) return;
 
@@ -78,31 +96,36 @@ function ChatInputBar({ onSend, disabled }) {
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [panel, plusOpen]);
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (recorderRef.current?.state === "recording")
-        recorderRef.current.stop();
-    };
-  }, []);
-
   const fmt = (s) =>
     `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(
       2,
       "0"
     )}`;
 
-  // 👇 FIXED: keep cursor/keyboard alive after sending
   const submitText = async () => {
     if (!text.trim()) return;
+
     const payload = { type: "text", text };
     setText("");
     setPanel(null);
-    await onSend(payload); // wait for send to finish
-    requestAnimationFrame(() => inputRef.current?.focus()); // cursor returns
+
+    try {
+      await onSend(payload);
+    } catch (error) {
+      toast.error("Failed to send message");
+      setText(text);
+    }
+
+    requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  // 👇 NEW: scroll composer into view when keyboard opens on mobile
+  const handleTextChange = (e) => {
+    const value = e.target.value;
+    if (value.length <= MAX_TEXT_LENGTH) {
+      setText(value);
+    }
+  };
+
   const handleInputFocus = () => {
     setTimeout(() => {
       composerRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -117,7 +140,8 @@ function ChatInputBar({ onSend, disabled }) {
       cancelRef.current = false;
 
       recorder.ondataavailable = (e) => chunksRef.current.push(e.data);
-      recorder.onstop = () => {
+
+      recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         if (timerRef.current) clearInterval(timerRef.current);
         setRecording(false);
@@ -128,7 +152,15 @@ function ChatInputBar({ onSend, disabled }) {
           const file = new File([blob], `voice-${Date.now()}.webm`, {
             type: "audio/webm",
           });
-          onSend({ type: "voice", file });
+
+          try {
+            setSendingMedia(true);
+            await onSend({ type: "voice", file });
+          } catch (error) {
+            toast.error("Failed to send voice message");
+          } finally {
+            setSendingMedia(false);
+          }
         }
       };
 
@@ -156,18 +188,14 @@ function ChatInputBar({ onSend, disabled }) {
     recorderRef.current?.stop();
   };
 
+  // ✅ UX-ONLY validation (backend does security validation)
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith("image/")) {
-      toast.warning("Please select an image file");
-      e.target.value = "";
-      return;
-    }
-
-    if (file.size > 10 * 1024 * 1024) {
-      toast.warning("Image must be less than 10 MB");
+    // Basic size check (save bandwidth - backend also checks)
+    if (file.size > MAX_FILE_SIZE) {
+      toast.warning(`Image must be less than ${MAX_FILE_SIZE_MB}MB`);
       e.target.value = "";
       return;
     }
@@ -177,26 +205,47 @@ function ChatInputBar({ onSend, disabled }) {
       toast.info("Optimizing image...", "Compressing", 2000);
 
       const compressedFile = await compressChatImage(file);
-      onSend({ type: "image", file: compressedFile });
+
+      setSendingMedia(true);
+      // Backend does all security validation
+      await onSend({ type: "image", file: compressedFile });
     } catch (error) {
-      console.error("Image compression error:", error);
-      onSend({ type: "image", file });
+      console.error("Image upload error:", error);
+      toast.error(error.response?.data?.message || "Failed to send image");
     } finally {
       setCompressing(false);
+      setSendingMedia(false);
       e.target.value = "";
     }
   };
+
+  const safeSend = async (payload) => {
+    try {
+      setSendingMedia(true);
+      setPanel(null);
+      await onSend(payload);
+    } catch (error) {
+      toast.error("Failed to send");
+    } finally {
+      setSendingMedia(false);
+    }
+  };
+
+  const isDisabled = disabled || compressing || sendingMedia;
 
   return (
     <div className="chat-composer" ref={composerRef}>
       {recording ? (
         <div className="composer-recording">
           <span className="rec-dot"></span>
-          <span className="rec-time">Recording {fmt(seconds)}</span>
+          <span className="rec-time" aria-live="polite">
+            Recording {fmt(seconds)}
+          </span>
           <button
             className="composer-icon"
             onClick={stopAndSend}
             title="Send voice message"
+            aria-label="Send voice message"
           >
             <i className="bi bi-send-fill"></i>
           </button>
@@ -204,6 +253,7 @@ function ChatInputBar({ onSend, disabled }) {
             className="composer-icon"
             onClick={cancelRecording}
             title="Cancel recording"
+            aria-label="Cancel recording"
           >
             <i className="bi bi-trash"></i>
           </button>
@@ -215,7 +265,9 @@ function ChatInputBar({ onSend, disabled }) {
             className={`composer-plus-btn ${plusOpen ? "active" : ""}`}
             onClick={() => setPlusOpen((p) => !p)}
             title="Attachments"
-            disabled={compressing}
+            disabled={isDisabled}
+            aria-label="Open attachments menu"
+            aria-expanded={plusOpen}
           >
             <i
               className={`bi ${
@@ -229,7 +281,8 @@ function ChatInputBar({ onSend, disabled }) {
               className="composer-icon"
               onClick={startRecording}
               title="Voice message"
-              disabled={compressing}
+              disabled={isDisabled}
+              aria-label="Record voice message"
             >
               <i className="bi bi-mic-fill"></i>
             </button>
@@ -238,7 +291,8 @@ function ChatInputBar({ onSend, disabled }) {
               className="composer-icon"
               onClick={() => fileRef.current?.click()}
               title="Send image"
-              disabled={compressing}
+              disabled={isDisabled}
+              aria-label="Upload image"
             >
               <i
                 className={`bi ${
@@ -251,7 +305,9 @@ function ChatInputBar({ onSend, disabled }) {
               className={`composer-icon ${panel === "sticker" ? "active" : ""}`}
               onClick={() => setPanel(panel === "sticker" ? null : "sticker")}
               title="Stickers"
-              disabled={compressing}
+              disabled={isDisabled}
+              aria-label="Open sticker panel"
+              aria-expanded={panel === "sticker"}
             >
               <i className="bi bi-emoji-smile-upside-down-fill"></i>
             </button>
@@ -260,12 +316,15 @@ function ChatInputBar({ onSend, disabled }) {
               className={`composer-icon ${panel === "gif" ? "active" : ""}`}
               onClick={() => setPanel(panel === "gif" ? null : "gif")}
               title="GIF"
-              disabled={compressing}
+              disabled={isDisabled}
+              aria-label="Open GIF panel"
+              aria-expanded={panel === "gif"}
             >
               <span className="composer-gif-label">GIF</span>
             </button>
           </div>
 
+          {/* ✅ Accept all images - backend validates */}
           <input
             type="file"
             accept="image/*"
@@ -280,10 +339,17 @@ function ChatInputBar({ onSend, disabled }) {
               type="text"
               value={text}
               placeholder="Aa"
-              disabled={compressing}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitText()}
+              disabled={isDisabled}
+              onChange={handleTextChange}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submitText();
+                }
+              }}
               onFocus={handleInputFocus}
+              maxLength={MAX_TEXT_LENGTH}
+              aria-label="Message input"
             />
 
             <button
@@ -291,7 +357,9 @@ function ChatInputBar({ onSend, disabled }) {
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setPanel(panel === "emoji" ? null : "emoji")}
               title="Emoji"
-              disabled={compressing}
+              disabled={isDisabled}
+              aria-label="Open emoji panel"
+              aria-expanded={panel === "emoji"}
             >
               <i className="bi bi-emoji-smile-fill"></i>
             </button>
@@ -299,9 +367,10 @@ function ChatInputBar({ onSend, disabled }) {
 
           <button
             className="composer-heart"
-            onClick={() => onSend({ type: "heart" })}
+            onClick={() => safeSend({ type: "heart" })}
             title="Send love"
-            disabled={compressing}
+            disabled={isDisabled}
+            aria-label="Send heart"
           >
             <i className="bi bi-heart-fill"></i>
           </button>
@@ -309,14 +378,15 @@ function ChatInputBar({ onSend, disabled }) {
       )}
 
       {plusOpen && (
-        <div className="plus-menu">
+        <div className="plus-menu" role="menu">
           <button
             type="button"
+            role="menuitem"
             onClick={() => {
               setPlusOpen(false);
               startRecording();
             }}
-            disabled={compressing}
+            disabled={isDisabled}
           >
             <i className="bi bi-mic-fill"></i>
             <span>Voice Message</span>
@@ -324,11 +394,12 @@ function ChatInputBar({ onSend, disabled }) {
 
           <button
             type="button"
+            role="menuitem"
             onClick={() => {
               setPlusOpen(false);
               fileRef.current?.click();
             }}
-            disabled={compressing}
+            disabled={isDisabled}
           >
             <i className="bi bi-image-fill"></i>
             <span>Photo</span>
@@ -336,11 +407,12 @@ function ChatInputBar({ onSend, disabled }) {
 
           <button
             type="button"
+            role="menuitem"
             onClick={() => {
               setPlusOpen(false);
               setPanel("gif");
             }}
-            disabled={compressing}
+            disabled={isDisabled}
           >
             <span className="composer-gif-label plus-gif-label">GIF</span>
             <span>GIF</span>
@@ -348,11 +420,12 @@ function ChatInputBar({ onSend, disabled }) {
 
           <button
             type="button"
+            role="menuitem"
             onClick={() => {
               setPlusOpen(false);
               setPanel("sticker");
             }}
-            disabled={compressing}
+            disabled={isDisabled}
           >
             <i className="bi bi-emoji-smile-upside-down-fill"></i>
             <span>Sticker</span>
@@ -361,9 +434,14 @@ function ChatInputBar({ onSend, disabled }) {
       )}
 
       {panel === "emoji" && (
-        <div className="composer-panel emoji-panel">
+        <div className="composer-panel emoji-panel" role="grid">
           {EMOJIS.map((e) => (
-            <button key={e} type="button" onClick={() => setText((t) => t + e)}>
+            <button
+              key={e}
+              type="button"
+              onClick={() => setText((t) => (t + e).slice(0, MAX_TEXT_LENGTH))}
+              aria-label={`Add ${e} emoji`}
+            >
               {e}
             </button>
           ))}
@@ -371,15 +449,13 @@ function ChatInputBar({ onSend, disabled }) {
       )}
 
       {panel === "sticker" && (
-        <div className="composer-panel sticker-panel">
+        <div className="composer-panel sticker-panel" role="grid">
           {STICKERS.map((e) => (
             <button
               key={e}
               type="button"
-              onClick={() => {
-                onSend({ type: "sticker", text: e });
-                setPanel(null);
-              }}
+              onClick={() => safeSend({ type: "sticker", text: e })}
+              aria-label={`Send ${e} sticker`}
             >
               {e}
             </button>
@@ -388,16 +464,14 @@ function ChatInputBar({ onSend, disabled }) {
       )}
 
       {panel === "gif" && (
-        <div className="composer-panel gif-panel">
+        <div className="composer-panel gif-panel" role="grid">
           {GIFS.map((url) => (
             <img
               key={url}
               src={url}
-              alt="gif"
-              onClick={() => {
-                onSend({ type: "gif", attachment: { url } });
-                setPanel(null);
-              }}
+              alt="GIF"
+              onClick={() => safeSend({ type: "gif", attachment: { url } })}
+              style={{ cursor: "pointer" }}
             />
           ))}
         </div>

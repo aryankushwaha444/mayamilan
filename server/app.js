@@ -55,13 +55,19 @@ app.use((req, res, next) => {
   next();
 });
 
-// ========================================
-// REQUEST LOGGING (development only)
-// ========================================
+morgan.token("id", (req) => req.id || "-");
+
+morgan.token("status-color", (req, res) => {
+  const status = res.statusCode;
+  const color =
+    status >= 500 ? 31 : status >= 400 ? 33 : status >= 300 ? 36 : 32;
+  return `\x1b[${color}m${status}\x1b[0m`;
+});
+
 if (NODE_ENV === "development") {
   app.use(
     morgan(
-      ":method :url :status :res[content-length] - :response-time ms [:id]"
+      ":method :url :status-color :res[content-length] - :response-time ms [:id]"
     )
   );
 }

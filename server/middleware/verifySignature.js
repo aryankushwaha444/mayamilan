@@ -1,20 +1,30 @@
+// server/middleware/verifySignature.js
 import crypto from "crypto";
 import { logAudit } from "../utils/auditLogger.js";
 
-const SIGNATURE_WINDOW_MS = parseInt(
-  process.env.REQUEST_SIGNATURE_WINDOW_MS || "300000",
-  10
-);
+// ✅ Must match client's VITE_API_SECRET exactly
+const API_SECRET = process.env.API_SECRET;
+
+// ✅ 5-minute window for clock skew tolerance
+const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 
 /**
- * Deterministically stringify body (sort keys so order doesn't matter)
+ * ✅ Must match client's stableStringify EXACTLY
  */
 const stableStringify = (obj) => {
   if (obj === null || obj === undefined) return "";
   if (typeof obj !== "object") return String(obj);
+
+  // ✅ Handle Date objects
+  if (obj instanceof Date) return obj.toISOString();
+
+  // ✅ Handle RegExp
+  if (obj instanceof RegExp) return obj.toString();
+
   if (Array.isArray(obj)) {
     return `[${obj.map(stableStringify).join(",")}]`;
   }
+
   const keys = Object.keys(obj).sort();
   const pairs = keys.map(
     (k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`
@@ -23,97 +33,137 @@ const stableStringify = (obj) => {
 };
 
 /**
- * Verify request signature middleware
- * Apply ONLY to critical endpoints (not all routes)
+ * ✅ Validate hex string safely
  */
-export const verifySignature = (req, res, next) => {
-  try {
-    const signature = req.headers["x-signature"];
-    const timestamp = req.headers["x-timestamp"];
-    const apiSecret = process.env.API_SECRET;
+const isValidHex = (str) => {
+  return typeof str === "string" && /^[a-fA-F0-9]+$/.test(str);
+};
 
-    // Must have secret configured
-    if (!apiSecret || apiSecret.length < 64) {
-      console.error("❌ API_SECRET not configured or too short");
-      return res.status(500).json({
-        success: false,
-        message: "Server configuration error",
-      });
-    }
-
-    // Must have signature headers
-    if (!signature || !timestamp) {
-      return res.status(401).json({
-        success: false,
-        message: "Request signature required",
-        signatureMissing: true,
-      });
-    }
-
-    // Parse timestamp
-    const ts = parseInt(timestamp, 10);
-    if (Number.isNaN(ts)) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid timestamp",
-      });
-    }
-
-    // Check timestamp freshness (5 min window)
-    const age = Math.abs(Date.now() - ts);
-    if (age > SIGNATURE_WINDOW_MS) {
-      logAudit(req, "signature_rejected", {
-        reason: "timestamp_expired",
-        age,
-        path: req.path,
-      }).catch(() => {});
-
-      return res.status(401).json({
-        success: false,
-        message: "Request expired. Please refresh the page and try again.",
-        signatureExpired: true,
-      });
-    }
-
-    // Build signed payload: body + timestamp
-    // Must match what client signed
-    const bodyString = req.body ? stableStringify(req.body) : "";
-    const payload = `${bodyString}|${ts}`;
-
-    // Compute expected signature
-    const expected = crypto
-      .createHmac("sha256", apiSecret)
-      .update(payload)
-      .digest("hex");
-
-    // ✅ Timing-safe comparison (prevents timing attacks)
-    const sigBuffer = Buffer.from(signature, "hex");
-    const expectedBuffer = Buffer.from(expected, "hex");
-
-    if (
-      sigBuffer.length !== expectedBuffer.length ||
-      !crypto.timingSafeEqual(sigBuffer, expectedBuffer)
-    ) {
-      logAudit(req, "signature_rejected", {
-        reason: "signature_invalid",
-        path: req.path,
-        ip: req.ip,
-      }).catch(() => {});
-
-      return res.status(401).json({
-        success: false,
-        message:
-          "Invalid request signature. Request may have been tampered with.",
-        signatureInvalid: true,
-      });
-    }
-
-    next();
-  } catch (error) {
-    console.error("Signature verification error:", error.message);
+export const verifySignature = async (req, res, next) => {
+  // ✅ Fail closed if secret missing
+  if (!API_SECRET || API_SECRET.length < 32) {
+    console.error("❌ API_SECRET not configured or too short");
     return res.status(500).json({
       success: false,
-      message: "Signature verification failed",
+      message: "Server configuration error",
+      code: "SERVER_CONFIG_ERROR",
+      requestId: req.id,
     });
   }
+
+  const signature = req.headers["x-signature"];
+  const timestamp = req.headers["x-timestamp"];
+
+  // ✅ Check headers present
+  if (!signature || !timestamp) {
+    try {
+      await logAudit(req, "signature_missing", {
+        path: req.path,
+        method: req.method,
+        requestId: req.id,
+      });
+    } catch (auditError) {
+      console.error("Audit log failed:", auditError.message);
+    }
+
+    return res.status(401).json({
+      success: false,
+      message: "Request signature required",
+      code: "SIGNATURE_MISSING",
+      requestId: req.id,
+    });
+  }
+
+  // ✅ Validate signature format (must be valid hex)
+  if (!isValidHex(signature)) {
+    try {
+      await logAudit(req, "signature_invalid_format", {
+        path: req.path,
+        method: req.method,
+        requestId: req.id,
+      });
+    } catch (auditError) {
+      console.error("Audit log failed:", auditError.message);
+    }
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid signature format",
+      code: "SIGNATURE_INVALID_FORMAT",
+      requestId: req.id,
+    });
+  }
+
+  // ✅ Check timestamp freshness (prevent replay attacks)
+  const ts = parseInt(timestamp, 10);
+  if (isNaN(ts) || Math.abs(Date.now() - ts) > TIMESTAMP_TOLERANCE_MS) {
+    try {
+      await logAudit(req, "signature_expired", {
+        path: req.path,
+        method: req.method,
+        timestamp,
+        requestId: req.id,
+      });
+    } catch (auditError) {
+      console.error("Audit log failed:", auditError.message);
+    }
+
+    return res.status(401).json({
+      success: false,
+      message: "Request timestamp expired",
+      code: "SIGNATURE_EXPIRED",
+      requestId: req.id,
+    });
+  }
+
+  // ✅ Skip body for multipart/form-data (photo uploads)
+  if (req.is("multipart/form-data")) {
+    return next();
+  }
+
+  // ✅ Calculate expected signature
+  const bodyString = req.body ? stableStringify(req.body) : "";
+  const payload = `${bodyString}|${timestamp}`;
+
+  const expectedSignature = crypto
+    .createHmac("sha256", API_SECRET)
+    .update(payload)
+    .digest("hex");
+
+  // ✅ Timing-safe comparison with length check
+  let valid = false;
+  try {
+    if (signature.length === expectedSignature.length) {
+      valid = crypto.timingSafeEqual(
+        Buffer.from(signature, "hex"),
+        Buffer.from(expectedSignature, "hex")
+      );
+    }
+  } catch (error) {
+    console.error("Signature comparison error:", error.message);
+    valid = false;
+  }
+
+  if (!valid) {
+    try {
+      await logAudit(req, "signature_invalid", {
+        path: req.path,
+        method: req.method,
+        providedSignature: signature.substring(0, 16) + "...",
+        expectedSignature: expectedSignature.substring(0, 16) + "...",
+        requestId: req.id,
+      });
+    } catch (auditError) {
+      console.error("Audit log failed:", auditError.message);
+    }
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid request signature",
+      code: "SIGNATURE_INVALID",
+      requestId: req.id,
+    });
+  }
+
+  next();
 };

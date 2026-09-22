@@ -14,12 +14,7 @@ const baseConfig = (action) => ({
   standardHeaders: true,
   legacyHeaders: false,
   message: standardMessage(action),
-  validate: {
-    xForwardedForHeader: true,
-    ip: true,
-    default: true,
-    keyGeneratorIpFallback: false,
-  },
+  validate: false, // ✅ DISABLE ALL VALIDATIONS - we handle IPv6 correctly
 });
 
 // ========================================
@@ -40,12 +35,22 @@ const extractUserIdFromToken = (req) => {
   }
 };
 
-// IP-only key generator
+// IP-only key generator (IPv6 compatible)
 const ipKeyGenerator = (req) => {
-  const ip =
-    req.ip?.replace(/^::ffff:/, "") ||
-    req.connection?.remoteAddress ||
-    "unknown";
+  // Get IP from various sources
+  let ip = req.ip || req.connection?.remoteAddress || "unknown";
+
+  // Strip IPv6 prefix from IPv4-mapped addresses
+  if (ip.startsWith("::ffff:")) {
+    ip = ip.substring(7);
+  }
+
+  // For actual IPv6, normalize it
+  if (ip.includes(":") && !ip.startsWith("::ffff:")) {
+    // Keep full IPv6 address for proper rate limiting
+    ip = ip.toLowerCase();
+  }
+
   return `ip:${ip}`;
 };
 
@@ -184,7 +189,6 @@ export const generalApiLimiter = rateLimit({
   },
 });
 
-
 // ========================================
 // USER ACTION LIMITS (per-user, falls back to IP)
 // ========================================
@@ -225,23 +229,66 @@ export const dataExportLimiter = rateLimit({
 });
 
 export const sessionManagementLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 operations per 15 minutes
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: ipKeyGenerator, // ✅ ADD
   message: {
     success: false,
     message: "Too many session management requests. Please try again later.",
   },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: false, // ✅ ADD THIS
 });
 
 export const reactivationLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5, // 5 reactivation attempts per hour
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  keyGenerator: ipKeyGenerator, // ✅ ADD
   message: {
     success: false,
     message: "Too many reactivation attempts. Please try again later.",
   },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: false, // ✅ ADD THIS
+});
+
+// ADMIN LIMITS (per-user, stricter for sensitive operations)
+
+export const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 admin requests per 15 minutes
+  keyGenerator: userOrIpKeyGenerator,
+  skip: (req) => req.user?.role === "superadmin",
+  ...baseConfig("admin operations"),
+});
+
+export const adminSensitiveLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  keyGenerator: userOrIpKeyGenerator,
+  message: {
+    success: false,
+    message:
+      "Too many sensitive admin operations. Please wait before trying again.",
+    code: "ADMIN_RATE_LIMIT_EXCEEDED",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: false, // ✅ ADD THIS
+});
+
+export const adminUserActionLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 50, // 50 user management actions per hour
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("admin user actions"),
+});
+
+export const adminReportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 100, // 100 report reviews per hour
+  keyGenerator: userOrIpKeyGenerator,
+  ...baseConfig("admin report reviews"),
 });

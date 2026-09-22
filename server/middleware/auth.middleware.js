@@ -1,35 +1,50 @@
 import { verifyAccessToken } from "../utils/generateToken.js";
 import User from "../models/User.js";
 import RefreshToken from "../models/RefreshToken.js";
+import { logAudit } from "../utils/auditLogger.js";
+import crypto from "crypto";
 
 export const protect = async (req, res, next) => {
+  // Generate request ID for debugging
+  req.requestId = crypto.randomUUID();
+
   try {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      await logAudit(req, "auth_failed", {
+        reason: "no_token",
+        ip: req.ip,
+        requestId: req.requestId,
+      }).catch(() => {});
+
       return res.status(401).json({
         success: false,
         message: "Authentication required",
         code: "NO_TOKEN",
+        requestId: req.requestId,
       });
     }
 
     const token = authHeader.split(" ")[1];
 
     if (!token || token.trim() === "") {
+      await logAudit(req, "auth_failed", {
+        reason: "empty_token",
+        ip: req.ip,
+        requestId: req.requestId,
+      }).catch(() => {});
+
       return res.status(401).json({
         success: false,
         message: "Token is required",
         code: "EMPTY_TOKEN",
+        requestId: req.requestId,
       });
     }
 
-    // ✅ verifyAccessToken now handles the fallback (Current -> Previous secret)
-    // and throws an error if the token type is not "access"
     const decoded = verifyAccessToken(token);
 
-    // ✅ FIXED: Changed `decoded.sid` to `decoded.sessionId` to match generateToken.js
-    // INSTANT REVOCATION: reject if session was revoked or deleted
     if (decoded.sessionId) {
       const alive = await RefreshToken.exists({
         _id: decoded.sessionId,
@@ -37,11 +52,20 @@ export const protect = async (req, res, next) => {
       });
 
       if (!alive) {
+        await logAudit(req, "auth_failed", {
+          reason: "session_revoked",
+          userId: decoded.userId,
+          sessionId: decoded.sessionId,
+          ip: req.ip,
+          requestId: req.requestId,
+        }).catch(() => {});
+
         return res.status(401).json({
           success: false,
           message: "Session has been revoked. Please login again.",
           code: "SESSION_REVOKED",
-          sessionRevoked: true, // ✅ Flag for frontend to force redirect to login
+          sessionRevoked: true,
+          requestId: req.requestId,
         });
       }
     }
@@ -49,33 +73,58 @@ export const protect = async (req, res, next) => {
     const user = await User.findById(decoded.userId).select("-password");
 
     if (!user) {
+      await logAudit(req, "auth_failed", {
+        reason: "user_not_found",
+        userId: decoded.userId,
+        ip: req.ip,
+        requestId: req.requestId,
+      }).catch(() => {});
+
       return res.status(401).json({
         success: false,
         message: "User no longer exists",
         code: "USER_NOT_FOUND",
+        requestId: req.requestId,
       });
     }
 
-    // ✅ IMPROVED: Check both isActive and deletedAt (soft delete)
     if (!user.isActive || user.deletedAt) {
+      await logAudit(req, "auth_failed", {
+        reason: "account_inactive",
+        userId: user._id,
+        email: user.email,
+        isActive: user.isActive,
+        deletedAt: user.deletedAt,
+        ip: req.ip,
+        requestId: req.requestId,
+      }).catch(() => {});
+
       return res.status(403).json({
         success: false,
         message: "Your account is inactive or has been deleted",
         code: "ACCOUNT_INACTIVE",
+        requestId: req.requestId,
       });
     }
 
     req.user = user;
     next();
   } catch (error) {
-    console.error("Auth middleware error:", error.message);
+    console.error(`Auth middleware error [${req.requestId}]:`, error.message);
 
-    // ✅ IMPROVED: Exact error matching instead of fragile `.includes()`
+    await logAudit(req, "auth_failed", {
+      reason: error.message,
+      ip: req.ip,
+      userAgent: req.get("user-agent"),
+      requestId: req.requestId,
+    }).catch(() => {});
+
     if (error.message === "Access token expired") {
       return res.status(401).json({
         success: false,
         message: "Token expired",
         code: "TOKEN_EXPIRED",
+        requestId: req.requestId,
       });
     }
 
@@ -84,19 +133,20 @@ export const protect = async (req, res, next) => {
         success: false,
         message: "Invalid token",
         code: "INVALID_TOKEN",
+        requestId: req.requestId,
       });
     }
 
-    // Catch-all for other verification errors
     return res.status(401).json({
       success: false,
       message: "Authentication failed",
       code: "AUTH_FAILED",
+      requestId: req.requestId,
     });
   }
 };
 
-export const adminOnly = (req, res, next) => {
+export const adminOnly = async (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -106,6 +156,15 @@ export const adminOnly = (req, res, next) => {
   }
 
   if (req.user.role !== "admin") {
+    await logAudit(req, "admin_access_denied", {
+      userId: req.user._id,
+      email: req.user.email,
+      role: req.user.role,
+      path: req.path,
+      method: req.method,
+      ip: req.ip,
+    }).catch(() => {});
+
     return res.status(403).json({
       success: false,
       message: "Admin access required",
@@ -116,7 +175,7 @@ export const adminOnly = (req, res, next) => {
   next();
 };
 
-export const requireVerified = (req, res, next) => {
+export const requireVerified = async (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -126,6 +185,14 @@ export const requireVerified = (req, res, next) => {
   }
 
   if (!req.user.isVerified) {
+    await logAudit(req, "unverified_access_attempt", {
+      userId: req.user._id,
+      email: req.user.email,
+      path: req.path,
+      method: req.method,
+      ip: req.ip,
+    }).catch(() => {});
+
     return res.status(403).json({
       success: false,
       message: "Email verification required",
