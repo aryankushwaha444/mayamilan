@@ -9,41 +9,23 @@
     {
       "source": "/(.*)",
       "headers": [
-        {
-          "key": "X-Content-Type-Options",
-          "value": "nosniff"
-        },
-        {
-          "key": "X-Frame-Options",
-          "value": "DENY"
-        },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
         {
           "key": "Referrer-Policy",
           "value": "strict-origin-when-cross-origin"
         },
-        {
-          "key": "X-XSS-Protection",
-          "value": "0"
-        },
-        {
-          "key": "Cross-Origin-Opener-Policy",
-          "value": "same-origin"
-        },
-        {
-          "key": "Cross-Origin-Embedder-Policy",
-          "value": "credentialless"
-        },
-        {
-          "key": "Cross-Origin-Resource-Policy",
-          "value": "same-site"
-        },
+        { "key": "X-XSS-Protection", "value": "0" },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" },
+        { "key": "Cross-Origin-Resource-Policy", "value": "same-site" },
         {
           "key": "Permissions-Policy",
-          "value": "accelerometer=(), autoplay=(self), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(self), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(self), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(self), publickey-credentials-get=(self), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(self), clipboard-write=(self), gamepad=(), speaker-selection=(), interest-cohort=()"
+          "value": "accelerometer=(), autoplay=(self), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(self), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(self), publickey-credentials-get=(self), usb=(), xr-spatial-tracking=(), clipboard-read=(self), clipboard-write=(self), interest-cohort=()"
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googletagmanager.com https://www.google-analytics.com https://apis.google.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://accounts.google.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' https://mayamilan.onrender.com wss://mayamilan.onrender.com https://challenges.cloudflare.com https://res.cloudinary.com https://*.cloudinary.com https://accounts.google.com https://www.google-analytics.com https://analytics.google.com https://*.googleapis.com; frame-src https://challenges.cloudflare.com https://accounts.google.com https://apis.google.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self' https://accounts.google.com; upgrade-insecure-requests; block-all-mixed-content"
+          "value": "default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://cdn.jsdelivr.net https://accounts.google.com https://www.googletagmanager.com https://www.google-analytics.com https://apis.google.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://accounts.google.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' https://mayamilan.onrender.com wss://mayamilan.onrender.com https://challenges.cloudflare.com https://res.cloudinary.com https://*.cloudinary.com https://accounts.google.com https://www.google-analytics.com https://analytics.google.com https://*.googleapis.com; frame-src https://challenges.cloudflare.com https://accounts.google.com https://apis.google.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self' https://accounts.google.com; upgrade-insecure-requests; block-all-mixed-content"
         },
         {
           "key": "Strict-Transport-Security",
@@ -58,10 +40,7 @@
           "key": "Cache-Control",
           "value": "public, max-age=31536000, immutable"
         },
-        {
-          "key": "Cross-Origin-Resource-Policy",
-          "value": "cross-origin"
-        }
+        { "key": "Cross-Origin-Resource-Policy", "value": "cross-origin" }
       ]
     }
   ]
