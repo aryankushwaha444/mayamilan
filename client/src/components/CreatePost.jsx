@@ -46,7 +46,7 @@ function CreatePost({ user, onPostCreated }) {
 
   // ✅ UX-ONLY validation (backend does security validation)
   const handleImageChange = (e) => {
-    const files = Array.from(e.target.files);
+    let files = Array.from(e.target.files);
     if (files.length === 0) return;
 
     // Check total count (UX feedback)
