@@ -1,10 +1,6 @@
 {
   "rewrites": [
     {
-      "source": "/sitemap.xml",
-      "destination": "https://mayamilan.onrender.com/api/sitemap.xml"
-    },
-    {
       "source": "/robots.txt",
       "destination": "/robots.txt"
     },
