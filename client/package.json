@@ -36,6 +36,6 @@
     "oxlint": "^1.79.0",
     "rollup-plugin-visualizer": "^7.1.1",
     "snyk": "^1.1307.3",
-    "vite": "^8.2.2"
+    "vite": "^8.3.0"
   }
 }
