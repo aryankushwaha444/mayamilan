@@ -33,7 +33,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
-    "oxlint": "^1.79.0",
+    "oxlint": "^1.83.0",
     "rollup-plugin-visualizer": "^7.1.1",
     "snyk": "^1.1307.3",
     "vite": "^8.2.2"
