@@ -1,8 +1,54 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import fs from "node:fs";
+import path from "node:path";
+
+const SITE_URL = "https://mayamilan.vercel.app";
+
+// ═══════════════════════════════════════════
+// SITEMAP PLUGIN — generates on every build
+// ═══════════════════════════════════════════
+function sitemapPlugin() {
+  return {
+    name: "generate-sitemap",
+    apply: "build",
+    buildStart() {
+      const today = new Date().toISOString().split("T")[0];
+
+      // Only pages that exist in App.jsx AND are allowed in robots.txt
+      const pages = [
+        { loc: "/", changefreq: "daily", priority: "1.0" },
+        { loc: "/about", changefreq: "monthly", priority: "0.8" },
+        { loc: "/safety", changefreq: "monthly", priority: "0.8" },
+        { loc: "/success-stories", changefreq: "weekly", priority: "0.7" },
+        { loc: "/blog", changefreq: "weekly", priority: "0.8" },
+        { loc: "/security-policy", changefreq: "yearly", priority: "0.4" },
+        { loc: "/suggestion", changefreq: "yearly", priority: "0.3" },
+      ];
+
+      const xml =
+        '<?xml version="1.0" encoding="UTF-8"?>\n' +
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+        pages
+          .map(
+            (p) =>
+              `  <url>\n    <loc>${SITE_URL}${p.loc}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>${p.changefreq}</changefreq>\n    <priority>${p.priority}</priority>\n  </url>`
+          )
+          .join("\n") +
+        "\n</urlset>\n";
+
+      const outDir = path.resolve(process.cwd(), "public");
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, "sitemap.xml"), xml, "utf8");
+      console.log(
+        `[sitemap] ✅ wrote public/sitemap.xml (${pages.length} URLs)`
+      );
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), sitemapPlugin()], // ✅ Added sitemapPlugin
 
   build: {
     // Generate sourcemaps for error tracking (hidden from browser)
