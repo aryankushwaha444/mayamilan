@@ -1,47 +1,69 @@
-// ✅ Use Web Crypto API (works in all modern browsers)
-const API_SECRET = import.meta.env.VITE_API_SECRET;
+/**
+ * Secure request signing using per-session HMAC keys.
+ *
+ * SECURITY MODEL:
+ * - Signing key is issued at login/refresh by the server
+ * - Stored ONLY in JavaScript memory (never localStorage/sessionStorage)
+ * - Rotated on every token refresh
+ * - Cleared on logout, tab close detection, or auth failure
+ * - An attacker extracting the JS bundle finds NO secrets
+ */
+
+// ✅ In-memory only — never persisted to disk
+let signingKey = null;
 
 /**
- * Deterministically stringify (must match server exactly)
+ * Set the signing key after login or token refresh.
+ * Called by AuthContext when receiving auth responses.
+ * @param {string} key - HMAC key (SHA-256 hash issued by server)
  */
-const stableStringify = (obj) => {
-  if (obj === null || obj === undefined) return "";
-
-  // ✅ Handle Date objects (convert to ISO string)
-  if (obj instanceof Date) {
-    return obj.toISOString();
-  }
-
-  // ✅ Handle RegExp
-  if (obj instanceof RegExp) {
-    return obj.toString();
-  }
-
-  if (typeof obj !== "object") return String(obj);
-
-  if (Array.isArray(obj)) {
-    return `[${obj.map(stableStringify).join(",")}]`;
-  }
-
-  // ✅ Skip FormData, Blob, File - they can't be serialized
-  if (obj instanceof FormData || obj instanceof Blob || obj instanceof File) {
-    return "";
-  }
-
-  const keys = Object.keys(obj).sort();
-  const pairs = keys.map(
-    (k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`
-  );
-  return `{${pairs.join(",")}}`;
+export const setSigningKey = (key) => {
+  signingKey = key;
 };
 
 /**
- * Endpoints that require signing
- * ✅ Cleaned up: removed redundant overlaps
- * Order: most-specific patterns first (for readability)
+ * Clear the signing key on logout or auth failure.
  */
+export const clearSigningKey = () => {
+  signingKey = null;
+};
+
+/**
+ * Get current signing key status (for debugging only)
+ * @returns {boolean}
+ */
+export const hasSigningKey = () => !!signingKey;
+
+// ═══════════════════════════════════════════
+// CANONICAL SERIALIZATION
+// ═══════════════════════════════════════════
+
+/**
+ * Deterministically stringify for HMAC signing.
+ * MUST produce identical output to server's canonicalStringify.
+ */
+const stableStringify = (obj) => {
+  if (obj === null || obj === undefined) return "";
+  if (obj instanceof Date) return obj.toISOString();
+  if (obj instanceof RegExp) return obj.toString();
+  if (typeof obj !== "object") return String(obj);
+  if (Array.isArray(obj)) return `[${obj.map(stableStringify).join(",")}]`;
+  if (obj instanceof FormData || obj instanceof Blob || obj instanceof File) return "";
+
+  const keys = Object.keys(obj).sort();
+  const pairs = [];
+  for (const k of keys) {
+    if (obj[k] === undefined) continue;
+    pairs.push(`${JSON.stringify(k)}:${stableStringify(obj[k])}`);
+  }
+  return `{${pairs.join(",")}}`;
+};
+
+// ═══════════════════════════════════════════
+// ENDPOINT CONFIGURATION
+// ═══════════════════════════════════════════
+
 const SIGNED_ENDPOINTS = [
-  // Auth sensitive
   "/auth/login/2fa",
   "/auth/oauth/2fa",
   "/auth/reactivate",
@@ -49,58 +71,44 @@ const SIGNED_ENDPOINTS = [
   "/auth/reset-password",
   "/auth/forgot-password",
   "/auth/sessions",
-
-  // 2FA management
   "/2fa/verify-setup",
   "/2fa/disable",
   "/2fa/regenerate-backup-codes",
-
-  // User actions (broad - covers profile, photos, reports, blocks)
   "/users/",
 ];
 
-/**
- * Endpoints that are NEVER signed (overrides SIGNED_ENDPOINTS)
- * ✅ FormData uploads can't be reliably signed - server uses file validation instead
- */
 const SKIP_SIGNING_ENDPOINTS = [
-  "/messages/", // chat attachments
+  "/messages/",
 ];
 
-/**
- * Check if a URL should be signed
- */
 const shouldSign = (url, method, data) => {
-  // ✅ Safety: no secret = no signing
-  if (!API_SECRET) {
-    console.error(
-      "❌ VITE_API_SECRET not configured - request signing disabled"
-    );
-    return false;
-  }
-
-  // ✅ Safety: no URL = no signing
+  if (!signingKey) return false;
   if (!url) return false;
-
-  // ✅ GET requests don't need signing (no mutations)
   if (method?.toUpperCase() === "GET") return false;
-
-  // ✅ FormData can't be reliably signed - skip
   if (data instanceof FormData) return false;
-
-  // ✅ Check skip list first
-  if (SKIP_SIGNING_ENDPOINTS.some((endpoint) => url.includes(endpoint))) {
-    return false;
-  }
-
-  // ✅ Then check sign list
-  return SIGNED_ENDPOINTS.some((endpoint) => url.includes(endpoint));
+  if (SKIP_SIGNING_ENDPOINTS.some((ep) => url.includes(ep))) return false;
+  return SIGNED_ENDPOINTS.some((ep) => url.includes(ep));
 };
 
+// ═══════════════════════════════════════════
+// UUID FALLBACK
+// ═══════════════════════════════════════════
+
+const generateId = () => {
+  try {
+    if (crypto?.randomUUID) return crypto.randomUUID();
+  } catch {}
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+};
+
+// ═══════════════════════════════════════════
+// REQUEST SIGNER
+// ═══════════════════════════════════════════
+
 /**
- * Sign a request using HMAC-SHA256
- * Payload format: `${body}|${timestamp}`
- * Header names must match server's verifySignature middleware exactly
+ * Sign an axios request config using HMAC-SHA256.
+ * @param {Object} config - Axios request config
+ * @returns {Promise<Object>} Config with signature headers
  */
 export const signRequest = async (config) => {
   if (!shouldSign(config.url, config.method, config.data)) {
@@ -112,14 +120,10 @@ export const signRequest = async (config) => {
     const bodyString = config.data ? stableStringify(config.data) : "";
     const payload = `${bodyString}|${timestamp}`;
 
-    // ✅ Web Crypto API (async, browser-native, no deps)
     const encoder = new TextEncoder();
-    const keyData = encoder.encode(API_SECRET);
-    const payloadData = encoder.encode(payload);
-
     const cryptoKey = await crypto.subtle.importKey(
       "raw",
-      keyData,
+      encoder.encode(signingKey),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["sign"]
@@ -128,26 +132,19 @@ export const signRequest = async (config) => {
     const signatureBuffer = await crypto.subtle.sign(
       "HMAC",
       cryptoKey,
-      payloadData
+      encoder.encode(payload)
     );
 
-    // Convert to lowercase hex (must match server)
     const signature = Array.from(new Uint8Array(signatureBuffer))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
 
-    // ✅ Attach headers (names must match server exactly)
     config.headers = config.headers || {};
     config.headers["X-Signature"] = signature;
     config.headers["X-Timestamp"] = timestamp.toString();
-
-    // ✅ Add request ID for debugging
-    config.headers["X-Request-ID"] =
-      config.headers["X-Request-ID"] || crypto.randomUUID();
-  } catch (err) {
-    // ✅ Don't silently continue - log clearly so devs can debug
-    console.error("❌ Request signing failed:", err);
-    // We still continue - server will reject with 401, giving a clear error
+    config.headers["X-Request-ID"] = config.headers["X-Request-ID"] || generateId();
+  } catch {
+    // Silent failure — server rejects with signature error
   }
 
   return config;

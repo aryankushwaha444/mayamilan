@@ -1,8 +1,30 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "oxc"],
+  "plugins": ["react", "oxc", "typescript", "unicorn", "import"],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "react/no-array-index-key": "warn",
+    "react/jsx-key": "error",
+    "react/no-children-prop": "error",
+
+    "no-console": ["warn", { "allow": ["warn", "error"] }],
+    "no-debugger": "error",
+    "no-unused-vars": [
+      "warn",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
+    ],
+    "no-duplicate-imports": "error",
+
+    "eqeqeq": ["error", "always"],
+    "no-var": "error",
+    "prefer-const": "warn"
+  },
+  "ignorePatterns": [
+    "dist/",
+    "build/",
+    "node_modules/",
+    "*.min.js",
+    "push-sw.js"
+  ]
 }

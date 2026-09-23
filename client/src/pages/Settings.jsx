@@ -19,7 +19,7 @@ function Settings() {
 
   const [activeTab, setActiveTab] = useState("security");
 
-  // ---- Blocked users state ----
+  // Blocked users state
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [blockedTotal, setBlockedTotal] = useState(0);
   const [blockedLoading, setBlockedLoading] = useState(false);
@@ -28,11 +28,10 @@ function Settings() {
   const [unblockTarget, setUnblockTarget] = useState(null);
   const [unblockLoading, setUnblockLoading] = useState(false);
 
-  // ✅ Use refs for loading states to avoid stale closures
   const blockedLoadingRef = useRef(false);
   const securityLoadingRef = useRef(false);
 
-  // ---- Security state ----
+  // Security state
   const [twoFa, setTwoFa] = useState({
     enabled: false,
     backupCodesRemaining: 0,
@@ -40,7 +39,7 @@ function Settings() {
   const [sessions, setSessions] = useState([]);
   const [securityLoading, setSecurityLoading] = useState(false);
 
-  // ---- 2FA modals ----
+  // 2FA modals
   const [setupData, setSetupData] = useState(null);
   const [verifyCode, setVerifyCode] = useState("");
   const [backupCodes, setBackupCodes] = useState(null);
@@ -52,26 +51,27 @@ function Settings() {
   const [blockResults, setBlockResults] = useState([]);
   const [blockSearchLoading, setBlockSearchLoading] = useState(false);
 
-  // ✅ Track which sessions are being revoked
+  // Session revocation
   const [revokingSessionId, setRevokingSessionId] = useState(null);
   const [revokeOthersLoading, setRevokeOthersLoading] = useState(false);
-
-  // ✅ Track which block actions are in progress
   const [blockingUserId, setBlockingUserId] = useState(null);
-
-  // ✅ Confirmation dialogs for session revocation
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [revokeOthersConfirm, setRevokeOthersConfirm] = useState(false);
+
+  // ✅ Modal refs for focus management
+  const setupModalRef = useRef(null);
+  const backupModalRef = useRef(null);
+  const disableModalRef = useRef(null);
+  const verifyInputRef = useRef(null);
+
+  const isLocalUser = !user?.oauthProvider || user.oauthProvider === "local";
 
   // ================= BLOCKED USERS =================
   const loadBlocked = useCallback(
     async (query = "") => {
-      // ✅ Use ref to avoid stale closure
       if (blockedLoadingRef.current) return;
-
       blockedLoadingRef.current = true;
       setBlockedLoading(true);
-
       try {
         const data = await getBlockedUsers(query);
         setBlockedUsers(data.blockedUsers || []);
@@ -88,21 +88,15 @@ function Settings() {
       }
     },
     [toast]
-  ); // ✅ Remove blockedLoading from deps
+  );
 
-  // ✅ Debounced search
   useEffect(() => {
-    const t = setTimeout(() => {
-      setSearch(searchInput);
-    }, 400);
+    const t = setTimeout(() => setSearch(searchInput), 400);
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // ✅ Load blocked users when tab changes or search changes
   useEffect(() => {
-    if (activeTab === "blocked") {
-      loadBlocked(search);
-    }
+    if (activeTab === "blocked") loadBlocked(search);
   }, [activeTab, search, loadBlocked]);
 
   const handleUnblock = async () => {
@@ -130,12 +124,9 @@ function Settings() {
 
   // ================= SECURITY =================
   const loadSecurity = useCallback(async () => {
-    // ✅ Use ref to avoid stale closure
     if (securityLoadingRef.current) return;
-
     securityLoadingRef.current = true;
     setSecurityLoading(true);
-
     try {
       const [faRes, sessRes] = await Promise.all([
         api.get("/2fa/status"),
@@ -152,14 +143,13 @@ function Settings() {
       securityLoadingRef.current = false;
       setSecurityLoading(false);
     }
-  }, []); // ✅ Remove securityLoading from deps
+  }, []);
 
   useEffect(() => {
-    if (activeTab === "security") {
-      loadSecurity();
-    }
+    if (activeTab === "security") loadSecurity();
   }, [activeTab, loadSecurity]);
 
+  // Debounced block search
   useEffect(() => {
     const t = setTimeout(async () => {
       const q = blockQuery.trim();
@@ -170,13 +160,13 @@ function Settings() {
       setBlockSearchLoading(true);
       try {
         const data = await searchBlockableUsers(q);
-        // ✅ Check which users are already blocked
         const blockedIds = new Set(blockedUsers.map((u) => u._id));
-        const usersWithStatus = (data.users || []).map((u) => ({
-          ...u,
-          isBlocked: blockedIds.has(u._id),
-        }));
-        setBlockResults(usersWithStatus);
+        setBlockResults(
+          (data.users || []).map((u) => ({
+            ...u,
+            isBlocked: blockedIds.has(u._id),
+          }))
+        );
       } catch {
         setBlockResults([]);
       } finally {
@@ -184,30 +174,37 @@ function Settings() {
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [blockQuery, blockedUsers]); // ✅ Add blockedUsers to update status
+  }, [blockQuery, blockedUsers]);
 
+  // ✅ Optimized block toggle — single refetch instead of 3 calls
   const handleToggleBlock = async (target) => {
     setBlockingUserId(target._id);
     try {
-      await api.post(`/users/${target._id}/block`);
-      toast.success(
-        target.isBlocked
-          ? `${target.name} unblocked`
-          : `${target.name} blocked`,
-        "Done",
-        3000
+      if (target.isBlocked) {
+        await unblockUser(target._id);
+        toast.success(`${target.name} unblocked`, "Done", 3000);
+      } else {
+        await api.post(`/users/${target._id}/block`);
+        toast.success(`${target.name} blocked`, "Done", 3000);
+      }
+      // Single refetch for both lists
+      const [blockData, searchData] = await Promise.all([
+        getBlockedUsers(search),
+        blockQuery.trim().length >= 2
+          ? searchBlockableUsers(blockQuery.trim())
+          : Promise.resolve({ users: [] }),
+      ]);
+      setBlockedUsers(blockData.blockedUsers || []);
+      setBlockedTotal(blockData.total || 0);
+      const newBlockedIds = new Set(
+        (blockData.blockedUsers || []).map((u) => u._id)
       );
-      loadBlocked(search);
-      const data = await searchBlockableUsers(blockQuery.trim());
-      // ✅ Update block status in search results
-      const blockedIds = new Set(
-        (await getBlockedUsers("")).blockedUsers.map((u) => u._id)
+      setBlockResults(
+        (searchData.users || []).map((u) => ({
+          ...u,
+          isBlocked: newBlockedIds.has(u._id),
+        }))
       );
-      const usersWithStatus = (data.users || []).map((u) => ({
-        ...u,
-        isBlocked: blockedIds.has(u._id),
-      }));
-      setBlockResults(usersWithStatus);
     } catch (err) {
       toast.error(
         err.response?.data?.message || "Action failed",
@@ -219,6 +216,7 @@ function Settings() {
     }
   };
 
+  // ================= 2FA =================
   const start2FASetup = async () => {
     setTwoFaBusy(true);
     try {
@@ -260,14 +258,7 @@ function Settings() {
     setTwoFaBusy(true);
     try {
       const payload = { totpCode: disableCode };
-
-      // ✅ Only include password for local users
-      const isLocalUser =
-        !user?.oauthProvider || user.oauthProvider === "local";
-      if (isLocalUser && disablePassword) {
-        payload.password = disablePassword;
-      }
-
+      if (isLocalUser && disablePassword) payload.password = disablePassword;
       await api.post("/2fa/disable", payload);
       toast.success("2FA has been disabled", "Success", 3000);
       setDisableModal(false);
@@ -275,7 +266,6 @@ function Settings() {
       setDisableCode("");
       loadSecurity();
     } catch (err) {
-      // ✅ Handle signature errors
       if (err.response?.data?.signatureExpired) {
         toast.warning(
           "Request expired. Please try again.",
@@ -295,7 +285,6 @@ function Settings() {
     }
   };
 
-  // ✅ Session revocation with confirmation
   const revokeSession = async (id) => {
     setRevokingSessionId(id);
     try {
@@ -324,50 +313,113 @@ function Settings() {
     }
   };
 
+  // ✅ Focus trap helper for modals
+  const useModalFocusTrap = (isOpen, modalRef, initialFocusRef) => {
+    useEffect(() => {
+      if (!isOpen) return;
+      const previousFocus = document.activeElement;
+      setTimeout(() => initialFocusRef?.current?.focus(), 100);
+
+      const handleKeyDown = (e) => {
+        if (e.key === "Escape") {
+          if (isOpen === "setup") setSetupData(null);
+          else if (isOpen === "backup") setBackupCodes(null);
+          else if (isOpen === "disable") setDisableModal(false);
+          return;
+        }
+        if (e.key === "Tab" && modalRef?.current) {
+          const focusable = modalRef.current.querySelectorAll(
+            'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      };
+
+      document.addEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.removeEventListener("keydown", handleKeyDown);
+        document.body.style.overflow = "";
+        previousFocus?.focus?.();
+      };
+    }, [isOpen, modalRef, initialFocusRef]);
+  };
+
+  useModalFocusTrap(setupData ? "setup" : null, setupModalRef, verifyInputRef);
+  useModalFocusTrap(backupCodes ? "backup" : null, backupModalRef, null);
+  useModalFocusTrap(disableModal ? "disable" : null, disableModalRef, null);
+
   return (
     <>
       <SEO
         title="Settings"
         description="Manage your security and privacy settings."
         path="/settings"
+        noIndex
       />
 
-      <div className="container py-4 py-md-5" style={{ maxWidth: 900 }}>
+      <main className="container py-4 py-md-5 settings-page" id="main-content">
         <h1 className="fw-bold mb-4">Settings</h1>
 
-        {/* Tabs */}
-        <ul className="nav nav-pills mb-4 gap-2">
-          <li className="nav-item">
-            <button
-              className={`nav-link ${activeTab === "security" ? "active" : ""}`}
-              onClick={() => setActiveTab("security")}
-            >
-              <i className="bi bi-shield-lock me-2"></i>Security
-            </button>
-          </li>
-          <li className="nav-item">
-            <button
-              className={`nav-link ${activeTab === "blocked" ? "active" : ""}`}
-              onClick={() => setActiveTab("blocked")}
-            >
-              <i className="bi bi-slash-circle me-2"></i>Blocked Users
-              {blockedTotal > 0 && (
-                <span className="badge bg-danger ms-2">{blockedTotal}</span>
-              )}
-            </button>
-          </li>
-        </ul>
+        {/* Tabs with ARIA */}
+        <div
+          className="nav nav-pills mb-4 gap-2"
+          role="tablist"
+          aria-label="Settings tabs"
+        >
+          <button
+            role="tab"
+            aria-selected={activeTab === "security"}
+            aria-controls="panel-security"
+            id="tab-security"
+            className={`nav-link ${activeTab === "security" ? "active" : ""}`}
+            onClick={() => setActiveTab("security")}
+          >
+            <i className="bi bi-shield-lock me-2" aria-hidden="true"></i>
+            Security
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === "blocked"}
+            aria-controls="panel-blocked"
+            id="tab-blocked"
+            className={`nav-link ${activeTab === "blocked" ? "active" : ""}`}
+            onClick={() => setActiveTab("blocked")}
+          >
+            <i className="bi bi-slash-circle me-2" aria-hidden="true"></i>
+            Blocked Users
+            {blockedTotal > 0 && (
+              <span className="badge bg-danger ms-2">{blockedTotal}</span>
+            )}
+          </button>
+        </div>
 
-        {/* ============ SECURITY TAB ============ */}
+        {/* ═══ SECURITY TAB ═══ */}
         {activeTab === "security" && (
-          <div className="d-flex flex-column gap-4">
+          <div
+            id="panel-security"
+            role="tabpanel"
+            aria-labelledby="tab-security"
+            className="d-flex flex-column gap-4"
+          >
             {/* 2FA Card */}
             <div className="card border-0 shadow-sm">
               <div className="card-body p-4">
                 <div className="d-flex justify-content-between align-items-center flex-wrap gap-3">
                   <div>
                     <h5 className="fw-bold mb-1">
-                      <i className="bi bi-phone me-2 text-primary"></i>
+                      <i
+                        className="bi bi-phone me-2 text-primary"
+                        aria-hidden="true"
+                      ></i>
                       Two-Factor Authentication
                     </h5>
                     <p className="text-muted mb-0 small">
@@ -397,15 +449,18 @@ function Settings() {
               </div>
             </div>
 
-            {/* Password Card */}
-            {/* Password Card - Only show for local (non-OAuth) users */}
-            {(!user?.oauthProvider || user.oauthProvider === "local") && (
+            {/* Password Card (local users only) */}
+            {isLocalUser && (
               <div className="card border-0 shadow-sm">
                 <div className="card-body p-4">
                   <div className="d-flex justify-content-between align-items-center flex-wrap gap-3">
                     <div>
                       <h5 className="fw-bold mb-1">
-                        <i className="bi bi-key me-2 text-primary"></i>Password
+                        <i
+                          className="bi bi-key me-2 text-primary"
+                          aria-hidden="true"
+                        ></i>
+                        Password
                       </h5>
                       <p className="text-muted mb-0 small">
                         Change your password regularly to stay safe
@@ -422,26 +477,15 @@ function Settings() {
               </div>
             )}
 
-            {/* ✅ NEW: OAuth Info Card - Show for OAuth users */}
-            {user?.oauthProvider && user.oauthProvider !== "local" && (
+            {/* OAuth Info Card */}
+            {!isLocalUser && (
               <div className="card border-0 shadow-sm">
                 <div className="card-body p-4">
                   <div className="d-flex align-items-center gap-3">
-                    <div
-                      style={{
-                        width: 48,
-                        height: 48,
-                        borderRadius: 12,
-                        background: "linear-gradient(135deg, #4285F4, #34A853)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                      }}
-                    >
+                    <div className="settings-oauth-icon">
                       <i
                         className="bi bi-google text-white"
-                        style={{ fontSize: "1.5rem" }}
+                        aria-hidden="true"
                       ></i>
                     </div>
                     <div>
@@ -460,14 +504,18 @@ function Settings() {
                 </div>
               </div>
             )}
+
             {/* Sessions Card */}
             <div className="card border-0 shadow-sm">
               <div className="card-body p-4">
                 <div className="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-3">
                   <div>
                     <h5 className="fw-bold mb-1">
-                      <i className="bi bi-laptop me-2 text-primary"></i>Active
-                      Sessions
+                      <i
+                        className="bi bi-laptop me-2 text-primary"
+                        aria-hidden="true"
+                      ></i>
+                      Active Sessions
                     </h5>
                     <p className="text-muted mb-0 small">
                       {sessions.length} device(s) currently signed in
@@ -481,7 +529,10 @@ function Settings() {
                     >
                       {revokeOthersLoading ? (
                         <>
-                          <span className="spinner-border spinner-border-sm me-2"></span>
+                          <span
+                            className="spinner-border spinner-border-sm me-2"
+                            aria-hidden="true"
+                          ></span>
                           Revoking...
                         </>
                       ) : (
@@ -492,8 +543,9 @@ function Settings() {
                 </div>
 
                 {securityLoading ? (
-                  <div className="text-center py-3">
+                  <div className="text-center py-3" role="status">
                     <span className="spinner-border spinner-border-sm"></span>
+                    <span className="visually-hidden">Loading sessions...</span>
                   </div>
                 ) : sessions.length === 0 ? (
                   <p className="text-muted mb-0">No active sessions.</p>
@@ -510,16 +562,24 @@ function Settings() {
                           </strong>
                           <small className="text-muted">
                             {s.lastIp} · Last active{" "}
-                            {new Date(s.lastUsedAt).toLocaleString()}
+                            <time dateTime={s.lastUsedAt}>
+                              {new Date(s.lastUsedAt).toLocaleString()}
+                            </time>
                           </small>
                         </div>
                         <button
                           className="btn btn-outline-danger btn-sm"
                           onClick={() => setRevokeTarget(s)}
                           disabled={revokingSessionId === s._id}
+                          aria-label={`Revoke session on ${
+                            s.deviceInfo || "unknown device"
+                          }`}
                         >
                           {revokingSessionId === s._id ? (
-                            <span className="spinner-border spinner-border-sm"></span>
+                            <span
+                              className="spinner-border spinner-border-sm"
+                              aria-hidden="true"
+                            ></span>
                           ) : (
                             "Revoke"
                           )}
@@ -533,22 +593,33 @@ function Settings() {
           </div>
         )}
 
-        {/* ============ BLOCKED USERS TAB ============ */}
+        {/* ═══ BLOCKED USERS TAB ═══ */}
         {activeTab === "blocked" && (
-          <div className="card border-0 shadow-sm">
+          <div
+            id="panel-blocked"
+            role="tabpanel"
+            aria-labelledby="tab-blocked"
+            className="card border-0 shadow-sm"
+          >
             <div className="card-body p-4">
               <h5 className="fw-bold mb-3">
-                <i className="bi bi-slash-circle me-2 text-danger"></i>Blocked
-                Users
+                <i
+                  className="bi bi-slash-circle me-2 text-danger"
+                  aria-hidden="true"
+                ></i>
+                Blocked Users
               </h5>
 
-              {/* Search filter */}
               <div className="input-group mb-4">
+                <label htmlFor="blocked-search" className="visually-hidden">
+                  Search blocked users
+                </label>
                 <span className="input-group-text">
-                  <i className="bi bi-search"></i>
+                  <i className="bi bi-search" aria-hidden="true"></i>
                 </span>
                 <input
-                  type="text"
+                  id="blocked-search"
+                  type="search"
                   className="form-control"
                   placeholder="Search blocked users by name..."
                   value={searchInput}
@@ -558,30 +629,38 @@ function Settings() {
                   <button
                     className="btn btn-outline-secondary"
                     onClick={() => setSearchInput("")}
+                    aria-label="Clear search"
                   >
-                    <i className="bi bi-x-lg"></i>
+                    <i className="bi bi-x-lg" aria-hidden="true"></i>
                   </button>
                 )}
               </div>
 
               {blockedLoading ? (
-                <div className="text-center py-4">
+                <div className="text-center py-4" role="status">
                   <span className="spinner-border"></span>
+                  <span className="visually-hidden">
+                    Loading blocked users...
+                  </span>
                 </div>
               ) : blockedUsers.length === 0 ? (
-                <div className="text-center py-5 text-muted">
+                <div className="text-center py-5 text-muted" role="status">
                   <i
-                    className="bi bi-emoji-smile"
-                    style={{ fontSize: "2.5rem" }}
+                    className="bi bi-emoji-smile fs-1 mb-3"
+                    aria-hidden="true"
                   ></i>
-                  <p className="mt-3 mb-0">
+                  <p className="mb-0">
                     {search
                       ? `No blocked users match "${search}"`
                       : "You haven't blocked anyone."}
                   </p>
                 </div>
               ) : (
-                <div className="list-group list-group-flush">
+                <div
+                  className="list-group list-group-flush"
+                  role="list"
+                  aria-label="Blocked users"
+                >
                   {blockedUsers.map((bu) => {
                     const photo =
                       bu.photos?.find((p) => p.isPrimary) || bu.photos?.[0];
@@ -589,30 +668,19 @@ function Settings() {
                       <div
                         key={bu._id}
                         className="list-group-item d-flex justify-content-between align-items-center px-0 py-3"
+                        role="listitem"
                       >
                         <div className="d-flex align-items-center gap-3">
-                          <div
-                            style={{
-                              width: 48,
-                              height: 48,
-                              borderRadius: "50%",
-                              overflow: "hidden",
-                              background: "#f1f5f9",
-                              flexShrink: 0,
-                            }}
-                          >
+                          <div className="settings-avatar">
                             {photo?.url ? (
                               <img
                                 src={avatarImg(photo.url)}
-                                alt={bu.name}
-                                style={{
-                                  width: "100%",
-                                  height: "100%",
-                                  objectFit: "cover",
-                                }}
+                                alt=""
+                                loading="lazy"
+                                className="settings-avatar-img"
                               />
                             ) : (
-                              <span className="d-flex w-100 h-100 align-items-center justify-content-center fw-bold text-secondary">
+                              <span className="settings-avatar-initial">
                                 {bu.name?.charAt(0)}
                               </span>
                             )}
@@ -620,7 +688,7 @@ function Settings() {
                           <div>
                             <strong className="d-block">{bu.name}</strong>
                             <small className="text-muted">
-                              Blocked you can't message each other
+                              Blocked — you can't message each other
                             </small>
                           </div>
                         </div>
@@ -628,12 +696,20 @@ function Settings() {
                           className="btn btn-outline-primary btn-sm"
                           onClick={() => setUnblockTarget(bu)}
                           disabled={unblockLoading}
+                          aria-label={`Unblock ${bu.name}`}
                         >
                           {unblockLoading ? (
-                            <span className="spinner-border spinner-border-sm"></span>
+                            <span
+                              className="spinner-border spinner-border-sm"
+                              aria-hidden="true"
+                            ></span>
                           ) : (
                             <>
-                              <i className="bi bi-unlock me-1"></i>Unblock
+                              <i
+                                className="bi bi-unlock me-1"
+                                aria-hidden="true"
+                              ></i>
+                              Unblock
                             </>
                           )}
                         </button>
@@ -645,65 +721,58 @@ function Settings() {
             </div>
           </div>
         )}
-      </div>
+      </main>
 
-      {/* ============ 2FA SETUP MODAL (QR) ============ */}
+      {/* ═══ 2FA SETUP MODAL ═══ */}
       {setupData && (
         <div
-          className="modal fade show d-block"
-          tabIndex="-1"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
-          }}
+          className="settings-modal-overlay"
+          onClick={() => !twoFaBusy && setSetupData(null)}
         >
           <div
-            style={{
-              maxWidth: 420,
-              width: "100%",
-              background: "white",
-              borderRadius: 16,
-              overflow: "hidden",
-            }}
+            ref={setupModalRef}
+            className="settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="setup-2fa-title"
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="p-4 text-center">
-              <h5 className="fw-bold mb-3">Scan with Authenticator App</h5>
+              <h5 id="setup-2fa-title" className="fw-bold mb-3">
+                Scan with Authenticator App
+              </h5>
               <img
                 src={setupData.qrCode}
                 alt="2FA QR Code"
-                style={{ width: 240, height: 240, margin: "0 auto" }}
+                className="settings-qr-img"
               />
               <p className="text-muted small mt-3 mb-1">
                 Or enter this key manually:
               </p>
-              <code
-                className="d-block bg-light p-2 rounded mb-3"
-                style={{ letterSpacing: 2 }}
-              >
+              <code className="d-block bg-light p-2 rounded mb-3 settings-secret-code">
                 {setupData.secret}
               </code>
-
-              <label className="form-label small fw-semibold">
+              <label
+                htmlFor="setup-verify-code"
+                className="form-label small fw-semibold"
+              >
                 Enter 6-digit code
               </label>
               <input
+                ref={verifyInputRef}
+                id="setup-verify-code"
                 type="text"
-                className="form-control form-control-lg text-center mb-3"
+                className="form-control form-control-lg text-center mb-3 otp-input"
                 maxLength={6}
+                inputMode="numeric"
+                pattern="[0-9]{6}"
                 placeholder="000000"
                 value={verifyCode}
                 onChange={(e) =>
                   setVerifyCode(e.target.value.replace(/\D/g, ""))
                 }
-                style={{ letterSpacing: 8, fontFamily: "monospace" }}
+                autoComplete="one-time-code"
               />
-
               <div className="d-flex gap-2">
                 <button
                   className="btn btn-outline-secondary flex-fill"
@@ -725,42 +794,28 @@ function Settings() {
         </div>
       )}
 
-      {/* ============ BACKUP CODES MODAL ============ */}
+      {/* ═══ BACKUP CODES MODAL ═══ */}
       {backupCodes && (
         <div
-          className="modal fade show d-block"
-          tabIndex="-1"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
-          }}
+          className="settings-modal-overlay"
+          onClick={() => setBackupCodes(null)}
         >
           <div
-            style={{
-              maxWidth: 420,
-              width: "100%",
-              background: "white",
-              borderRadius: 16,
-              padding: 24,
-            }}
+            ref={backupModalRef}
+            className="settings-modal settings-modal-padded"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="backup-codes-title"
+            onClick={(e) => e.stopPropagation()}
           >
-            <h5 className="fw-bold text-center mb-2">
+            <h5 id="backup-codes-title" className="fw-bold text-center mb-2">
               🔑 Save Your Backup Codes
             </h5>
             <p className="text-muted small text-center mb-3">
               Each code works once if you lose your phone. They are shown only
               once!
             </p>
-            <div
-              className="bg-light rounded p-3 mb-3"
-              style={{ fontFamily: "monospace", fontSize: 15 }}
-            >
+            <div className="settings-backup-codes-list">
               {backupCodes.map((c, i) => (
                 <div key={i} className="d-flex justify-content-between py-1">
                   <span className="text-muted">{i + 1}.</span>
@@ -774,7 +829,8 @@ function Settings() {
                 navigator.clipboard?.writeText(backupCodes.join("\n"))
               }
             >
-              <i className="bi bi-clipboard me-2"></i>Copy All
+              <i className="bi bi-clipboard me-2" aria-hidden="true"></i>Copy
+              All
             </button>
             <button
               className="btn btn-primary w-100"
@@ -786,63 +842,62 @@ function Settings() {
         </div>
       )}
 
-      {/* ============ DISABLE 2FA MODAL ============ */}
+      {/* ═══ DISABLE 2FA MODAL ═══ */}
       {disableModal && (
         <div
-          className="modal fade show d-block"
-          tabIndex="-1"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
-          }}
+          className="settings-modal-overlay"
+          onClick={() => !twoFaBusy && setDisableModal(false)}
         >
           <div
-            style={{
-              maxWidth: 420,
-              width: "100%",
-              background: "white",
-              borderRadius: 16,
-              padding: 24,
-            }}
+            ref={disableModalRef}
+            className="settings-modal settings-modal-padded"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="disable-2fa-title"
+            onClick={(e) => e.stopPropagation()}
           >
-            <h5 className="fw-bold mb-3">Disable Two-Factor Authentication</h5>
-
-            {/* ✅ Only show password field for local (non-OAuth) users */}
-            {(!user?.oauthProvider || user.oauthProvider === "local") && (
+            <h5 id="disable-2fa-title" className="fw-bold mb-3">
+              Disable Two-Factor Authentication
+            </h5>
+            {isLocalUser && (
               <>
-                <label className="form-label small fw-semibold">Password</label>
+                <label
+                  htmlFor="disable-password"
+                  className="form-label small fw-semibold"
+                >
+                  Password
+                </label>
                 <input
+                  id="disable-password"
                   type="password"
                   className="form-control mb-3"
                   value={disablePassword}
                   onChange={(e) => setDisablePassword(e.target.value)}
                   placeholder="Enter your password"
+                  autoComplete="current-password"
                 />
               </>
             )}
-
-            {user?.oauthProvider === "google" && (
-              <div className="alert alert-info py-2 mb-3 small">
-                <i className="bi bi-google me-2"></i>
-                Google account — password not required
+            {!isLocalUser && (
+              <div className="alert alert-info py-2 mb-3 small" role="status">
+                <i className="bi bi-google me-2" aria-hidden="true"></i>Google
+                account — password not required
               </div>
             )}
-
-            <label className="form-label small fw-semibold">
+            <label
+              htmlFor="disable-code"
+              className="form-label small fw-semibold"
+            >
               Current 2FA code (or backup code)
             </label>
             <input
+              id="disable-code"
               type="text"
               className="form-control mb-3"
               value={disableCode}
               onChange={(e) => setDisableCode(e.target.value)}
               placeholder="000000 or XXXXX-XXXXX"
+              autoComplete="one-time-code"
             />
             <div className="d-flex gap-2">
               <button
@@ -856,10 +911,7 @@ function Settings() {
                 className="btn btn-danger flex-fill"
                 onClick={handleDisable2FA}
                 disabled={
-                  twoFaBusy ||
-                  !disableCode ||
-                  ((!user?.oauthProvider || user.oauthProvider === "local") &&
-                    !disablePassword)
+                  twoFaBusy || !disableCode || (isLocalUser && !disablePassword)
                 }
               >
                 {twoFaBusy ? "Disabling..." : "Disable 2FA"}
@@ -869,7 +921,7 @@ function Settings() {
         </div>
       )}
 
-      {/* ============ UNBLOCK CONFIRM ============ */}
+      {/* Confirmation Dialogs */}
       <ConfirmDialog
         open={unblockTarget !== null}
         title={`Unblock ${unblockTarget?.name || ""}?`}
@@ -880,8 +932,6 @@ function Settings() {
         onCancel={() => setUnblockTarget(null)}
         onConfirm={handleUnblock}
       />
-
-      {/* ✅ NEW: Revoke Session Confirmation */}
       <ConfirmDialog
         open={revokeTarget !== null}
         title="Revoke Session?"
@@ -895,14 +945,12 @@ function Settings() {
         onCancel={() => setRevokeTarget(null)}
         onConfirm={() => revokeSession(revokeTarget._id)}
       />
-
-      {/* ✅ NEW: Revoke All Other Sessions Confirmation */}
       <ConfirmDialog
         open={revokeOthersConfirm}
         title="Log Out All Other Devices?"
         message={`This will revoke ${
           sessions.length - 1
-        } other session(s). You will remain logged in on this device, but all other devices will be logged out.`}
+        } other session(s). You will remain logged in on this device.`}
         confirmText="Log Out All"
         cancelText="Cancel"
         icon="bi-shield-exclamation"

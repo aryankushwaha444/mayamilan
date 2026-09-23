@@ -3,17 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { getMyProfile, updateMyProfile } from "../services/userService";
 import { useAlert } from "../context/AlertContext";
-import Loader from "../components/Loader.jsx"; // 👈 ADD branded loader
+import Loader from "../components/Loader.jsx";
 
 function EditProfile() {
   const navigate = useNavigate();
-  const { user, updateUser } = useAuth();
+  const { updateUser } = useAuth();
   const toast = useAlert();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   const [formData, setFormData] = useState({
     name: "",
@@ -28,12 +28,18 @@ function EditProfile() {
     country: "",
   });
 
+  // ✅ Load profile with proper error handling
   useEffect(() => {
+    let cancelled = false;
+
     const loadProfile = async () => {
       try {
+        setLoading(true);
+        setLoadError("");
         const data = await getMyProfile();
-        const profile = data.user;
+        if (cancelled) return;
 
+        const profile = data.user;
         setFormData({
           name: profile.name || "",
           dateOfBirth: profile.dateOfBirth
@@ -49,51 +55,49 @@ function EditProfile() {
           country: profile.location?.country || "",
         });
       } catch (err) {
-        console.error(err);
-        setError("Failed to load your profile.");
-        toast.error("Failed to load your profile");
+        if (cancelled) return;
+        console.error("Load profile error:", err);
+        setLoadError(
+          err.response?.data?.message || "Failed to load your profile."
+        );
+        toast.error("Failed to load your profile", "Error", 5000);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     loadProfile();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [toast]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-
+    setFormData((prev) => ({ ...prev, [name]: value }));
     setError("");
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
     setError("");
 
+    // Client-side validation
     if (!formData.name.trim()) {
       setError("Name is required.");
       toast.warning("Name is required");
       return;
     }
-
     if (!formData.dateOfBirth) {
       setError("Date of birth is required.");
       toast.warning("Date of birth is required");
       return;
     }
-
     if (!formData.gender) {
       setError("Please select your gender.");
       toast.warning("Please select your gender");
       return;
     }
-
     if (!formData.relationshipGoal) {
       setError("Please select your relationship goal.");
       toast.warning("Please select your relationship goal");
@@ -105,39 +109,35 @@ function EditProfile() {
 
       const interests = formData.interests
         .split(",")
-        .map((interest) => interest.trim())
+        .map((i) => i.trim())
         .filter(Boolean);
 
       const updateData = {
-        name: formData.name,
+        name: formData.name.trim(),
         dateOfBirth: formData.dateOfBirth,
         gender: formData.gender,
-        bio: formData.bio,
-        occupation: formData.occupation,
-        education: formData.education,
+        bio: formData.bio.trim(),
+        occupation: formData.occupation.trim(),
+        education: formData.education.trim(),
         relationshipGoal: formData.relationshipGoal,
         interests,
         location: {
-          city: formData.city,
-          country: formData.country,
+          city: formData.city.trim(),
+          country: formData.country.trim(),
         },
       };
 
       const response = await updateMyProfile(updateData);
-      const updatedUser = response?.user;
-
-      if (updatedUser) {
-        updateUser(updatedUser);
+      if (response?.user) {
+        updateUser(response.user);
       }
 
-      setSuccess(true);
       toast.success("Profile updated successfully! ✨", "Saved", 3000);
 
-      setTimeout(() => {
-        navigate("/profile");
-      }, 1500);
+      // ✅ Navigate immediately with state instead of setTimeout
+      navigate("/profile", { state: { profileUpdated: true }, replace: true });
     } catch (err) {
-      console.error(err);
+      console.error("Update profile error:", err);
       setError(err.response?.data?.message || "Failed to update your profile.");
       toast.error(
         err.response?.data?.message || "Failed to update your profile",
@@ -149,7 +149,40 @@ function EditProfile() {
     }
   };
 
-  // 👇 BRANDED LOADER — replaces generic spinner
+  const handleRetry = () => {
+    setLoading(true);
+    setLoadError("");
+    // Re-trigger the effect by forcing re-mount isn't ideal;
+    // instead, call load logic directly
+    (async () => {
+      try {
+        const data = await getMyProfile();
+        const profile = data.user;
+        setFormData({
+          name: profile.name || "",
+          dateOfBirth: profile.dateOfBirth
+            ? profile.dateOfBirth.split("T")[0]
+            : "",
+          gender: profile.gender || "",
+          bio: profile.bio || "",
+          occupation: profile.occupation || "",
+          education: profile.education || "",
+          relationshipGoal: profile.relationshipGoal || "",
+          interests: profile.interests?.join(", ") || "",
+          city: profile.location?.city || "",
+          country: profile.location?.country || "",
+        });
+      } catch (err) {
+        setLoadError(
+          err.response?.data?.message || "Failed to load your profile."
+        );
+      } finally {
+        setLoading(false);
+      }
+    })();
+  };
+
+  // ✅ Branded loader
   if (loading) {
     return (
       <Loader
@@ -161,8 +194,49 @@ function EditProfile() {
     );
   }
 
+  // ✅ Error state with retry
+  if (loadError) {
+    return (
+      <main className="auth-page" id="main-content">
+        <div className="container py-5">
+          <div className="row justify-content-center">
+            <div className="col-12 col-md-8 col-lg-6">
+              <div
+                className="alert alert-danger d-flex align-items-center gap-3"
+                role="alert"
+              >
+                <i className="bi bi-exclamation-triangle-fill fs-4"></i>
+                <div>
+                  <strong>Failed to load profile</strong>
+                  <p className="mb-0 small">{loadError}</p>
+                </div>
+                <button
+                  className="btn btn-sm btn-outline-danger ms-auto"
+                  onClick={handleRetry}
+                >
+                  Retry
+                </button>
+              </div>
+              <div className="text-center mt-3">
+                <button
+                  className="btn btn-outline-secondary"
+                  onClick={() => navigate("/profile")}
+                >
+                  ← Back to Profile
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  const bioLength = formData.bio.length;
+  const bioRemaining = 500 - bioLength;
+
   return (
-    <div className="auth-page">
+    <main className="auth-page" id="main-content">
       <div className="container py-5">
         <div className="row justify-content-center">
           <div className="col-12 col-md-10 col-lg-8">
@@ -178,67 +252,27 @@ function EditProfile() {
                   </div>
                 </div>
 
-                {/* Alerts */}
+                {/* Error Alert */}
                 {error && (
-                  <div className="alert alert-danger alert-dismissible fade show">
-                    <i className="bi bi-exclamation-circle me-2"></i>
+                  <div
+                    className="alert alert-danger alert-dismissible fade show"
+                    role="alert"
+                  >
+                    <i
+                      className="bi bi-exclamation-circle me-2"
+                      aria-hidden="true"
+                    ></i>
                     {error}
                     <button
                       type="button"
                       className="btn-close"
                       onClick={() => setError("")}
+                      aria-label="Dismiss error"
                     ></button>
                   </div>
                 )}
 
-                {/* Success Message */}
-                {success && (
-                  <div
-                    className="alert alert-success d-flex align-items-center fade show"
-                    style={{
-                      animation: "slideInDown 0.4s ease-out",
-                      background:
-                        "linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)",
-                      border: "none",
-                      boxShadow: "0 4px 12px rgba(16, 185, 129, 0.15)",
-                    }}
-                  >
-                    <div
-                      className="me-3 d-flex align-items-center justify-content-center"
-                      style={{
-                        width: "40px",
-                        height: "40px",
-                        background: "#10b981",
-                        borderRadius: "50%",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <i
-                        className="bi bi-check-lg text-white"
-                        style={{ fontSize: "20px" }}
-                      ></i>
-                    </div>
-                    <div className="flex-grow-1">
-                      <strong
-                        className="d-block mb-1"
-                        style={{ color: "#065f46" }}
-                      >
-                        Changes saved successfully!
-                      </strong>
-                      <small style={{ color: "#047857" }}>
-                        Redirecting to your profile...
-                      </small>
-                    </div>
-                    <div
-                      className="spinner-border spinner-border-sm text-success ms-3"
-                      role="status"
-                    >
-                      <span className="visually-hidden">Loading...</span>
-                    </div>
-                  </div>
-                )}
-
-                <form onSubmit={handleSubmit}>
+                <form onSubmit={handleSubmit} noValidate>
                   {/* Basic Information */}
                   <h5 className="fw-bold mb-3">Basic Information</h5>
 
@@ -255,7 +289,9 @@ function EditProfile() {
                         value={formData.name}
                         onChange={handleChange}
                         placeholder="Your name"
-                        disabled={success}
+                        required
+                        autoComplete="name"
+                        disabled={saving}
                       />
                     </div>
 
@@ -270,7 +306,9 @@ function EditProfile() {
                         className="form-control"
                         value={formData.dateOfBirth}
                         onChange={handleChange}
-                        disabled={success}
+                        required
+                        autoComplete="bday"
+                        disabled={saving}
                       />
                     </div>
 
@@ -284,7 +322,9 @@ function EditProfile() {
                         className="form-select"
                         value={formData.gender}
                         onChange={handleChange}
-                        disabled={success}
+                        required
+                        autoComplete="sex"
+                        disabled={saving}
                       >
                         <option value="">Select gender</option>
                         <option value="male">Male</option>
@@ -306,15 +346,23 @@ function EditProfile() {
                       id="edit-bio"
                       name="bio"
                       className="form-control"
-                      rows="4"
-                      maxLength="500"
+                      rows={4}
+                      maxLength={500}
                       placeholder="Write something interesting about yourself..."
                       value={formData.bio}
                       onChange={handleChange}
-                      disabled={success}
-                    ></textarea>
-                    <small className="text-muted">
-                      {formData.bio.length}/500 characters
+                      disabled={saving}
+                      aria-describedby="bio-counter"
+                    />
+                    <small
+                      id="bio-counter"
+                      className={`text-muted ${
+                        bioRemaining <= 50 ? "text-warning fw-semibold" : ""
+                      } ${bioRemaining <= 0 ? "text-danger fw-semibold" : ""}`}
+                      aria-live="polite"
+                    >
+                      {bioLength}/500 characters
+                      {bioRemaining <= 50 && ` (${bioRemaining} remaining)`}
                     </small>
                   </div>
 
@@ -325,7 +373,7 @@ function EditProfile() {
                       </label>
                       <div className="input-group">
                         <span className="input-group-text">
-                          <i className="bi bi-briefcase"></i>
+                          <i className="bi bi-briefcase" aria-hidden="true"></i>
                         </span>
                         <input
                           id="edit-occupation"
@@ -335,7 +383,8 @@ function EditProfile() {
                           placeholder="e.g. Software Developer"
                           value={formData.occupation}
                           onChange={handleChange}
-                          disabled={success}
+                          disabled={saving}
+                          autoComplete="organization-title"
                         />
                       </div>
                     </div>
@@ -346,7 +395,10 @@ function EditProfile() {
                       </label>
                       <div className="input-group">
                         <span className="input-group-text">
-                          <i className="bi bi-mortarboard"></i>
+                          <i
+                            className="bi bi-mortarboard"
+                            aria-hidden="true"
+                          ></i>
                         </span>
                         <input
                           id="edit-education"
@@ -356,7 +408,7 @@ function EditProfile() {
                           placeholder="e.g. Bachelor's Degree"
                           value={formData.education}
                           onChange={handleChange}
-                          disabled={success}
+                          disabled={saving}
                         />
                       </div>
                     </div>
@@ -378,7 +430,8 @@ function EditProfile() {
                       className="form-select"
                       value={formData.relationshipGoal}
                       onChange={handleChange}
-                      disabled={success}
+                      required
+                      disabled={saving}
                     >
                       <option value="">Select relationship goal</option>
                       <option value="serious">Serious Relationship</option>
@@ -404,9 +457,10 @@ function EditProfile() {
                       placeholder="Music, Travel, Coding, Photography"
                       value={formData.interests}
                       onChange={handleChange}
-                      disabled={success}
+                      disabled={saving}
+                      aria-describedby="interests-hint"
                     />
-                    <small className="text-muted">
+                    <small id="interests-hint" className="text-muted">
                       Separate interests with commas.
                     </small>
                   </div>
@@ -427,7 +481,8 @@ function EditProfile() {
                         placeholder="e.g. Kathmandu"
                         value={formData.city}
                         onChange={handleChange}
-                        disabled={success}
+                        disabled={saving}
+                        autoComplete="address-level2"
                       />
                     </div>
 
@@ -443,7 +498,8 @@ function EditProfile() {
                         placeholder="e.g. Nepal"
                         value={formData.country}
                         onChange={handleChange}
-                        disabled={success}
+                        disabled={saving}
+                        autoComplete="country-name"
                       />
                     </div>
                   </div>
@@ -454,32 +510,30 @@ function EditProfile() {
                       type="button"
                       className="btn btn-outline-secondary flex-fill"
                       onClick={() => navigate("/profile")}
-                      disabled={saving || success}
+                      disabled={saving}
                     >
                       Cancel
                     </button>
-
                     <button
                       type="submit"
                       className="btn btn-primary flex-fill"
-                      disabled={saving || success}
+                      disabled={saving}
                     >
                       {saving ? (
                         <>
                           <span
                             className="spinner-border spinner-border-sm me-2"
                             role="status"
+                            aria-hidden="true"
                           ></span>
                           Saving...
                         </>
-                      ) : success ? (
-                        <>
-                          <i className="bi bi-check-lg me-2"></i>
-                          Saved!
-                        </>
                       ) : (
                         <>
-                          <i className="bi bi-check-lg me-2"></i>
+                          <i
+                            className="bi bi-check-lg me-2"
+                            aria-hidden="true"
+                          ></i>
                           Save Changes
                         </>
                       )}
@@ -491,7 +545,7 @@ function EditProfile() {
           </div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

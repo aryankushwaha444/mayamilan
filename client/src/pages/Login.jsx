@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import SEO from "../components/SEO";
@@ -31,8 +31,10 @@ function Login() {
   const [twoFaLoading, setTwoFaLoading] = useState(false);
   const [oauth2faToken, setOauth2faToken] = useState("");
 
-  // ✅ Honeypot value in state
-  const [honeypotValue, setHoneypotValue] = useState("");
+  // ✅ Refs for reactivation modal focus management
+  const modalRef = useRef(null);
+  const activateBtnRef = useRef(null);
+  const totpInputRef = useRef(null);
 
   const {
     containerRef: turnstileRef,
@@ -41,6 +43,7 @@ function Login() {
     isEnabled: turnstileEnabled,
   } = useTurnstile();
 
+  // ✅ Parse URL params on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const reactivateFlag = params.get("reactivate");
@@ -48,13 +51,12 @@ function Login() {
     const days = params.get("days");
     const attempts = params.get("attempts");
 
-    // ✅ NEW: Detect OAuth 2FA redirect
     const oauth2faFlag = params.get("oauth2fa");
     const oauthTempToken = params.get("tempToken");
 
     if (oauth2faFlag === "1" && oauthTempToken) {
       setOauth2faToken(oauthTempToken);
-      setTwoFaStep(true); // Switch to 2FA UI immediately
+      setTwoFaStep(true);
       window.history.replaceState({}, document.title, "/login");
     }
 
@@ -84,10 +86,61 @@ function Login() {
       toast.error("Email temporarily blocked", "Error", 5000);
       window.history.replaceState({}, document.title, "/login");
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!authLoading && isAuthenticated)
+  // ✅ Focus trap + Escape key for reactivation modal
+  useEffect(() => {
+    if (!reactivateData) return;
+
+    const previousFocus = document.activeElement;
+    setTimeout(() => activateBtnRef.current?.focus(), 100);
+
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setReactivateData(null);
+        setPendingCredentials(null);
+        setReactivateError("");
+        return;
+      }
+      if (e.key === "Tab" && modalRef.current) {
+        const focusable = modalRef.current.querySelectorAll(
+          'button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "";
+      if (previousFocus && typeof previousFocus.focus === "function") {
+        previousFocus.focus();
+      }
+    };
+  }, [reactivateData]);
+
+  // ✅ Auto-focus TOTP input when 2FA step appears
+  useEffect(() => {
+    if (twoFaStep) {
+      setTimeout(() => totpInputRef.current?.focus(), 100);
+    }
+  }, [twoFaStep]);
+
+  // Redirect if already authenticated
+  if (!authLoading && isAuthenticated) {
     return <Navigate to="/discover" replace />;
+  }
 
   const getStrength = (pwd) => {
     let score = 0;
@@ -132,7 +185,6 @@ function Login() {
       const { data } = await api.post("/auth/reactivate", {
         reactivationToken: token,
       });
-      console.log("✅ Reactivate OK:", data.success);
 
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
@@ -144,11 +196,6 @@ function Login() {
         data.user?.role === "admin" ? "/admin" : "/discover"
       );
     } catch (err) {
-      console.error(
-        "❌ Reactivate failed:",
-        err.response?.status,
-        err.response?.data
-      );
       setReactivateError(
         err.response?.data?.message || "Reactivation failed. Try again."
       );
@@ -161,7 +208,6 @@ function Login() {
     event.preventDefault();
     setError("");
 
-    // ✅ Turnstile check
     if (turnstileEnabled && !turnstileToken) {
       setError("Please complete the security check.");
       toast.error("Security check required", "Error", 3000);
@@ -171,13 +217,16 @@ function Login() {
     setLoading(true);
 
     try {
-      // ✅ Send honeypot + timing header
+      // ✅ Read honeypot directly from DOM (HoneypotField manages its own internal state)
+      const honeypotValue =
+        document.querySelector('input[name="website"]')?.value || "";
+
       const response = await login({
         email,
         password,
         turnstileToken: turnstileToken || undefined,
-        website: honeypotValue, // ✅ Honeypot from state
-        _formLoadTime: formLoadTime, // ✅ Timing data
+        website: honeypotValue,
+        _formLoadTime: formLoadTime,
       });
 
       if (response.success) {
@@ -194,13 +243,10 @@ function Login() {
         resetTurnstile();
       }
     } catch (err) {
-      // ✅ FIXED: Declare errorData FIRST before using it
       const errorData = err.response?.data || err.data || null;
       const statusCode = err.response?.status || err.status;
 
-      console.log("🔍 Login error debug:", { statusCode, errorData });
-
-      // ✅ Handle signature errors (tampering detection)
+      // Signature errors (tampering detection)
       if (errorData?.signatureExpired || errorData?.signatureInvalid) {
         toast.warning(
           "Request expired or invalid. Please refresh and try again.",
@@ -212,7 +258,7 @@ function Login() {
         return;
       }
 
-      // ✅ Handle IP block
+      // IP block
       if (errorData?.ipBlocked) {
         setError(errorData.message);
         toast.error(errorData.message, "🚫 Access Denied", 8000);
@@ -221,7 +267,7 @@ function Login() {
         return;
       }
 
-      // ✅ 2FA required
+      // 2FA required
       if (errorData?.requires2FA && errorData?.tempToken) {
         setTempToken(errorData.tempToken);
         setTwoFaStep(true);
@@ -299,7 +345,6 @@ function Login() {
     setError("");
 
     try {
-      // ✅ Determine which endpoint to call based on flow type
       const isOAuthFlow = Boolean(oauth2faToken);
       const endpoint = isOAuthFlow ? "/auth/oauth/2fa" : "/auth/login/2fa";
       const tokenToSend = isOAuthFlow ? oauth2faToken : tempToken;
@@ -317,15 +362,12 @@ function Login() {
           "Login successful",
           3000
         );
-
-        // ✅ FIXED: Single redirect logic for both flows
         window.location.href =
           data.user?.role === "admin" ? "/admin" : "/discover";
       }
     } catch (err) {
       const data = err.response?.data || {};
 
-      // ✅ Handle signature errors
       if (data.signatureExpired || data.signatureInvalid) {
         toast.warning(
           "Request expired. Please refresh and try again.",
@@ -344,67 +386,114 @@ function Login() {
     }
   };
 
+  // ═══════════════════════════════════════════
+  // 2FA STEP VIEW
+  // ═══════════════════════════════════════════
   if (twoFaStep) {
     const isOAuthFlow = Boolean(oauth2faToken);
     return (
-      <div className="auth-page">
-        <div className="container py-5">
-          <div className="row justify-content-center">
-            <div className="col-12 col-md-6 col-lg-5">
-              <div className="card auth-card border-0 shadow-lg">
-                <div className="card-body p-4 p-md-5 text-center">
-                  <div className="auth-logo mb-3">
-                    <i className="bi bi-shield-lock-fill"></i>
+      <>
+        <SEO
+          title="Two-Factor Authentication"
+          description="Verify your identity to complete sign-in."
+          path="/login"
+          noIndex
+        />
+        <main className="auth-page" id="main-content">
+          <div className="container py-5">
+            <div className="row justify-content-center">
+              <div className="col-12 col-md-6 col-lg-5">
+                <div className="card auth-card border-0 shadow-lg">
+                  <div className="card-body p-4 p-md-5 text-center">
+                    <div className="auth-logo mb-3" aria-hidden="true">
+                      <i className="bi bi-shield-lock-fill"></i>
+                    </div>
+                    <h2 className="fw-bold mb-2">Two-Factor Authentication</h2>
+                    <p className="text-muted mb-4">
+                      {isOAuthFlow
+                        ? "Complete your Google sign-in with your 2FA code"
+                        : "Enter the 6-digit code from your authenticator app"}
+                    </p>
+
+                    {error && (
+                      <div className="alert alert-danger" role="alert">
+                        <i
+                          className="bi bi-exclamation-circle me-2"
+                          aria-hidden="true"
+                        ></i>
+                        {error}
+                      </div>
+                    )}
+
+                    <label htmlFor="totp-code" className="visually-hidden">
+                      Authentication code
+                    </label>
+                    <input
+                      ref={totpInputRef}
+                      id="totp-code"
+                      type="text"
+                      className="form-control form-control-lg text-center mb-3 otp-input"
+                      placeholder="000000"
+                      maxLength={7}
+                      inputMode="numeric"
+                      pattern="[0-9\s-]*"
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value)}
+                      autoComplete="one-time-code"
+                      aria-describedby="2fa-hint"
+                    />
+                    <small
+                      id="2fa-hint"
+                      className="text-muted d-block text-center mb-3"
+                    >
+                      6-digit code from your authenticator app
+                    </small>
+
+                    <button
+                      type="button"
+                      className="btn btn-primary w-100 py-2"
+                      onClick={handle2FASubmit}
+                      disabled={twoFaLoading || !totpCode}
+                    >
+                      {twoFaLoading ? (
+                        <>
+                          <span
+                            className="spinner-border spinner-border-sm me-2"
+                            aria-hidden="true"
+                          ></span>
+                          Verifying...
+                        </>
+                      ) : (
+                        "Verify & Login"
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-link mt-3"
+                      onClick={() => {
+                        setTwoFaStep(false);
+                        setTotpCode("");
+                        setOauth2faToken("");
+                        setTempToken("");
+                        setError("");
+                      }}
+                    >
+                      ← Back to login
+                    </button>
                   </div>
-                  <h2 className="fw-bold mb-2">Two-Factor Authentication</h2>
-                  <p className="text-muted mb-4">
-                    {isOAuthFlow
-                      ? "Complete your Google sign-in with your 2FA code"
-                      : "Enter the 6-digit code from your authenticator app"}
-                  </p>
-
-                  {error && <div className="alert alert-danger">{error}</div>}
-
-                  <input
-                    type="text"
-                    className="form-control form-control-lg text-center mb-3"
-                    placeholder="000000"
-                    maxLength={11}
-                    value={totpCode}
-                    onChange={(e) => setTotpCode(e.target.value)}
-                    autoFocus
-                    style={{ letterSpacing: 6, fontFamily: "monospace" }}
-                  />
-
-                  <button
-                    className="btn btn-primary w-100 py-2"
-                    onClick={handle2FASubmit}
-                    disabled={twoFaLoading || !totpCode}
-                  >
-                    {twoFaLoading ? "Verifying..." : "Verify & Login"}
-                  </button>
-
-                  <button
-                    className="btn btn-link mt-3"
-                    onClick={() => {
-                      setTwoFaStep(false);
-                      setTotpCode("");
-                      setOauth2faToken("");
-                      setTempToken("");
-                      setError("");
-                    }}
-                  >
-                    ← Back to login
-                  </button>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
+        </main>
+      </>
     );
   }
 
+  // ═══════════════════════════════════════════
+  // MAIN LOGIN VIEW
+  // ═══════════════════════════════════════════
   return (
     <>
       <SEO
@@ -413,14 +502,14 @@ function Login() {
         path="/login"
       />
 
-      <div className="auth-page">
+      <main className="auth-page" id="main-content">
         <div className="container py-5">
           <div className="row justify-content-center">
             <div className="col-12 col-md-8 col-lg-6 col-xl-5">
               <div className="card auth-card border-0 shadow-lg">
                 <div className="card-body p-4 p-md-5">
                   <div className="text-center mb-4">
-                    <div className="auth-logo mb-3">
+                    <div className="auth-logo mb-3" aria-hidden="true">
                       <i className="bi bi-heart-fill"></i>
                     </div>
                     <h2 className="fw-bold mb-2">Welcome Back</h2>
@@ -430,25 +519,30 @@ function Login() {
                   </div>
 
                   {error && (
-                    <div className="alert alert-danger d-flex align-items-center">
-                      <i className="bi bi-exclamation-circle me-2"></i>
+                    <div
+                      className="alert alert-danger d-flex align-items-center"
+                      role="alert"
+                    >
+                      <i
+                        className="bi bi-exclamation-circle me-2"
+                        aria-hidden="true"
+                      ></i>
                       <span>{error}</span>
                     </div>
                   )}
 
-                  <form onSubmit={handleSubmit}>
+                  <form onSubmit={handleSubmit} noValidate>
                     <div className="mb-3">
-                      <label htmlFor="email" className="form-label">
+                      <label htmlFor="login-email" className="form-label">
                         Email Address
                       </label>
-                      {/* ✅ HONEYPOT FIELD — invisible to humans, bots will fill it */}
                       <HoneypotField />
                       <div className="input-group">
                         <span className="input-group-text">
-                          <i className="bi bi-envelope"></i>
+                          <i className="bi bi-envelope" aria-hidden="true"></i>
                         </span>
                         <input
-                          id="email"
+                          id="login-email"
                           type="email"
                           className="form-control"
                           placeholder="you@example.com"
@@ -456,20 +550,21 @@ function Login() {
                           onChange={(e) => setEmail(e.target.value)}
                           required
                           autoComplete="email"
+                          autoFocus
                         />
                       </div>
                     </div>
 
                     <div className="mb-4">
-                      <label htmlFor="password" className="form-label">
+                      <label htmlFor="login-password" className="form-label">
                         Password
                       </label>
                       <div className="input-group">
                         <span className="input-group-text">
-                          <i className="bi bi-lock"></i>
+                          <i className="bi bi-lock" aria-hidden="true"></i>
                         </span>
                         <input
-                          id="password"
+                          id="login-password"
                           type={showPassword ? "text" : "password"}
                           className="form-control"
                           placeholder="Enter your password"
@@ -477,24 +572,45 @@ function Login() {
                           onChange={(e) => setPassword(e.target.value)}
                           required
                           autoComplete="current-password"
+                          aria-describedby={
+                            password ? "password-strength" : undefined
+                          }
                         />
                         <button
                           type="button"
                           className="input-group-text password-toggle"
                           onClick={() => setShowPassword(!showPassword)}
                           tabIndex={-1}
+                          aria-label={
+                            showPassword ? "Hide password" : "Show password"
+                          }
                         >
                           <i
                             className={`bi ${
                               showPassword ? "bi-eye-slash" : "bi-eye"
                             }`}
+                            aria-hidden="true"
                           ></i>
                         </button>
                       </div>
 
+                      {/* Strength meter with ARIA */}
                       {password && (
-                        <div className="mt-2">
-                          <div className="progress" style={{ height: "6px" }}>
+                        <div
+                          className="mt-2"
+                          id="password-strength"
+                          role="status"
+                          aria-live="polite"
+                        >
+                          <div
+                            className="progress"
+                            style={{ height: "6px" }}
+                            role="progressbar"
+                            aria-valuenow={strength}
+                            aria-valuemin={0}
+                            aria-valuemax={5}
+                            aria-label={`Password strength: ${strengthLabels[strength]}`}
+                          >
                             <div
                               className="progress-bar"
                               style={{
@@ -513,7 +629,7 @@ function Login() {
                       )}
                     </div>
 
-                    {/* ✅ TURNSTILE WIDGET */}
+                    {/* Turnstile Widget */}
                     {turnstileEnabled && (
                       <div className="mb-3 d-flex justify-content-center">
                         <div ref={turnstileRef}></div>
@@ -529,15 +645,23 @@ function Login() {
                     >
                       {loading ? (
                         <>
-                          <span className="spinner-border spinner-border-sm me-2"></span>
+                          <span
+                            className="spinner-border spinner-border-sm me-2"
+                            aria-hidden="true"
+                          ></span>
                           Logging in...
                         </>
                       ) : (
                         <>
-                          <i className="bi bi-box-arrow-in-right me-2"></i>Login
+                          <i
+                            className="bi bi-box-arrow-in-right me-2"
+                            aria-hidden="true"
+                          ></i>
+                          Login
                         </>
                       )}
                     </button>
+
                     <div className="d-flex justify-content-end mb-3">
                       <button
                         type="button"
@@ -555,11 +679,15 @@ function Login() {
                     onClick={() => {
                       const baseUrl =
                         import.meta.env.VITE_API_URL || "http://localhost:5000";
-                      // ✅ Always include /api prefix
                       window.location.href = `${baseUrl}/auth/google`;
                     }}
                   >
-                    <svg width="20" height="20" viewBox="0 0 48 48">
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 48 48"
+                      aria-hidden="true"
+                    >
                       <path
                         fill="#EA4335"
                         d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
@@ -595,234 +723,168 @@ function Login() {
             </div>
           </div>
         </div>
-      </div>
+      </main>
 
-      {/* Reactivation Modal */}
+      {/* ═══════════════════════════════════════════
+          REACTIVATION MODAL (Accessible)
+          ═══════════════════════════════════════════ */}
       {reactivateData && (
         <div
-          className="modal fade show d-block reactivation-modal-overlay"
-          tabIndex="-1"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            background: "rgba(15, 15, 15, 0.5)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
+          className="reactivation-overlay"
+          onClick={() => {
+            if (!reactivateLoading) {
+              setReactivateData(null);
+              setPendingCredentials(null);
+              setReactivateError("");
+            }
           }}
         >
           <div
-            className="modal-dialog modal-dialog-centered"
-            style={{ maxWidth: 480, width: "100%", margin: 0 }}
+            ref={modalRef}
+            className="reactivation-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reactivate-title"
+            aria-describedby="reactivate-desc"
+            onClick={(e) => e.stopPropagation()}
           >
-            <div
-              className="modal-content border-0 shadow-lg"
-              style={{ borderRadius: "1.25rem", overflow: "hidden" }}
-            >
-              <div
-                style={{
-                  background:
-                    "linear-gradient(135deg, #f59e0b 0%, #ea580c 50%, #dc2626 100%)",
-                  padding: "2rem 1.5rem 1.5rem",
-                  color: "white",
-                  textAlign: "center",
-                }}
-              >
-                <div
-                  style={{
-                    width: 64,
-                    height: 64,
-                    borderRadius: "50%",
-                    background: "rgba(255, 255, 255, 0.2)",
-                    backdropFilter: "blur(10px)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    margin: "0 auto 1rem",
-                    border: "2px solid rgba(255, 255, 255, 0.3)",
-                  }}
-                >
-                  <i
-                    className="bi bi-hourglass-split"
-                    style={{ fontSize: "2rem" }}
-                  ></i>
+            {/* Header */}
+            <div className="reactivation-header">
+              <div className="reactivation-icon-circle">
+                <i className="bi bi-hourglass-split" aria-hidden="true"></i>
+              </div>
+              <h4 id="reactivate-title" className="fw-bold mb-2">
+                Account Deactivated
+              </h4>
+              <p id="reactivate-desc" className="mb-0 small">
+                Your account is currently in the grace period
+              </p>
+            </div>
+
+            {/* Body */}
+            <div className="reactivation-body">
+              <div className="reactivation-countdown-card">
+                <div className="reactivation-countdown-icon">
+                  <i className="bi bi-calendar-x-fill" aria-hidden="true"></i>
                 </div>
-                <h4 className="fw-bold mb-2">Account Deactivated</h4>
-                <p className="mb-0 small" style={{ opacity: 0.95 }}>
-                  Your account is currently in the grace period
-                </p>
+                <div>
+                  <div className="small text-muted mb-1">
+                    Permanently deleted in
+                  </div>
+                  <div className="reactivation-days">
+                    {reactivateData.daysRemaining}{" "}
+                    {reactivateData.daysRemaining === 1 ? "day" : "days"}
+                  </div>
+                </div>
               </div>
 
-              <div className="modal-body p-4" style={{ background: "white" }}>
+              <p className="text-muted mb-3">
+                Your profile is currently{" "}
+                <strong>hidden from other users</strong>. All your data is
+                safely preserved and can be restored instantly.
+              </p>
+
+              {reactivateData?.attemptsRemaining != null && (
                 <div
-                  className="d-flex align-items-center gap-3 p-3 rounded-3 mb-3"
-                  style={{
-                    background:
-                      "linear-gradient(135deg, #fef3c7 0%, #fef9c3 100%)",
-                    border: "1px solid #fbbf24",
-                  }}
+                  className={`reactivation-attempts ${
+                    reactivateData.attemptsRemaining <= 1 ? "critical" : ""
+                  }`}
                 >
-                  <div
-                    style={{
-                      width: 48,
-                      height: 48,
-                      borderRadius: 12,
-                      background: "white",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                      boxShadow: "0 2px 8px rgba(251, 191, 36, 0.2)",
-                    }}
-                  >
-                    <i
-                      className="bi bi-calendar-x-fill"
-                      style={{ fontSize: "1.5rem", color: "#d97706" }}
-                    ></i>
-                  </div>
-                  <div className="flex-grow-1">
-                    <div className="small text-muted mb-1">
-                      Permanently deleted in
-                    </div>
-                    <div
-                      className="fw-bold"
-                      style={{ fontSize: "1.5rem", color: "#92400e" }}
+                  <i
+                    className={`bi ${
+                      reactivateData.attemptsRemaining <= 1
+                        ? "bi-exclamation-triangle-fill text-danger"
+                        : "bi-shield-check text-primary"
+                    }`}
+                    aria-hidden="true"
+                  ></i>
+                  <span className="text-muted">
+                    <strong
+                      style={{
+                        color:
+                          reactivateData.attemptsRemaining <= 1
+                            ? "#dc2626"
+                            : "inherit",
+                      }}
                     >
-                      {reactivateData.daysRemaining}{" "}
-                      {reactivateData.daysRemaining === 1 ? "day" : "days"}
-                    </div>
-                  </div>
+                      {reactivateData.attemptsRemaining}
+                    </strong>{" "}
+                    reactivation{" "}
+                    {reactivateData.attemptsRemaining === 1
+                      ? "attempt"
+                      : "attempts"}{" "}
+                    remaining
+                  </span>
                 </div>
+              )}
 
-                <p className="text-muted mb-3">
-                  Your profile is currently{" "}
-                  <strong>hidden from other users</strong>. All your data is
-                  safely preserved and can be restored instantly.
-                </p>
+              <div className="reactivation-warning-box">
+                <i
+                  className="bi bi-exclamation-triangle-fill mt-1"
+                  aria-hidden="true"
+                ></i>
+                <div>
+                  If you don't reactivate within{" "}
+                  <strong>{reactivateData.daysRemaining} days</strong>, your
+                  account and all data will be permanently deleted and cannot be
+                  recovered.
+                </div>
+              </div>
+            </div>
 
-                {reactivateData?.attemptsRemaining != null && (
-                  <div
-                    className="d-flex align-items-center gap-2 p-2 rounded-3 mb-3"
-                    style={{
-                      background:
-                        reactivateData.attemptsRemaining <= 1
-                          ? "#fef2f2"
-                          : "#f3f4f6",
-                      fontSize: "0.875rem",
-                      border:
-                        reactivateData.attemptsRemaining <= 1
-                          ? "1px solid #fecaca"
-                          : "1px solid transparent",
-                    }}
-                  >
+            {/* Footer */}
+            <div className="reactivation-footer">
+              <button
+                ref={activateBtnRef}
+                type="button"
+                className="btn btn-success w-100 d-flex align-items-center justify-content-center gap-2 py-3 reactivation-activate-btn"
+                onClick={handleReactivate}
+                disabled={reactivateLoading}
+              >
+                {reactivateLoading ? (
+                  <>
+                    <span
+                      className="spinner-border spinner-border-sm"
+                      aria-hidden="true"
+                    ></span>
+                    Reactivating...
+                  </>
+                ) : (
+                  <>
                     <i
-                      className={`bi ${
-                        reactivateData.attemptsRemaining <= 1
-                          ? "bi-exclamation-triangle-fill text-danger"
-                          : "bi-shield-check text-primary"
-                      }`}
+                      className="bi bi-arrow-counterclockwise"
+                      aria-hidden="true"
                     ></i>
-                    <span className="text-muted">
-                      <strong
-                        style={{
-                          color:
-                            reactivateData.attemptsRemaining <= 1
-                              ? "#dc2626"
-                              : "inherit",
-                        }}
-                      >
-                        {reactivateData.attemptsRemaining}
-                      </strong>{" "}
-                      reactivation{" "}
-                      {reactivateData.attemptsRemaining === 1
-                        ? "attempt"
-                        : "attempts"}{" "}
-                      remaining
-                    </span>
-                  </div>
+                    Activate My Account
+                  </>
                 )}
+              </button>
 
+              {reactivateError && (
                 <div
-                  className="d-flex align-items-start gap-2 p-3 rounded-3"
-                  style={{
-                    background: "#fef2f2",
-                    border: "1px solid #fecaca",
-                    fontSize: "0.875rem",
-                  }}
+                  className="alert alert-danger py-2 mb-2 small"
+                  role="alert"
                 >
                   <i
-                    className="bi bi-exclamation-triangle-fill mt-1"
-                    style={{ color: "#dc2626" }}
+                    className="bi bi-exclamation-circle me-2"
+                    aria-hidden="true"
                   ></i>
-                  <div style={{ color: "#991b1b" }}>
-                    If you don't reactivate within{" "}
-                    <strong>{reactivateData.daysRemaining} days</strong>, your
-                    account and all data will be permanently deleted and cannot
-                    be recovered.
-                  </div>
+                  {reactivateError}
                 </div>
-              </div>
+              )}
 
-              <div
-                className="modal-footer border-0 flex-column gap-2 p-4 pt-2"
-                style={{ background: "white" }}
+              <button
+                type="button"
+                className="btn btn-link text-muted text-decoration-none w-100 py-2"
+                onClick={() => {
+                  setReactivateData(null);
+                  setPendingCredentials(null);
+                  setReactivateError("");
+                }}
+                disabled={reactivateLoading}
               >
-                <button
-                  type="button"
-                  className="btn btn-primary w-100 d-flex align-items-center justify-content-center gap-2 py-3"
-                  onClick={handleReactivate}
-                  disabled={reactivateLoading}
-                  style={{
-                    borderRadius: "0.75rem",
-                    fontSize: "1.05rem",
-                    fontWeight: 600,
-                    background:
-                      "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                    border: "none",
-                    boxShadow: "0 4px 12px rgba(16, 185, 129, 0.3)",
-                  }}
-                >
-                  {reactivateLoading ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm"></span>
-                      Reactivating...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-arrow-counterclockwise"></i>Activate
-                      My Account
-                    </>
-                  )}
-                </button>
-
-                {reactivateError && (
-                  <div
-                    className="alert alert-danger py-2 mb-2"
-                    style={{ fontSize: "0.875rem" }}
-                  >
-                    <i className="bi bi-exclamation-circle me-2"></i>
-                    {reactivateError}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  className="btn btn-link text-muted text-decoration-none w-100 py-2"
-                  onClick={() => {
-                    setReactivateData(null);
-                    setPendingCredentials(null);
-                    setReactivateError("");
-                  }}
-                  disabled={reactivateLoading}
-                  style={{ fontSize: "0.9rem" }}
-                >
-                  Keep account deactivated
-                </button>
-              </div>
+                Keep account deactivated
+              </button>
             </div>
           </div>
         </div>

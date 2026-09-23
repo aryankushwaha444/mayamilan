@@ -1232,3 +1232,23 @@
     padding: 10px 16px;
   }
 }
+
+
+.feed-item-wrapper {
+  padding-bottom: 16px;
+}
+
+.feed-footer-loading,
+.feed-footer-end {
+  padding: 30px;
+  text-align: center;
+}
+
+.feed-footer-end {
+  color: var(--bs-secondary-color, #94a3b8);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 4rem 1rem;
+}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { forgotPassword, resetPassword } from "../services/authService";
 import { useAlert } from "../context/AlertContext";
@@ -10,7 +10,7 @@ function ForgotPassword() {
 
   const [step, setStep] = useState(1);
   const [email, setEmail] = useState("");
-  const [formLoadTime] = useState(Date.now()); // ✅ Captured for honeypot timing
+  const [formLoadTime] = useState(Date.now());
   const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -21,6 +21,26 @@ function ForgotPassword() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [resendTimer, setResendTimer] = useState(0);
+
+  const timerRef = useRef(null);
+  const otpInputRef = useRef(null);
+  const newPasswordRef = useRef(null);
+
+  // ✅ Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  // ✅ Focus management when switching steps
+  useEffect(() => {
+    if (step === 2) {
+      setTimeout(() => otpInputRef.current?.focus(), 100);
+    } else if (step === 3) {
+      setTimeout(() => newPasswordRef.current?.focus(), 100);
+    }
+  }, [step]);
 
   const getStrength = (pwd) => {
     let score = 0;
@@ -50,6 +70,21 @@ function ForgotPassword() {
     "#16a34a",
   ];
 
+  const startResendTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setResendTimer(60);
+    timerRef.current = setInterval(() => {
+      setResendTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
   const handleSendOTP = async () => {
     setError("");
     setSuccess("");
@@ -63,26 +98,14 @@ function ForgotPassword() {
     setLoading(true);
 
     try {
-      // ✅ FIXED: Send honeypot + timing header
       await forgotPassword(email, "", formLoadTime);
       setSuccess("OTP sent to your email!");
       toast.success("OTP sent to your email! 📧", "Check your inbox", 5000);
       setStep(2);
-      setResendTimer(60);
-
-      const interval = setInterval(() => {
-        setResendTimer((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+      startResendTimer();
     } catch (err) {
       const data = err.response?.data || {};
 
-      // ✅ Handle IP block
       if (data.ipBlocked) {
         setError(data.message);
         toast.error(data.message, "🚫 Access Denied", 8000);
@@ -90,7 +113,6 @@ function ForgotPassword() {
         return;
       }
 
-      // ✅ Handle signature errors
       if (data.signatureExpired) {
         window.location.reload();
         return;
@@ -108,7 +130,7 @@ function ForgotPassword() {
     setError("");
     setSuccess("");
     if (otp.length !== 6) {
-      setError("Please enter the 6-digit code");
+      setError("Please enter the complete 6-digit code");
       toast.warning("Please enter the complete 6-digit code");
       return;
     }
@@ -134,18 +156,14 @@ function ForgotPassword() {
     setLoading(true);
 
     try {
-      // ✅ FIXED: Send honeypot + timing header
       await resetPassword(email, otp, newPassword, "", formLoadTime);
-      setSuccess("Password reset successfully! Redirecting to login...");
       toast.success("Password reset successfully! 🔐", "All done", 4000);
 
-      setTimeout(() => {
-        navigate("/login");
-      }, 2000);
+      // ✅ Navigate immediately with state instead of setTimeout
+      navigate("/login", { state: { passwordReset: true }, replace: true });
     } catch (err) {
       const data = err.response?.data || {};
 
-      // ✅ FIXED: Proper error handling with defined variables
       if (data.ipBlocked) {
         setError(data.message);
         toast.error(data.message, "🚫 Access Denied", 8000);
@@ -153,7 +171,6 @@ function ForgotPassword() {
         return;
       }
 
-      // ✅ NEW: Handle breached password
       if (data.passwordBreached) {
         setError(data.message);
         toast.error(
@@ -167,7 +184,6 @@ function ForgotPassword() {
         return;
       }
 
-      // ✅ Handle signature errors
       if (data.signatureExpired || data.signatureInvalid) {
         toast.warning(
           "Request expired. Please refresh and try again.",
@@ -186,15 +202,22 @@ function ForgotPassword() {
     }
   };
 
+  // ✅ Confirm password match state
+  const confirmMatch =
+    confirmPassword.length > 0 && confirmPassword === newPassword;
+  const confirmMismatch =
+    confirmPassword.length > 0 && confirmPassword !== newPassword;
+
   return (
-    <div className="auth-page">
+    <main className="auth-page" id="main-content">
       <div className="container py-5">
         <div className="row justify-content-center">
           <div className="col-12 col-md-8 col-lg-6 col-xl-5">
             <div className="card auth-card border-0 shadow-lg">
               <div className="card-body p-4 p-md-5">
+                {/* Header */}
                 <div className="text-center mb-4">
-                  <div className="auth-logo mb-3">
+                  <div className="auth-logo mb-3" aria-hidden="true">
                     <i className="bi bi-shield-lock"></i>
                   </div>
                   <h2 className="fw-bold mb-2">Reset Password</h2>
@@ -205,64 +228,93 @@ function ForgotPassword() {
                   </p>
                 </div>
 
-                <div className="register-progress mb-4">
+                {/* Progress Steps with ARIA */}
+                <div
+                  className="register-progress mb-4"
+                  role="progressbar"
+                  aria-valuenow={step}
+                  aria-valuemin={1}
+                  aria-valuemax={3}
+                  aria-label={`Step ${step} of 3: ${
+                    ["Email", "Verify", "Reset"][step - 1]
+                  }`}
+                >
                   {[1, 2, 3].map((number) => (
                     <div
                       key={number}
                       className={`progress-step ${
                         step >= number ? "active" : ""
                       }`}
+                      aria-current={step === number ? "step" : undefined}
                     >
                       <div className="step-circle">
                         {step > number ? (
-                          <i className="bi bi-check"></i>
+                          <i className="bi bi-check" aria-hidden="true"></i>
                         ) : (
                           number
                         )}
                       </div>
-                      <span>
-                        {number === 1 && "Email"}
-                        {number === 2 && "Verify"}
-                        {number === 3 && "Reset"}
-                      </span>
+                      <span>{["Email", "Verify", "Reset"][number - 1]}</span>
                     </div>
                   ))}
                 </div>
 
+                {/* Alerts */}
                 {error && (
-                  <div className="alert alert-danger d-flex align-items-center">
-                    <i className="bi bi-exclamation-circle me-2"></i>
+                  <div
+                    className="alert alert-danger d-flex align-items-center"
+                    role="alert"
+                  >
+                    <i
+                      className="bi bi-exclamation-circle me-2"
+                      aria-hidden="true"
+                    ></i>
                     <span>{error}</span>
                   </div>
                 )}
 
                 {success && (
-                  <div className="alert alert-success d-flex align-items-center">
-                    <i className="bi bi-check-circle me-2"></i>
+                  <div
+                    className="alert alert-success d-flex align-items-center"
+                    role="status"
+                  >
+                    <i
+                      className="bi bi-check-circle me-2"
+                      aria-hidden="true"
+                    ></i>
                     <span>{success}</span>
                   </div>
                 )}
 
-                <form onSubmit={(e) => e.preventDefault()}>
+                <form onSubmit={(e) => e.preventDefault()} noValidate>
+                  {/* STEP 1: Email */}
                   {step === 1 && (
-                    <div>
+                    <div role="group" aria-labelledby="step1-desc">
+                      <span id="step1-desc" className="visually-hidden">
+                        Enter your email address
+                      </span>
                       <HoneypotField />
                       <div className="mb-4">
-                        <label htmlFor="email" className="form-label">
+                        <label htmlFor="reset-email" className="form-label">
                           Email Address
                         </label>
                         <div className="input-group">
                           <span className="input-group-text">
-                            <i className="bi bi-envelope"></i>
+                            <i
+                              className="bi bi-envelope"
+                              aria-hidden="true"
+                            ></i>
                           </span>
                           <input
-                            id="email"
+                            id="reset-email"
                             type="email"
                             className="form-control"
                             placeholder="you@example.com"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             autoComplete="email"
+                            required
+                            autoFocus
                           />
                         </div>
                       </div>
@@ -275,12 +327,18 @@ function ForgotPassword() {
                       >
                         {loading ? (
                           <>
-                            <span className="spinner-border spinner-border-sm me-2"></span>
+                            <span
+                              className="spinner-border spinner-border-sm me-2"
+                              aria-hidden="true"
+                            ></span>
                             Sending OTP...
                           </>
                         ) : (
                           <>
-                            <i className="bi bi-send me-2"></i>
+                            <i
+                              className="bi bi-send me-2"
+                              aria-hidden="true"
+                            ></i>
                             Send Reset Code
                           </>
                         )}
@@ -292,15 +350,22 @@ function ForgotPassword() {
                           className="btn btn-link p-0 text-decoration-none"
                           onClick={() => navigate("/login")}
                         >
-                          <i className="bi bi-arrow-left me-2"></i>
+                          <i
+                            className="bi bi-arrow-left me-2"
+                            aria-hidden="true"
+                          ></i>
                           Back to Login
                         </button>
                       </div>
                     </div>
                   )}
 
+                  {/* STEP 2: OTP */}
                   {step === 2 && (
-                    <div>
+                    <div role="group" aria-labelledby="step2-desc">
+                      <span id="step2-desc" className="visually-hidden">
+                        Enter verification code
+                      </span>
                       <p className="text-muted text-center mb-4">
                         We've sent a 6-digit code to <strong>{email}</strong>
                       </p>
@@ -310,17 +375,28 @@ function ForgotPassword() {
                           Enter OTP
                         </label>
                         <input
+                          ref={otpInputRef}
                           type="text"
                           id="otp"
-                          className="form-control form-control-lg text-center"
+                          className="form-control form-control-lg text-center otp-input"
                           placeholder="000000"
-                          maxLength="6"
+                          maxLength={6}
+                          inputMode="numeric"
+                          pattern="[0-9]{6}"
                           value={otp}
                           onChange={(e) =>
                             setOtp(e.target.value.replace(/\D/g, ""))
                           }
-                          style={{ fontSize: "24px", letterSpacing: "8px" }}
+                          autoComplete="one-time-code"
+                          required
+                          aria-describedby="otp-hint"
                         />
+                        <small
+                          id="otp-hint"
+                          className="text-muted d-block text-center mt-1"
+                        >
+                          6-digit numeric code
+                        </small>
                       </div>
 
                       <button
@@ -329,7 +405,10 @@ function ForgotPassword() {
                         onClick={handleContinueToPassword}
                         disabled={otp.length !== 6}
                       >
-                        <i className="bi bi-arrow-right me-2"></i>
+                        <i
+                          className="bi bi-arrow-right me-2"
+                          aria-hidden="true"
+                        ></i>
                         Continue
                       </button>
 
@@ -337,7 +416,9 @@ function ForgotPassword() {
                         <small className="text-muted">
                           Didn't receive the code?{" "}
                           {resendTimer > 0 ? (
-                            <span>Resend in {resendTimer}s</span>
+                            <span aria-live="polite">
+                              Resend in {resendTimer}s
+                            </span>
                           ) : (
                             <button
                               type="button"
@@ -357,49 +438,84 @@ function ForgotPassword() {
                           className="btn btn-link p-0 text-decoration-none"
                           onClick={() => setStep(1)}
                         >
-                          <i className="bi bi-arrow-left me-2"></i>
+                          <i
+                            className="bi bi-arrow-left me-2"
+                            aria-hidden="true"
+                          ></i>
                           Change Email
                         </button>
                       </div>
                     </div>
                   )}
 
+                  {/* STEP 3: New Password */}
                   {step === 3 && (
-                    <div>
+                    <div role="group" aria-labelledby="step3-desc">
+                      <span id="step3-desc" className="visually-hidden">
+                        Create new password
+                      </span>
+
+                      {/* New Password */}
                       <div className="mb-3">
                         <label htmlFor="newPassword" className="form-label">
                           New Password
                         </label>
                         <div className="input-group">
                           <span className="input-group-text">
-                            <i className="bi bi-lock"></i>
+                            <i className="bi bi-lock" aria-hidden="true"></i>
                           </span>
                           <input
+                            ref={newPasswordRef}
                             type={showPassword ? "text" : "password"}
                             id="newPassword"
                             className="form-control"
                             placeholder="At least 8 characters"
                             value={newPassword}
                             onChange={(e) => setNewPassword(e.target.value)}
+                            minLength={8}
                             autoComplete="new-password"
+                            required
+                            aria-describedby={
+                              newPassword ? "password-strength" : undefined
+                            }
                           />
                           <button
                             type="button"
                             className="input-group-text password-toggle"
                             onClick={() => setShowPassword(!showPassword)}
                             tabIndex={-1}
+                            aria-label={
+                              showPassword
+                                ? "Hide new password"
+                                : "Show new password"
+                            }
                           >
                             <i
                               className={`bi ${
                                 showPassword ? "bi-eye-slash" : "bi-eye"
                               }`}
+                              aria-hidden="true"
                             ></i>
                           </button>
                         </div>
 
+                        {/* Strength Meter with ARIA */}
                         {newPassword && (
-                          <div className="mt-2">
-                            <div className="progress" style={{ height: "6px" }}>
+                          <div
+                            className="mt-2"
+                            id="password-strength"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            <div
+                              className="progress"
+                              style={{ height: "6px" }}
+                              role="progressbar"
+                              aria-valuenow={strength}
+                              aria-valuemin={0}
+                              aria-valuemax={5}
+                              aria-label={`Password strength: ${strengthLabels[strength]}`}
+                            >
                               <div
                                 className="progress-bar"
                                 style={{
@@ -418,28 +534,34 @@ function ForgotPassword() {
                         )}
                       </div>
 
+                      {/* Confirm Password */}
                       <div className="mb-4">
                         <label htmlFor="confirmPassword" className="form-label">
                           Confirm Password
                         </label>
                         <div className="input-group">
                           <span className="input-group-text">
-                            <i className="bi bi-shield-lock"></i>
+                            <i
+                              className="bi bi-shield-lock"
+                              aria-hidden="true"
+                            ></i>
                           </span>
                           <input
                             type={showConfirmPassword ? "text" : "password"}
                             id="confirmPassword"
                             className={`form-control ${
-                              confirmPassword
-                                ? confirmPassword === newPassword
-                                  ? "is-valid"
-                                  : "is-invalid"
+                              confirmMatch
+                                ? "is-valid"
+                                : confirmMismatch
+                                ? "is-invalid"
                                 : ""
                             }`}
                             placeholder="Confirm your password"
                             value={confirmPassword}
                             onChange={(e) => setConfirmPassword(e.target.value)}
                             autoComplete="new-password"
+                            required
+                            aria-describedby="confirm-feedback"
                           />
                           <button
                             type="button"
@@ -448,14 +570,39 @@ function ForgotPassword() {
                               setShowConfirmPassword(!showConfirmPassword)
                             }
                             tabIndex={-1}
+                            aria-label={
+                              showConfirmPassword
+                                ? "Hide confirm password"
+                                : "Show confirm password"
+                            }
                           >
                             <i
                               className={`bi ${
                                 showConfirmPassword ? "bi-eye-slash" : "bi-eye"
                               }`}
+                              aria-hidden="true"
                             ></i>
                           </button>
                         </div>
+
+                        {/* Match/Mismatch Feedback for Screen Readers */}
+                        {confirmMismatch && (
+                          <div
+                            id="confirm-feedback"
+                            className="invalid-feedback d-block"
+                            role="alert"
+                          >
+                            Passwords do not match
+                          </div>
+                        )}
+                        {confirmMatch && (
+                          <div
+                            id="confirm-feedback"
+                            className="valid-feedback d-block"
+                          >
+                            Passwords match
+                          </div>
+                        )}
                       </div>
 
                       <button
@@ -470,12 +617,18 @@ function ForgotPassword() {
                       >
                         {loading ? (
                           <>
-                            <span className="spinner-border spinner-border-sm me-2"></span>
+                            <span
+                              className="spinner-border spinner-border-sm me-2"
+                              aria-hidden="true"
+                            ></span>
                             Resetting...
                           </>
                         ) : (
                           <>
-                            <i className="bi bi-check-circle me-2"></i>
+                            <i
+                              className="bi bi-check-circle me-2"
+                              aria-hidden="true"
+                            ></i>
                             Reset Password
                           </>
                         )}
@@ -488,7 +641,7 @@ function ForgotPassword() {
           </div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

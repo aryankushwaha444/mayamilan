@@ -360,3 +360,165 @@
     gap: 22px;
   }
 }
+
+
+/* OTP Input Styling */
+.otp-input {
+  letter-spacing: 6px;
+  font-family: monospace;
+}
+
+/* Reactivation Modal */
+.reactivation-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 15, 15, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.reactivation-modal {
+  max-width: 480px;
+  width: 100%;
+  border-radius: 1.25rem;
+  overflow: hidden;
+  background: white;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.25);
+}
+
+.reactivation-header {
+  background: linear-gradient(135deg, #f59e0b 0%, #ea580c 50%, #dc2626 100%);
+  padding: 2rem 1.5rem 1.5rem;
+  color: white;
+  text-align: center;
+}
+
+.reactivation-icon-circle {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  margin: 0 auto 1rem;
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  font-size: 2rem;
+}
+
+.reactivation-body {
+  padding: 1.5rem;
+}
+
+.reactivation-countdown-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  margin-bottom: 0.75rem;
+  background: linear-gradient(135deg, #fef3c7 0%, #fef9c3 100%);
+  border: 1px solid #fbbf24;
+}
+
+.reactivation-countdown-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 1.5rem;
+  color: #d97706;
+  box-shadow: 0 2px 8px rgba(251, 191, 36, 0.2);
+}
+
+.reactivation-days {
+  font-weight: 700;
+  font-size: 1.5rem;
+  color: #92400e;
+}
+
+.reactivation-attempts {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+  background: #f3f4f6;
+  border: 1px solid transparent;
+}
+
+.reactivation-attempts.critical {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.reactivation-warning-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  font-size: 0.875rem;
+  color: #991b1b;
+}
+
+.reactivation-footer {
+  padding: 1rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.reactivation-activate-btn {
+  border-radius: 0.75rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border: none;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+/* Dark mode support for reactivation modal */
+@media (prefers-color-scheme: dark) {
+  .reactivation-modal {
+    background: #1f2937;
+  }
+  .reactivation-body,
+  .reactivation-footer {
+    background: #1f2937;
+    color: #e5e7eb;
+  }
+  .reactivation-countdown-card {
+    background: linear-gradient(135deg, rgba(254, 243, 199, 0.1), rgba(254, 249, 195, 0.1));
+    border-color: rgba(251, 191, 36, 0.3);
+  }
+  .reactivation-countdown-icon {
+    background: #374151;
+  }
+  .reactivation-attempts {
+    background: #374151;
+  }
+  .reactivation-attempts.critical {
+    background: rgba(254, 242, 242, 0.1);
+    border-color: rgba(254, 202, 202, 0.3);
+  }
+  .reactivation-warning-box {
+    background: rgba(254, 242, 242, 0.1);
+    border-color: rgba(254, 202, 202, 0.3);
+    color: #fca5a5;
+  }
+}

@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useRef, memo, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
 import ConfirmDialog from "./ConfirmDialog.jsx";
@@ -7,7 +7,8 @@ import { avatarImg } from "../utils/cloudinary";
 import { useSocket } from "../hooks/useSocket.js";
 import { useAuth } from "../hooks/useAuth";
 
-const EMOJIS = ["❤️", "😂", "", "👍", "🔥", "", "😢", ""];
+const EMOJIS = ["❤️", "😂", "", "👍", "", "", "", ""];
+const MAX_REPLY_DEPTH = 3; // Prevent infinite nesting
 
 function CommentItem({
   comment,
@@ -15,6 +16,7 @@ function CommentItem({
   canDelete = false,
   isPostOwner = false,
   isReply = false,
+  depth = 0,
   onDeleted,
 }) {
   const toast = useAlert();
@@ -30,6 +32,15 @@ function CommentItem({
   const [repliesCount, setRepliesCount] = useState(comment.repliesCount || 0);
   const [loadingReplies, setLoadingReplies] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [reacting, setReacting] = useState(false); // ✅ Loading state for reactions
+
+  const pickerRef = useRef(null);
+  const repliesRef = useRef(replies); // ✅ Ref to avoid stale closure
+
+  // Keep ref in sync
+  useEffect(() => {
+    repliesRef.current = replies;
+  }, [replies]);
 
   const authorId = comment.author?._id || "deleted";
   const authorName = comment.author?.name || "Deleted User";
@@ -48,37 +59,40 @@ function CommentItem({
     return `${Math.floor(diff / 86400)}d`;
   };
 
-  // ✅ REAL-TIME: reply deletions AND new replies
+  // ✅ FIXED: Use ref to avoid stale closure, remove replies from deps
   useEffect(() => {
-    if (!socket || isReply) return; // only top-level items manage a reply list
+    if (!socket || isReply) return;
 
     const handleCommentDeleted = ({ postId: pid, removedIds }) => {
       if (pid !== postId) return;
-      const removedHere = replies.filter((r) => removedIds.includes(r._id));
+      const currentReplies = repliesRef.current;
+      const removedHere = currentReplies.filter((r) =>
+        removedIds.includes(r._id)
+      );
       if (removedHere.length === 0) return;
+
       setReplies((prev) => prev.filter((r) => !removedIds.includes(r._id)));
       setRepliesCount((c) => Math.max(0, c - removedHere.length));
     };
 
     const handleNewReply = ({ postId: pid, parentCommentId, reply }) => {
       if (pid !== postId || parentCommentId !== comment._id) return;
-      // duplicate guard (author already added it locally)
-      if (replies.some((r) => r._id === reply._id)) return;
+
+      const currentReplies = repliesRef.current;
+      if (currentReplies.some((r) => r._id === reply._id)) return;
 
       const enrichedReply = {
         ...reply,
         isMine: String(reply.author?._id) === String(user?._id),
       };
 
-      // append only if the reply list was already loaded/open
-      if (replies.length > 0) {
+      if (currentReplies.length > 0) {
         setReplies((prev) =>
           prev.some((r) => r._id === reply._id)
             ? prev
             : [...prev, enrichedReply]
         );
       }
-      // always update the "View N replies" counter
       setRepliesCount((c) => c + 1);
     };
 
@@ -89,18 +103,75 @@ function CommentItem({
       socket.off("comment_deleted", handleCommentDeleted);
       socket.off("new_reply", handleNewReply);
     };
-  }, [socket, postId, replies, isReply, comment._id, user]);
+  }, [socket, postId, isReply, comment._id, user]); // ✅ Removed 'replies' from deps
 
-  const handleReact = async (emoji) => {
-    setShowPicker(false);
-    try {
-      const res = await postService.toggleReaction(comment._id, emoji);
-      setReactions(res.reactionSummary);
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to react");
-    }
-  };
+  // ✅ Close picker on outside click
+  useEffect(() => {
+    if (!showPicker) return;
+
+    const handleClickOutside = (event) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target)) {
+        setShowPicker(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showPicker]);
+
+  // ✅ Optimistic UI for reactions
+  const handleReact = useCallback(
+    async (emoji) => {
+      setShowPicker(false);
+
+      // Optimistic update
+      const existingReaction = reactions.find((r) => r.emoji === emoji);
+      let optimisticReactions;
+
+      if (existingReaction) {
+        if (existingReaction.reactedByMe) {
+          // Remove reaction
+          optimisticReactions =
+            existingReaction.count === 1
+              ? reactions.filter((r) => r.emoji !== emoji)
+              : reactions.map((r) =>
+                  r.emoji === emoji
+                    ? { ...r, count: r.count - 1, reactedByMe: false }
+                    : r
+                );
+        } else {
+          // Add reaction
+          optimisticReactions = reactions.map((r) =>
+            r.emoji === emoji
+              ? { ...r, count: r.count + 1, reactedByMe: true }
+              : r
+          );
+        }
+      } else {
+        // New reaction type
+        optimisticReactions = [
+          ...reactions,
+          { emoji, count: 1, reactedByMe: true },
+        ];
+      }
+
+      setReactions(optimisticReactions);
+      setReacting(true);
+
+      try {
+        const res = await postService.toggleReaction(comment._id, emoji);
+        setReactions(res.reactionSummary);
+      } catch (err) {
+        console.error(err);
+        toast.error("Failed to react");
+        // Revert on error
+        setReactions(reactions);
+      } finally {
+        setReacting(false);
+      }
+    },
+    [reactions, comment._id, toast]
+  );
 
   const toggleReplies = async () => {
     if (!showReplies && replies.length === 0) {
@@ -109,7 +180,6 @@ function CommentItem({
         const res = await postService.getReplies(postId, comment._id);
         const list =
           res?.replies || res?.data?.replies || (Array.isArray(res) ? res : []);
-        console.log("🔁 Replies fetched:", list.length, list);
         setReplies(list);
       } catch (err) {
         console.error("❌ getReplies failed:", err?.response?.status, err);
@@ -123,20 +193,36 @@ function CommentItem({
   const submitReply = async (e) => {
     e.preventDefault();
     if (!replyText.trim()) return;
+
+    // ✅ Optimistic UI for reply
+    const tempId = `temp-${Date.now()}`;
+    const optimisticReply = {
+      _id: tempId,
+      content: replyText,
+      author: user,
+      createdAt: new Date().toISOString(),
+      isMine: true,
+      repliesCount: 0,
+    };
+
+    setReplies((prev) => [...prev, optimisticReply]);
+    setRepliesCount((c) => c + 1);
+    setShowReplies(true);
+    setReplyText("");
+    setReplying(false);
+
     try {
       const res = await postService.addReply(postId, comment._id, replyText);
-      // ✅ duplicate guard: socket may have added it first
-      setReplies((prev) =>
-        prev.some((r) => r._id === res.reply._id) ? prev : [...prev, res.reply]
-      );
+      // Replace optimistic with real
+      setReplies((prev) => prev.map((r) => (r._id === tempId ? res.reply : r)));
       setRepliesCount(res.repliesCount);
-      setShowReplies(true);
-      setReplyText("");
-      setReplying(false);
       toast.success("Reply added 💬");
     } catch (err) {
       console.error(err);
       toast.error("Failed to post reply");
+      // Revert on error
+      setReplies((prev) => prev.filter((r) => r._id !== tempId));
+      setRepliesCount((c) => Math.max(0, c - 1));
     }
   };
 
@@ -151,73 +237,107 @@ function CommentItem({
     }
   };
 
+  // ✅ Prevent infinite nesting
+  const canReply = !isReply && depth < MAX_REPLY_DEPTH;
+
   return (
-    <div className={`comment-item ${isReply ? "comment-reply" : ""}`}>
-      <Link to={`/users/${authorId}`}>
-        <img src={avatar} alt="" className="comment-avatar" />
+    <div
+      className={`comment-item ${isReply ? "comment-reply" : ""}`}
+      style={{ marginLeft: isReply ? `${Math.min(depth * 20, 60)}px` : 0 }}
+      role="article"
+      aria-label={`Comment by ${authorName}`}
+    >
+      <Link
+        to={`/users/${authorId}`}
+        aria-label={`View ${authorName}'s profile`}
+      >
+        <img
+          src={avatar}
+          alt={`${authorName}'s avatar`}
+          className="comment-avatar"
+        />
       </Link>
 
       <div className="comment-thread">
         <div className="comment-bubble">
           <div className="comment-header">
             <strong>{authorName}</strong>
-            <span>{formatTime(comment.createdAt)}</span>
+            <time
+              dateTime={comment.createdAt}
+              aria-label={`Posted ${formatTime(comment.createdAt)}`}
+            >
+              {formatTime(comment.createdAt)}
+            </time>
           </div>
           <p>{comment.content}</p>
 
           {reactions.length > 0 && (
-            <div className="reaction-chips">
+            <div className="reaction-chips" role="group" aria-label="Reactions">
               {reactions.map((r) => (
                 <button
                   key={r.emoji}
                   className={`reaction-chip ${r.reactedByMe ? "mine" : ""}`}
                   onClick={() => handleReact(r.emoji)}
+                  disabled={reacting}
                   title={r.reactedByMe ? "Remove your reaction" : "React"}
+                  aria-label={`${r.emoji} reaction, ${r.count} ${
+                    r.count === 1 ? "person" : "people"
+                  }${r.reactedByMe ? ", you reacted" : ""}`}
+                  aria-pressed={r.reactedByMe}
                 >
-                  <span>{r.emoji}</span>
-                  {r.count}
+                  <span aria-hidden="true">{r.emoji}</span>
+                  <span>{r.count}</span>
                 </button>
               ))}
             </div>
           )}
         </div>
 
-        <div className="comment-actions">
-          <div className="comment-react-wrap">
+        <div
+          className="comment-actions"
+          role="toolbar"
+          aria-label="Comment actions"
+        >
+          <div className="comment-react-wrap" ref={pickerRef}>
             <button
               className="comment-action-link"
               onClick={() => setShowPicker(!showPicker)}
+              aria-expanded={showPicker}
+              aria-haspopup="true"
+              disabled={reacting}
             >
-              <i className="bi bi-emoji-smile"></i> React
+              <i className="bi bi-emoji-smile" aria-hidden="true"></i> React
             </button>
 
             {showPicker && (
-              <>
-                <div
-                  className="picker-backdrop"
-                  onClick={() => setShowPicker(false)}
-                />
-                <div className="emoji-picker">
-                  {EMOJIS.map((e) => (
-                    <button
-                      key={e}
-                      type="button"
-                      onClick={() => handleReact(e)}
-                    >
-                      {e}
-                    </button>
-                  ))}
-                </div>
-              </>
+              <div
+                className="emoji-picker"
+                role="listbox"
+                aria-label="Choose a reaction"
+              >
+                {EMOJIS.map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    onClick={() => handleReact(e)}
+                    role="option"
+                    aria-label={`React with ${e}`}
+                    disabled={reacting}
+                  >
+                    {e}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 
-          {!isReply && (
+          {canReply && (
             <button
               className="comment-action-link"
               onClick={() => setReplying(!replying)}
+              aria-expanded={replying}
             >
-              <i className="bi bi-reply"></i> Reply
+              <i className="bi bi-reply" aria-hidden="true"></i> Reply
             </button>
           )}
 
@@ -225,6 +345,8 @@ function CommentItem({
             <button
               className="comment-action-link replies-toggle"
               onClick={toggleReplies}
+              aria-expanded={showReplies}
+              disabled={loadingReplies}
             >
               {loadingReplies
                 ? "Loading…"
@@ -240,31 +362,44 @@ function CommentItem({
             <button
               className="comment-action-link"
               onClick={() => setShowDeleteConfirm(true)}
+              aria-label="Delete comment"
             >
-              <i className="bi bi-trash"></i> Delete
+              <i className="bi bi-trash" aria-hidden="true"></i> Delete
             </button>
           )}
         </div>
 
         {replying && (
-          <form onSubmit={submitReply} className="reply-form">
+          <form
+            onSubmit={submitReply}
+            className="reply-form"
+            role="form"
+            aria-label="Reply form"
+          >
             <input
               autoFocus
               value={replyText}
               onChange={(e) => setReplyText(e.target.value)}
               placeholder={`Reply to ${authorName}…`}
               maxLength={500}
+              aria-label="Reply text"
             />
-            <button type="submit" disabled={!replyText.trim()}>
-              <i className="bi bi-send-fill"></i>
+            <button
+              type="submit"
+              disabled={!replyText.trim()}
+              aria-label="Send reply"
+            >
+              <i className="bi bi-send-fill" aria-hidden="true"></i>
             </button>
           </form>
         )}
 
         {showReplies && (
-          <div className="replies-list">
+          <div className="replies-list" role="region" aria-label="Replies">
             {loadingReplies ? (
-              <p className="no-comments">Loading replies…</p>
+              <p className="no-comments" aria-live="polite">
+                Loading replies…
+              </p>
             ) : replies.length > 0 ? (
               replies.map((r) => (
                 <CommentItem
@@ -272,6 +407,7 @@ function CommentItem({
                   comment={r}
                   postId={postId}
                   isReply
+                  depth={depth + 1}
                   canDelete={r.isMine || isPostOwner}
                   isPostOwner={isPostOwner}
                   onDeleted={(id) => {

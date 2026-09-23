@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { useSocket } from "./useSocket";
 import { useAuth } from "../context/AuthContext.jsx";
 import {
@@ -8,27 +8,49 @@ import {
   showSystemNotification,
 } from "../utils/alerts";
 
+// ✅ Rate limiter: prevent sound/vibrate spam
+const createRateLimiter = (minIntervalMs = 1000) => {
+  let lastTriggered = 0;
+  return () => {
+    const now = Date.now();
+    if (now - lastTriggered >= minIntervalMs) {
+      lastTriggered = now;
+      return true;
+    }
+    return false;
+  };
+};
+
 export function useRealtimeAlerts() {
   const { socket } = useSocket();
   const { user } = useAuth();
   const audioUnlockedRef = useRef(false);
+  const userIdRef = useRef(user?._id?.toString());
+  const processedEventsRef = useRef(new Set());
 
-  /* 👇 Unlock AudioContext on first user gesture (Safari/Brave require this) */
+  // ✅ Keep userId ref in sync without triggering effect re-runs
+  useEffect(() => {
+    userIdRef.current = user?._id?.toString();
+  }, [user?._id]);
+
+  // ✅ Rate limiters for different alert types
+  const messageRateLimit = useRef(createRateLimiter(800));
+  const generalRateLimit = useRef(createRateLimiter(1500));
+
+  /* 👇 Unlock AudioContext on first user gesture */
   useEffect(() => {
     if (audioUnlockedRef.current) return;
 
     const unlock = () => {
-      unlockAudio(); // 👈 Call the exported function (uses shared context)
+      unlockAudio();
       audioUnlockedRef.current = true;
     };
 
-    // Safari iOS fires pointerdown/touchstart; desktop fires click/keydown
     window.addEventListener("pointerdown", unlock, { once: true });
     window.addEventListener("touchstart", unlock, { once: true });
     window.addEventListener("click", unlock, { once: true });
     window.addEventListener("keydown", unlock, { once: true });
 
-    // Safari suspends AudioContext when tab is hidden — re-resume on return
     const onVisible = () => {
       if (document.visibilityState === "visible") {
         unlockAudio();
@@ -45,70 +67,84 @@ export function useRealtimeAlerts() {
     };
   }, []);
 
+  // ✅ Clean up processed events set periodically to prevent memory growth
   useEffect(() => {
-    if (!socket || !user?._id) return;
+    const interval = setInterval(() => {
+      processedEventsRef.current.clear();
+    }, 60000); // Clear every 60 seconds
+    return () => clearInterval(interval);
+  }, []);
 
-    const myId = user._id.toString();
+  // ✅ Stable alert trigger helper
+  const triggerAlert = useCallback(
+    ({ title, body, tag, url, vibrationPattern, isMessage }) => {
+      // Deduplication: skip if we already processed this event
+      if (tag && processedEventsRef.current.has(tag)) return;
+      if (tag) processedEventsRef.current.add(tag);
 
-    // Helper: safe ID comparison (handles string, ObjectId, or nested _id)
-    const sameId = (a, b) => {
-      if (!a || !b) return false;
-      const idA =
-        typeof a === "string" ? a : a?._id?.toString?.() || a?.toString?.();
-      const idB =
-        typeof b === "string" ? b : b?._id?.toString?.() || b?.toString?.();
-      return idA === idB;
-    };
+      // Rate limiting
+      const canTrigger = isMessage
+        ? messageRateLimit.current()
+        : generalRateLimit.current();
+      if (!canTrigger) return;
 
-    /* 💬 NEW MESSAGE — via conversation_updated (ALWAYS reaches receiver) */
+      // Only play sound/vibrate if tab is NOT focused (user isn't looking)
+      const isTabFocused = document.visibilityState === "visible";
+
+      if (!isTabFocused) {
+        playNotificationSound();
+        vibrate(vibrationPattern || 150);
+      }
+
+      // Always show system notification (OS handles focus-based suppression)
+      showSystemNotification({ title, body, tag, url });
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!socket || !userIdRef.current) return;
+
+    /* 💬 NEW MESSAGE via conversation_updated */
     const handleConversationUpdated = ({ conversationId, message }) => {
       if (!message) return;
 
-      // Skip my own messages (sent from another tab/device)
-      if (sameId(message.sender, myId)) return;
+      // Skip own messages (read from ref to avoid stale closure)
+      if (!userIdRef.current) return;
+      const senderId =
+        typeof message.sender === "string"
+          ? message.sender
+          : message.sender?._id?.toString?.();
+      if (senderId === userIdRef.current) return;
 
-      // Skip if currently viewing THIS chat (they see it live, sound would be annoying)
-      const currentChatId = window.location.pathname.includes("/messages")
-        ? sessionStorage.getItem("activeChatId")
-        : null;
-      if (currentChatId === conversationId) return;
+      // ✅ Skip if currently viewing THIS chat
+      const activeChatId = sessionStorage.getItem("activeChatId");
+      if (activeChatId === conversationId) return;
 
-      const body =
-        message.type === "text"
-          ? message.text
-          : message.type === "image"
-          ? "📷 Photo"
-          : message.type === "voice"
-          ? "🎤 Voice message"
-          : message.type === "heart"
-          ? "❤️ Sent love"
-          : message.type === "sticker"
-          ? "🎨 Sticker"
-          : message.type === "gif"
-          ? "🎬 GIF"
-          : message.type === "post"
-          ? "📤 Shared post"
-          : "New message";
-
-      // Play sound + vibrate
-      playNotificationSound();
-      vibrate();
-
-      // Show system notification banner
+      const bodyMap = {
+        text: message.text,
+        image: "📷 Photo",
+        voice: "🎤 Voice message",
+        heart: "❤️ Sent love",
+        sticker: "🎨 Sticker",
+        gif: "🎬 GIF",
+        post: "📤 Shared post",
+      };
+      const body = bodyMap[message.type] || "New message";
       const senderName = message.sender?.name || "New message 💬";
-      showSystemNotification({
+
+      triggerAlert({
         title: senderName,
         body,
         tag: message._id?.toString?.() || conversationId,
         url: "/messages",
+        isMessage: true,
       });
     };
 
     /* 🔔 NOTIFICATION (like, match, comment, etc.) */
     const handleNotification = (n) => {
-      playNotificationSound();
-      vibrate(150);
-      showSystemNotification({
+      triggerAlert({
         title: "Maya~Milan 💕",
         body: `${n.sender?.name || "Someone"} ${
           n.message || "sent you something"
@@ -120,21 +156,18 @@ export function useRealtimeAlerts() {
 
     /* 💕 NEW MATCH */
     const handleNewMatch = () => {
-      playNotificationSound();
-      vibrate([200, 100, 200, 100, 200]);
-      showSystemNotification({
+      triggerAlert({
         title: "It's a Match! 💕",
         body: "Someone liked you back. Start chatting!",
-        tag: "new-match",
+        tag: `new-match-${Date.now()}`,
         url: "/messages",
+        vibrationPattern: [200, 100, 200, 100, 200],
       });
     };
 
     /* 📸 NEW POST (from a match) */
     const handleNewPost = ({ postId, author, content }) => {
-      playNotificationSound();
-      vibrate(100);
-      showSystemNotification({
+      triggerAlert({
         title: `${author?.name || "Someone"} shared a new post 📸`,
         body: content || "Tap to view their post",
         tag: postId,
@@ -143,13 +176,10 @@ export function useRealtimeAlerts() {
     };
 
     /* ✨ PROFILE UPDATED (by a match) */
-    const handleProfileUpdated = ({ userId, name, photos, updatedFields }) => {
-      // Don't notify about my own updates
-      if (userId === myId) return;
+    const handleProfileUpdated = ({ userId, name }) => {
+      if (userId === userIdRef.current) return;
 
-      playNotificationSound();
-      vibrate(100);
-      showSystemNotification({
+      triggerAlert({
         title: `${name} updated their profile ✨`,
         body: "Tap to see what's new",
         tag: `profile-${userId}`,
@@ -158,10 +188,8 @@ export function useRealtimeAlerts() {
     };
 
     /* 💕 NEW MEMBER JOINED */
-    const handleNewMember = ({ userId, name, photos }) => {
-      playNotificationSound();
-      vibrate(100);
-      showSystemNotification({
+    const handleNewMember = ({ userId, name }) => {
+      triggerAlert({
         title: "New member joined 💕",
         body: `${name} just joined Maya~Milan`,
         tag: `new-member-${userId}`,
@@ -184,5 +212,5 @@ export function useRealtimeAlerts() {
       socket.off("profile_updated", handleProfileUpdated);
       socket.off("new_member", handleNewMember);
     };
-  }, [socket, user]);
+  }, [socket, triggerAlert]); // ✅ No `user` dependency — uses ref instead
 }

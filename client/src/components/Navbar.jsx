@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, memo } from "react";
 import { useSocket } from "../hooks/useSocket.js";
 import { NavLink, useNavigate } from "react-router-dom";
 import { getMatches } from "../services/matchService.js";
@@ -14,6 +14,18 @@ import {
 } from "../services/messageService.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
+// Simple inline debounce hook to prevent API flooding from rapid socket events
+const useDebounce = (callback, delay = 500) => {
+  const timeoutRef = useRef(null);
+  return useCallback(
+    (...args) => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => callback(...args), delay);
+    },
+    [callback, delay]
+  );
+};
+
 function Navbar() {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
@@ -21,11 +33,13 @@ function Navbar() {
 
   const isAdmin = user?.role === "admin";
 
+  // UI States
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
 
+  // Data States
   const [matchCount, setMatchCount] = useState(0);
   const [notificationCount, setNotificationCount] = useState(0);
   const [messageCount, setMessageCount] = useState(0);
@@ -34,10 +48,14 @@ function Navbar() {
   const [pendingReports, setPendingReports] = useState(0);
   const [pendingSuggestions, setPendingSuggestions] = useState(0);
 
+  // Loading States
+  const [chatsLoading, setChatsLoading] = useState(false);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+
+  // Refs for outside clicks
   const profileRef = useRef(null);
   const chatRef = useRef(null);
   const notificationsRef = useRef(null);
-  const loadChatDataRef = useRef(null);
   const mobileNavRef = useRef(null);
   const mobileButtonRef = useRef(null);
 
@@ -47,21 +65,27 @@ function Navbar() {
     return primary?.url || primary?.secure_url || null;
   };
 
+  // ✅ MERGED: Single effect for admin data
   useEffect(() => {
     if (!user || user.role !== "admin") return;
 
-    const load = async () => {
+    const loadAdminData = async () => {
       try {
-        const data = await getSuggestions({ status: "new" });
-        setPendingSuggestions(data.stats?.new || 0);
+        const [suggestionsData, reportsData] = await Promise.all([
+          getSuggestions({ status: "new" }),
+          getAllReports({ limit: 1 }),
+        ]);
+        setPendingSuggestions(suggestionsData.stats?.new || 0);
+        setPendingReports(reportsData.pending || 0);
       } catch (e) {
-        /* ignore */
+        console.error("Load admin data error:", e);
       }
     };
 
-    load();
+    loadAdminData();
   }, [user]);
 
+  // Outside click handler
   useEffect(() => {
     const handleOutsideClick = (event) => {
       if (profileRef.current && !profileRef.current.contains(event.target)) {
@@ -91,6 +115,7 @@ function Navbar() {
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [mobileOpen]);
 
+  // Escape key handler
   useEffect(() => {
     const handleEscape = (event) => {
       if (event.key === "Escape") {
@@ -104,6 +129,7 @@ function Navbar() {
     return () => document.removeEventListener("keydown", handleEscape);
   }, []);
 
+  // Resize handler
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth > 991) {
@@ -114,11 +140,9 @@ function Navbar() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  // Data fetching functions
   const loadMatchCount = useCallback(async () => {
-    if (!user) {
-      setMatchCount(0);
-      return;
-    }
+    if (!user) return setMatchCount(0);
     try {
       const data = await getMatches();
       setMatchCount(data.matches?.length || 0);
@@ -134,6 +158,7 @@ function Navbar() {
       setNotifications([]);
       return;
     }
+    setNotificationsLoading(true);
     try {
       const data = await getNotifications();
       setNotificationCount(data.unreadCount || 0);
@@ -141,6 +166,8 @@ function Navbar() {
     } catch (error) {
       console.error("Load notification data error:", error);
       setNotificationCount(0);
+    } finally {
+      setNotificationsLoading(false);
     }
   }, [user]);
 
@@ -150,6 +177,7 @@ function Navbar() {
       setRecentChats([]);
       return;
     }
+    setChatsLoading(true);
     try {
       const [countData, recentData] = await Promise.all([
         getUnreadMessageCount(),
@@ -160,38 +188,41 @@ function Navbar() {
     } catch (error) {
       console.error("Load chat data error:", error);
       setMessageCount(0);
+    } finally {
+      setChatsLoading(false);
     }
   }, [user]);
 
-  useEffect(() => {
-    loadChatDataRef.current = loadChatData;
-  }, [loadChatData]);
-
-  useEffect(() => {
-    const handleLocalRead = () => {
-      loadChatDataRef.current?.();
-    };
-    window.addEventListener("chat:messages-read", handleLocalRead);
-    return () =>
-      window.removeEventListener("chat:messages-read", handleLocalRead);
-  }, []);
-
+  // Initial load
   useEffect(() => {
     loadMatchCount();
     loadNotificationData();
     loadChatData();
   }, [loadMatchCount, loadNotificationData, loadChatData]);
 
+  // Local storage sync for read messages
+  useEffect(() => {
+    const handleLocalRead = () => loadChatData();
+    window.addEventListener("chat:messages-read", handleLocalRead);
+    return () =>
+      window.removeEventListener("chat:messages-read", handleLocalRead);
+  }, [loadChatData]);
+
+  // ✅ DEBOUNCED Socket Events to prevent API flooding
+  const debouncedLoadMatchCount = useDebounce(loadMatchCount, 500);
+  const debouncedLoadNotificationData = useDebounce(loadNotificationData, 500);
+  const debouncedLoadChatData = useDebounce(loadChatData, 500);
+
   useEffect(() => {
     if (!socket || !user) return;
 
-    const handleNewMatch = () => loadMatchCount();
-    const handleMatchRemoved = () => loadMatchCount();
-    const handleNewNotification = () => loadNotificationData();
-    const handleNewMessage = () => loadChatData();
-    const handleConversationUpdated = () => loadChatData();
-    const handleUnreadUpdated = () => loadChatData();
-    const handleNotificationsUpdated = () => loadNotificationData();
+    const handleNewMatch = () => debouncedLoadMatchCount();
+    const handleMatchRemoved = () => debouncedLoadMatchCount();
+    const handleNewNotification = () => debouncedLoadNotificationData();
+    const handleNewMessage = () => debouncedLoadChatData();
+    const handleConversationUpdated = () => debouncedLoadChatData();
+    const handleUnreadUpdated = () => debouncedLoadChatData();
+    const handleNotificationsUpdated = () => debouncedLoadNotificationData();
 
     socket.on("new_match", handleNewMatch);
     socket.on("match_removed", handleMatchRemoved);
@@ -210,7 +241,13 @@ function Navbar() {
       socket.off("unread_updated", handleUnreadUpdated);
       socket.off("notifications_updated", handleNotificationsUpdated);
     };
-  }, [socket, user, loadMatchCount, loadNotificationData, loadChatData]);
+  }, [
+    socket,
+    user,
+    debouncedLoadMatchCount,
+    debouncedLoadNotificationData,
+    debouncedLoadChatData,
+  ]);
 
   const handleLogout = async () => {
     try {
@@ -222,7 +259,7 @@ function Navbar() {
       setMobileOpen(false);
       setChatOpen(false);
       setNotificationsOpen(false);
-      window.location.href = "/login";
+      navigate("/login", { replace: true }); // Use navigate instead of window.location
     }
   };
 
@@ -230,17 +267,36 @@ function Navbar() {
     const opening = !notificationsOpen;
     setNotificationsOpen(opening);
     setChatOpen(false);
+    setProfileOpen(false);
 
-    if (opening && notificationCount > 0) {
-      setNotificationCount(0);
-      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
-
-      try {
-        await markAllAsRead();
-      } catch (error) {
-        console.error("Mark notifications read error:", error);
+    if (opening) {
+      if (notificationCount > 0) {
+        // Optimistic UI update
+        setNotificationCount(0);
+        setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+        try {
+          await markAllAsRead();
+        } catch (error) {
+          console.error("Mark notifications read error:", error);
+        }
       }
+      // Fetch latest when opening
+      loadNotificationData();
     }
+  };
+
+  const handleToggleChat = () => {
+    const opening = !chatOpen;
+    setChatOpen(opening);
+    setNotificationsOpen(false);
+    setProfileOpen(false);
+    if (opening) loadChatData();
+  };
+
+  const handleToggleProfile = () => {
+    setProfileOpen(!profileOpen);
+    setChatOpen(false);
+    setNotificationsOpen(false);
   };
 
   const closeMobileMenu = () => setMobileOpen(false);
@@ -254,24 +310,10 @@ function Navbar() {
 
   const profileInitial = user?.name?.charAt(0)?.toUpperCase() || "U";
 
-  useEffect(() => {
-    if (!user || user.role !== "admin") return;
-
-    const load = async () => {
-      try {
-        const data = await getAllReports({ limit: 1 });
-        setPendingReports(data.pending || 0);
-      } catch (e) {
-        /* ignore */
-      }
-    };
-
-    load();
-  }, [user]);
-
   return (
     <header className="site-navbar">
       <div className="navbar-container">
+        {/* BRAND */}
         {isAdmin ? (
           <NavLink
             to="/admin"
@@ -286,22 +328,23 @@ function Navbar() {
             </div>
           </NavLink>
         ) : (
-          <a
-            href="/discover"
+          <NavLink
+            to="/discover"
             className="navbar-brand-custom"
             onClick={closeMobileMenu}
           >
             <span className="brand-logo">
-              <img src="./images/logo.png" alt="logo" />
+              <img src="./images/logo.png" alt="Maya~Milan Logo" />
             </span>
             <div className="brand-text">
               <span className="brand-name">Maya~Milan</span>
             </div>
-          </a>
+          </NavLink>
         )}
 
         {user ? (
           <>
+            {/* MAIN NAVIGATION */}
             <nav
               ref={mobileNavRef}
               className={`navbar-navigation ${
@@ -393,6 +436,7 @@ function Navbar() {
               </NavLink>
             </nav>
 
+            {/* ACTIONS */}
             <div className="navbar-actions">
               {!isAdmin && (
                 <>
@@ -407,17 +451,18 @@ function Navbar() {
                   >
                     <i className="bi bi-house-door-fill"></i>
                   </NavLink>
+
+                  {/* CHAT DROPDOWN */}
                   <div className="navbar-chat-dropdown" ref={chatRef}>
                     <button
                       type="button"
                       className={`navbar-icon-button ${
                         chatOpen ? "active" : ""
                       }`}
-                      onClick={() => {
-                        setChatOpen(!chatOpen);
-                        setNotificationsOpen(false);
-                      }}
+                      onClick={handleToggleChat}
                       aria-label="Messages"
+                      aria-expanded={chatOpen}
+                      aria-haspopup="true"
                     >
                       <i className="bi bi-chat-dots-fill"></i>
                       {messageCount > 0 && (
@@ -426,7 +471,10 @@ function Navbar() {
                     </button>
 
                     {chatOpen && (
-                      <div className="facebook-style-dropdown chat-dropdown">
+                      <div
+                        className="facebook-style-dropdown chat-dropdown"
+                        role="menu"
+                      >
                         <div className="dropdown-header">
                           <h3>Chats</h3>
                           <NavLink
@@ -438,7 +486,11 @@ function Navbar() {
                           </NavLink>
                         </div>
 
-                        {recentChats.length === 0 ? (
+                        {chatsLoading ? (
+                          <div className="dropdown-loading">
+                            <div className="spinner-border spinner-border-sm text-primary"></div>
+                          </div>
+                        ) : recentChats.length === 0 ? (
                           <div className="dropdown-empty">
                             <p>No messages yet</p>
                           </div>
@@ -448,6 +500,7 @@ function Navbar() {
                               <button
                                 key={chat._id}
                                 className="dropdown-item chat-item"
+                                role="menuitem"
                                 onClick={() => {
                                   setChatOpen(false);
                                   navigate(
@@ -455,68 +508,24 @@ function Navbar() {
                                   );
                                 }}
                               >
-                                <div
-                                  style={{
-                                    position: "relative",
-                                    width: "52px",
-                                    height: "52px",
-                                    flexShrink: 0,
-                                    borderRadius: "50%",
-                                    overflow: "hidden",
-                                    background: "#ffffff",
-                                    border: "1px solid #f1f5f9",
-                                  }}
-                                >
+                                {/* ✅ Replaced inline styles with CSS classes */}
+                                <div className="chat-avatar-wrapper">
                                   {getAvatarUrl(chat.user?.photos) ? (
                                     <img
                                       src={avatarImg(
                                         getAvatarUrl(chat.user.photos)
                                       )}
-                                      alt={chat.user?.name}
-                                      style={{
-                                        width: "100%",
-                                        height: "100%",
-                                        objectFit: "cover",
-                                        objectPosition: "center",
-                                        display: "block",
-                                        borderRadius: "50%",
-                                        background: "#ffffff",
-                                      }}
+                                      alt=""
+                                      className="chat-avatar-img"
                                     />
                                   ) : (
-                                    <span
-                                      style={{
-                                        width: "100%",
-                                        height: "100%",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        borderRadius: "50%",
-                                        background:
-                                          "linear-gradient(135deg, #fce7f3, #ede9fe)",
-                                        color: "#db2777",
-                                        fontWeight: 700,
-                                        fontSize: "18px",
-                                      }}
-                                    >
+                                    <span className="chat-avatar-initial">
                                       {chat.user?.name?.charAt(0) || "U"}
                                     </span>
                                   )}
 
                                   {chat.user?.isOnline && (
-                                    <span
-                                      style={{
-                                        position: "absolute",
-                                        bottom: "2px",
-                                        right: "2px",
-                                        width: "12px",
-                                        height: "12px",
-                                        background: "#22c55e",
-                                        border: "2px solid white",
-                                        borderRadius: "50%",
-                                        zIndex: 1,
-                                      }}
-                                    ></span>
+                                    <span className="online-indicator-dot"></span>
                                   )}
                                 </div>
 
@@ -547,6 +556,7 @@ function Navbar() {
                     )}
                   </div>
 
+                  {/* NOTIFICATIONS DROPDOWN */}
                   <div
                     className="navbar-notifications-dropdown"
                     ref={notificationsRef}
@@ -558,6 +568,8 @@ function Navbar() {
                       }`}
                       onClick={handleToggleNotifications}
                       aria-label="Notifications"
+                      aria-expanded={notificationsOpen}
+                      aria-haspopup="true"
                     >
                       <i className="bi bi-bell-fill"></i>
                       {notificationCount > 0 && (
@@ -568,7 +580,10 @@ function Navbar() {
                     </button>
 
                     {notificationsOpen && (
-                      <div className="facebook-style-dropdown notifications-dropdown">
+                      <div
+                        className="facebook-style-dropdown notifications-dropdown"
+                        role="menu"
+                      >
                         <div className="dropdown-header">
                           <h3>Notifications</h3>
                           <NavLink
@@ -580,7 +595,11 @@ function Navbar() {
                           </NavLink>
                         </div>
 
-                        {notifications.length === 0 ? (
+                        {notificationsLoading ? (
+                          <div className="dropdown-loading">
+                            <div className="spinner-border spinner-border-sm text-primary"></div>
+                          </div>
+                        ) : notifications.length === 0 ? (
                           <div className="dropdown-empty">
                             <p>No new notifications</p>
                           </div>
@@ -592,6 +611,7 @@ function Navbar() {
                                 className={`dropdown-item notification-item ${
                                   !notification.isRead ? "unread" : ""
                                 }`}
+                                role="menuitem"
                                 onClick={() => {
                                   setNotificationsOpen(false);
                                   if (notification.sender?._id) {
@@ -607,7 +627,7 @@ function Navbar() {
                                       src={avatarImg(
                                         getAvatarUrl(notification.sender.photos)
                                       )}
-                                      alt={notification.sender?.name}
+                                      alt=""
                                       className="item-avatar-img"
                                     />
                                   ) : (
@@ -646,16 +666,19 @@ function Navbar() {
                 </>
               )}
 
+              {/* PROFILE DROPDOWN */}
               <div className="navbar-profile" ref={profileRef}>
                 <button
                   type="button"
                   className="navbar-profile-button"
-                  onClick={() => setProfileOpen((current) => !current)}
+                  onClick={handleToggleProfile}
                   aria-expanded={profileOpen}
+                  aria-haspopup="true"
+                  aria-label="Profile menu"
                 >
                   <div className="navbar-avatar">
                     {profilePhoto ? (
-                      <img src={profilePhoto} alt={user?.name || "Profile"} />
+                      <img src={profilePhoto} alt="" />
                     ) : (
                       <span>{profileInitial}</span>
                     )}
@@ -673,14 +696,11 @@ function Navbar() {
                 </button>
 
                 {profileOpen && (
-                  <div className="profile-dropdown">
+                  <div className="profile-dropdown" role="menu">
                     <div className="profile-dropdown-header">
                       <div className="profile-dropdown-avatar">
                         {profilePhoto ? (
-                          <img
-                            src={profilePhoto}
-                            alt={user?.name || "Profile"}
-                          />
+                          <img src={profilePhoto} alt="" />
                         ) : (
                           <span>{profileInitial}</span>
                         )}
@@ -694,6 +714,7 @@ function Navbar() {
                     <NavLink
                       to="/profile"
                       className="profile-dropdown-item"
+                      role="menuitem"
                       onClick={() => setProfileOpen(false)}
                     >
                       <i className="bi bi-person"></i>
@@ -702,16 +723,17 @@ function Navbar() {
                     <NavLink
                       to="/profile/edit"
                       className="profile-dropdown-item"
+                      role="menuitem"
                       onClick={() => setProfileOpen(false)}
                     >
                       <i className="bi bi-pencil-square"></i>
                       <span>Edit Profile</span>
                     </NavLink>
 
-                    {/* NEW: Settings */}
                     <NavLink
                       to="/settings"
                       className="profile-dropdown-item"
+                      role="menuitem"
                       onClick={() => setProfileOpen(false)}
                     >
                       <i className="bi bi-gear"></i>
@@ -722,6 +744,7 @@ function Navbar() {
                     <button
                       type="button"
                       className="profile-dropdown-item profile-logout"
+                      role="menuitem"
                       onClick={handleLogout}
                     >
                       <i className="bi bi-box-arrow-right"></i>
@@ -731,6 +754,7 @@ function Navbar() {
                 )}
               </div>
 
+              {/* MOBILE TOGGLE */}
               <button
                 type="button"
                 ref={mobileButtonRef}
@@ -760,4 +784,4 @@ function Navbar() {
   );
 }
 
-export default Navbar;
+export default memo(Navbar);

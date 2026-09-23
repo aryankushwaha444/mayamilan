@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { postService } from "../services/postService.js";
 import PostCard from "../components/PostCard.jsx";
@@ -16,7 +16,18 @@ function PostDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // ✅ THE MISSING PIECE — actually load the post from the API
+  // ✅ Refs for socket handlers — avoid stale closures without re-subscribing
+  const postRef = useRef(null);
+  const userRef = useRef(user);
+
+  useEffect(() => {
+    postRef.current = post;
+  }, [post]);
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  // ✅ Load post with cancellation
   useEffect(() => {
     let cancelled = false;
 
@@ -36,7 +47,6 @@ function PostDetail() {
         }
       } catch (err) {
         if (cancelled) return;
-        console.error("❌ Load post error:", err?.response?.status, err);
 
         const status = err.response?.status;
         if (status === 404) {
@@ -47,7 +57,7 @@ function PostDetail() {
           setError(err.response?.data?.message || "Failed to load post.");
         }
       } finally {
-        if (!cancelled) setLoading(false); // ✅ loading can now become false
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -57,28 +67,34 @@ function PostDetail() {
     };
   }, [postId]);
 
-  // ✅ REAL-TIME SYNC (shares + likes + comments + post deleted)
+  // ✅ Real-time sync — uses refs, only depends on socket
   useEffect(() => {
-    if (!socket || !post) return;
+    if (!socket) return;
 
-    const sameId = (pid) => pid === post._id;
+    let placeholderCounter = 0; // ✅ Unique counter instead of Date.now()
 
     const handleSharesUpdated = ({ postId: pid, sharesCount }) => {
-      if (sameId(pid))
-        setPost((prev) => (prev ? { ...prev, sharesCount } : prev));
+      const current = postRef.current;
+      if (!current || pid !== current._id) return;
+      setPost((prev) => (prev ? { ...prev, sharesCount } : prev));
     };
 
     const handleLikesUpdated = ({ postId: pid, likesCount }) => {
-      if (!sameId(pid)) return;
+      const current = postRef.current;
+      if (!current || pid !== current._id) return;
+
       setPost((prev) => {
         if (!prev) return prev;
         const arr = Array.isArray(prev.likes) ? [...prev.likes] : [];
         if (arr.length === likesCount) return { ...prev, likesCount };
 
-        const me = user?._id ? String(user._id) : null;
+        const me = userRef.current?._id ? String(userRef.current._id) : null;
+
         if (arr.length < likesCount) {
-          while (arr.length < likesCount)
-            arr.push(`sync_${arr.length}_${Date.now()}`);
+          while (arr.length < likesCount) {
+            placeholderCounter++;
+            arr.push(`sync_${placeholderCounter}`);
+          }
         } else {
           while (arr.length > likesCount) {
             let idx = arr.length - 1;
@@ -87,20 +103,22 @@ function PostDetail() {
             arr.splice(idx, 1);
           }
         }
+
         return { ...prev, likes: arr, likesCount };
       });
     };
 
     const handleCommentsUpdated = ({ postId: pid, commentsCount }) => {
-      if (sameId(pid))
-        setPost((prev) => (prev ? { ...prev, commentsCount } : prev));
+      const current = postRef.current;
+      if (!current || pid !== current._id) return;
+      setPost((prev) => (prev ? { ...prev, commentsCount } : prev));
     };
 
     const handlePostDeleted = ({ postId: pid }) => {
-      if (sameId(pid)) {
-        setPost(null);
-        setError("This post was deleted by its author.");
-      }
+      const current = postRef.current;
+      if (!current || pid !== current._id) return;
+      setPost(null);
+      setError("This post was deleted by its author.");
     };
 
     socket.on("post_shares_updated", handleSharesUpdated);
@@ -114,62 +132,137 @@ function PostDetail() {
       socket.off("post_comments_updated", handleCommentsUpdated);
       socket.off("post_deleted", handlePostDeleted);
     };
-  }, [socket, post, user]);
+  }, [socket]); // ✅ Only depends on socket — no re-subscription on post/user changes
 
+  // ✅ Safe back navigation — stays within app
+  const handleBack = () => {
+    if (
+      window.history.length > 2 &&
+      document.referrer.includes(window.location.origin)
+    ) {
+      navigate(-1);
+    } else {
+      navigate("/feed");
+    }
+  };
+
+  // ✅ Sanitize content for SEO description
+  const seoDescription = post?.content
+    ? post.content.replace(/<[^>]*>/g, "").slice(0, 160)
+    : "View this post on Maya Milan";
+
+  // ═══════════════════════════════════════
+  // LOADING STATE
+  // ═══════════════════════════════════════
   if (loading) {
     return (
-      <div className="feed-page">
-        <div className="feed-container">
-          <div className="feed-loader">
-            <div className="spinner-border text-primary"></div>
+      <>
+        <SEO title="Loading Post..." path={`/post/${postId}`} noIndex />
+        <main className="feed-page" id="main-content">
+          <div className="feed-container">
+            <div className="feed-loader" role="status">
+              <div className="spinner-border text-primary"></div>
+              <span className="visually-hidden">Loading post...</span>
+            </div>
           </div>
-        </div>
-      </div>
+        </main>
+      </>
     );
   }
 
+  // ═══════════════════════════════════════
+  // ERROR / NOT FOUND STATE
+  // ═══════════════════════════════════════
   if (error || !post) {
     return (
-      <div className="feed-page">
-        <div className="feed-container">
-          <div className="empty-state">
-            <i className="bi bi-postcard-heart"></i>
-            <p>{error || "This post doesn't exist anymore."}</p>
-            <button
-              className="btn btn-primary mt-3"
-              onClick={() => navigate("/feed")}
-            >
-              Back to Feed
-            </button>
+      <>
+        <SEO title="Post Not Found" path={`/post/${postId}`} noIndex />
+        <main className="feed-page" id="main-content">
+          <div className="feed-container">
+            <div className="empty-state" role="alert">
+              <i
+                className="bi bi-postcard-heart fs-1 text-muted mb-3"
+                aria-hidden="true"
+              ></i>
+              <h2 className="h5 fw-bold">Post Unavailable</h2>
+              <p className="text-muted">
+                {error || "This post doesn't exist anymore."}
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary mt-3"
+                onClick={handleBack}
+              >
+                <i className="bi bi-arrow-left me-2" aria-hidden="true"></i>
+                Back to Feed
+              </button>
+            </div>
           </div>
-        </div>
-      </div>
+        </main>
+      </>
     );
   }
 
+  // ═══════════════════════════════════════
+  // MAIN VIEW
+  // ═══════════════════════════════════════
   return (
     <>
       <SEO
-        title={`Post by ${post.author?.name}`}
-        description={post.content?.slice(0, 140)}
+        title={`Post by ${post.author?.name || "Unknown"} — Maya Milan`}
+        description={seoDescription}
         path={`/post/${post._id}`}
+        type="article"
+        schema={{
+          "@context": "https://schema.org",
+          "@type": "SocialMediaPosting",
+          headline: seoDescription,
+          datePublished: post.createdAt,
+          dateModified: post.updatedAt || post.createdAt,
+          author: {
+            "@type": "Person",
+            name: post.author?.name || "Unknown",
+          },
+          interactionStatistic: [
+            {
+              "@type": "InteractionCounter",
+              interactionType: "LikeAction",
+              userInteractionCount: post.likesCount || post.likes?.length || 0,
+            },
+            {
+              "@type": "InteractionCounter",
+              interactionType: "CommentAction",
+              userInteractionCount: post.commentsCount || 0,
+            },
+            {
+              "@type": "InteractionCounter",
+              interactionType: "ShareAction",
+              userInteractionCount: post.sharesCount || 0,
+            },
+          ],
+        }}
       />
 
-      <div className="feed-page">
+      <main className="feed-page" id="main-content">
         <div className="feed-container">
-          <button className="post-detail-back" onClick={() => navigate(-1)}>
-            <i className="bi bi-arrow-left"></i> Back
+          <button
+            type="button"
+            className="post-detail-back"
+            onClick={handleBack}
+            aria-label="Go back"
+          >
+            <i className="bi bi-arrow-left" aria-hidden="true"></i> Back
           </button>
 
           <PostCard
             post={post}
             onUpdate={(updated) => {
-              if (updated === null) navigate("/feed"); // deleted
+              if (updated === null) navigate("/feed");
               else setPost(updated);
             }}
           />
         </div>
-      </div>
+      </main>
     </>
   );
 }

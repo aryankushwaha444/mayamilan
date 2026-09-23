@@ -40,6 +40,22 @@ const stories = [
   },
 ];
 
+// ✅ Structured data for testimonials + organization
+const testimonialSchema = {
+  "@context": "https://schema.org",
+  "@type": "CollectionPage",
+  name: "Success Stories — Real Couples Who Met on Maya Milan",
+  description:
+    "Real love stories from real members who met, matched and fell in love on Maya Milan.",
+  url: "https://mayamilan.vercel.app/success-stories",
+  review: stories.map((s) => ({
+    "@type": "Review",
+    author: { "@type": "Person", name: s.names },
+    reviewBody: s.quote,
+    description: s.story,
+  })),
+};
+
 function SuccessStories() {
   return (
     <>
@@ -48,47 +64,68 @@ function SuccessStories() {
         description="Real love stories from real members: how couples in Kathmandu, Pokhara and beyond met, matched and fell in love on Maya Milan."
         keywords="dating success stories, couples who met online, maya milan success, online dating love stories"
         path="/success-stories"
+        type="article"
+        schema={testimonialSchema}
       />
 
-      <div className="content-page">
-        <section className="content-hero">
+      <main className="content-page" id="main-content">
+        {/* HERO */}
+        <section className="content-hero" aria-labelledby="stories-heading">
           <div className="container">
-            <h1>Success Stories</h1>
+            <h1 id="stories-heading">Success Stories</h1>
             <p className="content-lead">
               Every match is a maybe. These are the maybes that became forever.
             </p>
           </div>
         </section>
 
-        <section className="content-section">
+        {/* STORIES GRID */}
+        <section
+          className="content-section"
+          aria-labelledby="stories-grid-heading"
+        >
           <div className="container">
+            <h2 id="stories-grid-heading" className="visually-hidden">
+              Love Stories
+            </h2>
             <div className="stories-grid">
               {stories.map((s) => (
                 <article className="story-card" key={s.names}>
-                  <div className="story-quote">"{s.quote}"</div>
+                  <blockquote className="story-quote">
+                    <p>"{s.quote}"</p>
+                  </blockquote>
                   <p className="story-text">{s.story}</p>
-                  <div className="story-meta">
-                    <strong>{s.names}</strong>
+                  <footer className="story-meta">
+                    <cite>
+                      <strong>{s.names}</strong>
+                    </cite>
                     <span>
                       {s.city} • {s.matched}
                     </span>
-                  </div>
+                  </footer>
                 </article>
               ))}
             </div>
           </div>
         </section>
 
-        <section className="content-cta">
-          <div className="container">
-            <h2>Your story could be next</h2>
-            <p>It starts with one verified profile and one honest message.</p>
-            <Link to="/register" className="btn btn-primary btn-lg">
+        {/* CTA */}
+        <section className="content-cta" aria-labelledby="cta-heading">
+          <div className="container text-center">
+            <h2 id="cta-heading">Your story could be next</h2>
+            <p className="mx-auto" style={{ maxWidth: "540px" }}>
+              It starts with one verified profile and one honest message.
+            </p>
+            <Link
+              to="/register"
+              className="btn btn-primary btn-lg px-5"
+              aria-label="Create your free account and start your love story"
+            >
               Start Your Story
             </Link>
           </div>
         </section>
-      </div>
+      </main>
     </>
   );
 }

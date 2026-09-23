@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"; // ✅ FIXED: Added useEffect
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { changePassword } from "../services/authService";
 import { useAlert } from "../context/AlertContext";
@@ -23,7 +23,7 @@ function ChangePassword() {
         "OAuth Account",
         5000
       );
-      navigate("/settings");
+      navigate("/settings", { replace: true });
     }
   }, [user, navigate, toast]);
 
@@ -31,7 +31,7 @@ function ChangePassword() {
     currentPassword: "",
     newPassword: "",
     confirmPassword: "",
-    website: "", // ✅ Honeypot value
+    website: "",
   });
 
   const [showCurrent, setShowCurrent] = useState(false);
@@ -51,7 +51,7 @@ function ChangePassword() {
   // PASSWORD STRENGTH METER
   const getStrength = (password) => {
     let score = 0;
-    if (password.length >= 8) score++; // ✅ FIXED: Match server requirement (8 chars)
+    if (password.length >= 8) score++;
     if (password.length >= 12) score++;
     if (/[A-Z]/.test(password)) score++;
     if (/[0-9]/.test(password)) score++;
@@ -88,7 +88,6 @@ function ChangePassword() {
       return;
     }
     if (formData.newPassword.length < 8) {
-      // ✅ FIXED: Match server requirement
       setError("New password must be at least 8 characters.");
       toast.warning("New password must be at least 8 characters");
       return;
@@ -102,34 +101,32 @@ function ChangePassword() {
     try {
       setSaving(true);
 
-      // ✅ FIXED: Send honeypot + timing header
       await changePassword(
         {
           currentPassword: formData.currentPassword,
           newPassword: formData.newPassword,
-          website: formData.website, // ✅ Honeypot value
+          website: formData.website,
         },
-        formLoadTime // ✅ Form load time for timing check
+        formLoadTime
       );
 
       setSuccess(true);
       toast.success("Password changed successfully! 🔐", "Success", 3000);
 
-      setTimeout(() => {
-        navigate("/profile");
-      }, 1500);
+      // ✅ Navigate immediately with state instead of setTimeout
+      navigate("/profile", { state: { passwordChanged: true }, replace: true });
     } catch (err) {
       const data = err.response?.data || {};
 
-      // ✅ Handle OAuth user trying to change password
+      // Handle OAuth user trying to change password
       if (data.oauthUser) {
         setError(data.message);
         toast.warning(data.message, "OAuth Account", 5000);
-        setTimeout(() => navigate("/settings"), 2000);
+        setTimeout(() => navigate("/settings", { replace: true }), 2000);
         return;
       }
 
-      // ✅ Handle IP block
+      // Handle IP block
       if (data.ipBlocked) {
         setError(data.message);
         toast.error(data.message, "🚫 Access Denied", 8000);
@@ -137,7 +134,7 @@ function ChangePassword() {
         return;
       }
 
-      // ✅ Handle signature errors (tampering detection)
+      // Handle signature errors (tampering detection)
       if (data.signatureExpired || data.signatureInvalid) {
         toast.warning(
           "Request expired or invalid. Please refresh and try again.",
@@ -148,7 +145,7 @@ function ChangePassword() {
         return;
       }
 
-      // ✅ Handle breached password
+      // Handle breached password
       if (data.passwordBreached) {
         setError(data.message);
         toast.error(
@@ -165,7 +162,7 @@ function ChangePassword() {
         return;
       }
 
-      // ✅ Handle wrong current password
+      // Handle wrong current password
       if (err.response?.status === 401) {
         setError("Current password is incorrect.");
         toast.error("Current password is incorrect", "Error", 5000);
@@ -180,8 +177,16 @@ function ChangePassword() {
     }
   };
 
+  // ✅ Confirm password match state for accessibility
+  const confirmMatch =
+    formData.confirmPassword.length > 0 &&
+    formData.confirmPassword === formData.newPassword;
+  const confirmMismatch =
+    formData.confirmPassword.length > 0 &&
+    formData.confirmPassword !== formData.newPassword;
+
   return (
-    <div className="auth-page">
+    <main className="auth-page" id="main-content">
       <div className="container py-5">
         <div className="row justify-content-center">
           <div className="col-12 col-md-8 col-lg-6 col-xl-5">
@@ -194,15 +199,24 @@ function ChangePassword() {
 
                 {/* Alerts */}
                 {error && (
-                  <div className="alert alert-danger">
-                    <i className="bi bi-exclamation-circle me-2"></i>
+                  <div className="alert alert-danger" role="alert">
+                    <i
+                      className="bi bi-exclamation-circle me-2"
+                      aria-hidden="true"
+                    ></i>
                     {error}
                   </div>
                 )}
 
                 {success && (
-                  <div className="alert alert-success d-flex align-items-center">
-                    <i className="bi bi-check-circle-fill me-2"></i>
+                  <div
+                    className="alert alert-success d-flex align-items-center"
+                    role="status"
+                  >
+                    <i
+                      className="bi bi-check-circle-fill me-2"
+                      aria-hidden="true"
+                    ></i>
                     <div>
                       <strong>Password changed successfully!</strong>
                       <small className="d-block">
@@ -212,8 +226,8 @@ function ChangePassword() {
                   </div>
                 )}
 
-                <form onSubmit={handleSubmit}>
-                  {/* ✅ Honeypot field */}
+                <form onSubmit={handleSubmit} noValidate>
+                  {/* Honeypot field */}
                   <HoneypotField />
 
                   {/* Current Password */}
@@ -223,7 +237,7 @@ function ChangePassword() {
                     </label>
                     <div className="input-group">
                       <span className="input-group-text">
-                        <i className="bi bi-key"></i>
+                        <i className="bi bi-key" aria-hidden="true"></i>
                       </span>
                       <input
                         id="currentPassword"
@@ -235,17 +249,24 @@ function ChangePassword() {
                         placeholder="Enter current password"
                         disabled={saving || success}
                         autoComplete="current-password"
+                        required
                       />
                       <button
                         type="button"
                         className="input-group-text password-toggle"
                         onClick={() => setShowCurrent(!showCurrent)}
                         tabIndex={-1}
+                        aria-label={
+                          showCurrent
+                            ? "Hide current password"
+                            : "Show current password"
+                        }
                       >
                         <i
                           className={`bi ${
                             showCurrent ? "bi-eye-slash" : "bi-eye"
                           }`}
+                          aria-hidden="true"
                         ></i>
                       </button>
                     </div>
@@ -258,7 +279,7 @@ function ChangePassword() {
                     </label>
                     <div className="input-group">
                       <span className="input-group-text">
-                        <i className="bi bi-lock"></i>
+                        <i className="bi bi-lock" aria-hidden="true"></i>
                       </span>
                       <input
                         id="newPassword"
@@ -268,27 +289,49 @@ function ChangePassword() {
                         value={formData.newPassword}
                         onChange={handleChange}
                         placeholder="At least 8 characters"
+                        minLength={8}
                         disabled={saving || success}
                         autoComplete="new-password"
+                        required
+                        aria-describedby={
+                          formData.newPassword ? "password-strength" : undefined
+                        }
                       />
                       <button
                         type="button"
                         className="input-group-text password-toggle"
                         onClick={() => setShowNew(!showNew)}
                         tabIndex={-1}
+                        aria-label={
+                          showNew ? "Hide new password" : "Show new password"
+                        }
                       >
                         <i
                           className={`bi ${
                             showNew ? "bi-eye-slash" : "bi-eye"
                           }`}
+                          aria-hidden="true"
                         ></i>
                       </button>
                     </div>
 
-                    {/* Strength meter */}
+                    {/* Strength meter with ARIA */}
                     {formData.newPassword && (
-                      <div className="mt-2">
-                        <div className="progress" style={{ height: "6px" }}>
+                      <div
+                        className="mt-2"
+                        id="password-strength"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <div
+                          className="progress"
+                          style={{ height: "6px" }}
+                          role="progressbar"
+                          aria-valuenow={strength}
+                          aria-valuemin={0}
+                          aria-valuemax={5}
+                          aria-label={`Password strength: ${strengthLabels[strength]}`}
+                        >
                           <div
                             className="progress-bar"
                             style={{
@@ -314,17 +357,17 @@ function ChangePassword() {
                     </label>
                     <div className="input-group">
                       <span className="input-group-text">
-                        <i className="bi bi-lock-fill"></i>
+                        <i className="bi bi-lock-fill" aria-hidden="true"></i>
                       </span>
                       <input
                         id="confirmPassword"
                         type={showConfirm ? "text" : "password"}
                         name="confirmPassword"
                         className={`form-control ${
-                          formData.confirmPassword
-                            ? formData.confirmPassword === formData.newPassword
-                              ? "is-valid"
-                              : "is-invalid"
+                          confirmMatch
+                            ? "is-valid"
+                            : confirmMismatch
+                            ? "is-invalid"
                             : ""
                         }`}
                         value={formData.confirmPassword}
@@ -332,20 +375,47 @@ function ChangePassword() {
                         placeholder="Re-enter new password"
                         disabled={saving || success}
                         autoComplete="new-password"
+                        required
+                        aria-describedby="confirm-feedback"
                       />
                       <button
                         type="button"
                         className="input-group-text password-toggle"
                         onClick={() => setShowConfirm(!showConfirm)}
                         tabIndex={-1}
+                        aria-label={
+                          showConfirm
+                            ? "Hide confirm password"
+                            : "Show confirm password"
+                        }
                       >
                         <i
                           className={`bi ${
                             showConfirm ? "bi-eye-slash" : "bi-eye"
                           }`}
+                          aria-hidden="true"
                         ></i>
                       </button>
                     </div>
+
+                    {/* ✅ Screen reader accessible match/mismatch feedback */}
+                    {confirmMismatch && (
+                      <div
+                        id="confirm-feedback"
+                        className="invalid-feedback d-block"
+                        role="alert"
+                      >
+                        Passwords do not match
+                      </div>
+                    )}
+                    {confirmMatch && (
+                      <div
+                        id="confirm-feedback"
+                        className="valid-feedback d-block"
+                      >
+                        Passwords match
+                      </div>
+                    )}
                   </div>
 
                   {/* Buttons */}
@@ -353,7 +423,7 @@ function ChangePassword() {
                     <button
                       type="button"
                       className="btn btn-outline-secondary flex-fill"
-                      onClick={() => navigate("/settings")} // ✅ Navigate to settings, not profile
+                      onClick={() => navigate("/settings")}
                       disabled={saving || success}
                     >
                       Cancel
@@ -365,17 +435,26 @@ function ChangePassword() {
                     >
                       {saving ? (
                         <>
-                          <span className="spinner-border spinner-border-sm me-2"></span>
+                          <span
+                            className="spinner-border spinner-border-sm me-2"
+                            aria-hidden="true"
+                          ></span>
                           Updating...
                         </>
                       ) : success ? (
                         <>
-                          <i className="bi bi-check-lg me-2"></i>
+                          <i
+                            className="bi bi-check-lg me-2"
+                            aria-hidden="true"
+                          ></i>
                           Changed!
                         </>
                       ) : (
                         <>
-                          <i className="bi bi-shield-check me-2"></i>
+                          <i
+                            className="bi bi-shield-check me-2"
+                            aria-hidden="true"
+                          ></i>
                           Update Password
                         </>
                       )}
@@ -387,7 +466,7 @@ function ChangePassword() {
           </div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

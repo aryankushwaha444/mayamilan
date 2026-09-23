@@ -11,6 +11,7 @@ import timeout from "connect-timeout"; // ✅ ADD: npm install connect-timeout
 import morgan from "morgan"; // ✅ ADD: npm install morgan
 import { v4 as uuidv4 } from "uuid"; // ✅ ADD: npm install uuid
 import * as Sentry from "@sentry/node";
+import sitemapRoutes from "./routes/sitemap.js";
 
 // Import all routes
 import userRoutes from "./routes/user.routes.js";
@@ -272,6 +273,8 @@ app.get("/api/health", async (req, res) => {
     });
   }
 });
+
+app.use("/api", sitemapRoutes);
 
 // Apply per-user rate limiter to all /api routes
 app.use("/api", generalApiLimiter);

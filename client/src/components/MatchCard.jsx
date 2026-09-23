@@ -1,4 +1,4 @@
-import { useState, memo } from "react"; // 👈 ADD memo to import
+import { useState, memo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 import { cardImg } from "../utils/cloudinary";
@@ -7,85 +7,78 @@ function MatchCard({ match, onUnmatch }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [imageError, setImageError] = useState(false);
 
   const user = match?.user;
 
-  if (!user) return null;
-
-  const getPhotoUrl = (photos) => {
-    if (!Array.isArray(photos) || photos.length === 0) {
-      return null;
-    }
+  // ✅ Simplified photo URL extraction
+  const getPhotoUrl = useCallback((photos) => {
+    if (!Array.isArray(photos) || photos.length === 0) return null;
 
     const firstPhoto = photos[0];
 
+    // Handle string URLs
     if (typeof firstPhoto === "string") {
-      if (
-        firstPhoto.startsWith("http://") ||
-        firstPhoto.startsWith("https://")
-      ) {
-        return firstPhoto;
-      }
+      if (firstPhoto.startsWith("http")) return firstPhoto;
 
+      // Relative path - prepend API base
       const apiBaseUrl =
         import.meta.env.VITE_API_URL || "http://localhost:5000";
-
       return `${apiBaseUrl.replace(/\/$/, "")}/${firstPhoto.replace(
         /^\//,
         ""
       )}`;
     }
 
-    if (typeof firstPhoto === "object") {
+    // Handle object with url property
+    if (typeof firstPhoto === "object" && firstPhoto !== null) {
       return firstPhoto.url || firstPhoto.secure_url || firstPhoto.path || null;
     }
 
     return null;
-  };
+  }, []);
 
-  const photo = cardImg(getPhotoUrl(user.photos));
+  const photoUrl = getPhotoUrl(user?.photos);
+  const photo = photoUrl ? cardImg(photoUrl) : null;
 
-  const calculateAge = (dateOfBirth) => {
+  // ✅ Robust age calculation with edge case handling
+  const calculateAge = useCallback((dateOfBirth) => {
     if (!dateOfBirth) return null;
 
     const birthDate = new Date(dateOfBirth);
-
-    if (Number.isNaN(birthDate.getTime())) {
-      return null;
-    }
+    if (Number.isNaN(birthDate.getTime())) return null;
 
     const today = new Date();
-
     let age = today.getFullYear() - birthDate.getFullYear();
-
-    const monthDifference = today.getMonth() - birthDate.getMonth();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
 
     if (
-      monthDifference < 0 ||
-      (monthDifference === 0 && today.getDate() < birthDate.getDate())
+      monthDiff < 0 ||
+      (monthDiff === 0 && today.getDate() < birthDate.getDate())
     ) {
       age--;
     }
 
-    return age >= 0 ? age : null;
-  };
+    // ✅ Prevent negative or unrealistic ages
+    return age >= 0 && age <= 120 ? age : null;
+  }, []);
 
-  const age = calculateAge(user.dateOfBirth);
+  const age = calculateAge(user?.dateOfBirth);
 
   const location =
-    typeof user.location === "object"
+    typeof user?.location === "object"
       ? [user.location?.city, user.location?.country].filter(Boolean).join(", ")
-      : user.location || "";
+      : user?.location || "";
 
-  const handleViewProfile = () => {
+  const handleViewProfile = useCallback(() => {
     navigate(`/users/${user._id}`);
-  };
+  }, [navigate, user._id]);
 
-  const handleChat = () => {
+  const handleChat = useCallback(() => {
     navigate(`/messages?matchId=${match._id}`);
-  };
+  }, [navigate, match._id]);
 
-  const handleUnmatch = async () => {
+  const handleUnmatch = useCallback(async () => {
     try {
       setLoading(true);
       await onUnmatch(match._id);
@@ -94,67 +87,130 @@ function MatchCard({ match, onUnmatch }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [onUnmatch, match._id]);
+
+  // ✅ Keyboard handler for card actions
+  const handleKeyDown = useCallback((e, action) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      action();
+    }
+  }, []);
+
+  if (!user) return null;
 
   return (
-    <article className="match-card">
+    <article
+      className="match-card"
+      role="region"
+      aria-label={`Match with ${user.name || "Unknown User"}`}
+    >
       <div className="match-card-image-wrapper">
-        {photo ? (
+        {!imageError && photo ? (
           <img
             src={photo}
-            alt={user.name || "Matched user"}
+            alt={`${user.name || "Matched user"}'s profile photo`}
             className="match-card-image"
             loading="lazy"
             decoding="async"
-            onError={(event) => {
-              console.error("Failed to load profile image:", photo);
-              event.currentTarget.style.display = "none";
-              event.currentTarget.parentElement
-                .querySelector(".match-card-placeholder")
-                ?.classList.remove("hidden");
-            }}
+            onError={() => setImageError(true)}
           />
-        ) : null}
+        ) : (
+          <div className="match-card-placeholder" aria-hidden="true">
+            <i className="bi bi-person-fill"></i>
+          </div>
+        )}
       </div>
 
       <div className="match-card-content">
         <h3 className="match-card-name">
           {user.name || "Unknown User"}
-          {age !== null && `, ${age}`}
+          {age !== null && (
+            <span className="match-age" aria-label={`${age} years old`}>
+              , {age}
+            </span>
+          )}
         </h3>
 
-        {location && <p className="match-location">📍 {location}</p>}
+        {location && (
+          <p className="match-location" aria-label={`Location: ${location}`}>
+            <i className="bi bi-geo-alt-fill" aria-hidden="true"></i>
+            {location}
+          </p>
+        )}
 
         {user.occupation && (
-          <p className="match-occupation">💼 {user.occupation}</p>
+          <p
+            className="match-occupation"
+            aria-label={`Occupation: ${user.occupation}`}
+          >
+            <i className="bi bi-briefcase-fill" aria-hidden="true"></i>
+            {user.occupation}
+          </p>
         )}
 
         {match.matchedAt && (
-          <p className="match-date">
+          <p
+            className="match-date"
+            aria-label={`Matched on ${new Date(
+              match.matchedAt
+            ).toLocaleDateString()}`}
+          >
+            <i className="bi bi-calendar-heart" aria-hidden="true"></i>
             Matched {new Date(match.matchedAt).toLocaleDateString()}
           </p>
         )}
 
-        <div className="match-card-actions">
+        <div
+          className="match-card-actions"
+          role="group"
+          aria-label="Match actions"
+        >
           <button
             type="button"
             className="match-profile-btn"
             onClick={handleViewProfile}
+            onKeyDown={(e) => handleKeyDown(e, handleViewProfile)}
+            aria-label={`View ${user.name || "user"}'s profile`}
           >
-            👤 Profile
+            <i className="bi bi-person-fill" aria-hidden="true"></i>
+            <span>Profile</span>
           </button>
 
-          <button type="button" className="match-chat-btn" onClick={handleChat}>
-            💬 Chat
+          <button
+            type="button"
+            className="match-chat-btn"
+            onClick={handleChat}
+            onKeyDown={(e) => handleKeyDown(e, handleChat)}
+            aria-label={`Chat with ${user.name || "user"}`}
+          >
+            <i className="bi bi-chat-heart-fill" aria-hidden="true"></i>
+            <span>Chat</span>
           </button>
 
           <button
             type="button"
             className="match-unmatch-btn"
             onClick={() => setShowConfirm(true)}
+            onKeyDown={(e) => handleKeyDown(e, () => setShowConfirm(true))}
             disabled={loading}
+            aria-label={`Unmatch with ${user.name || "user"}`}
+            aria-busy={loading}
           >
-            {loading ? "Removing..." : "Unmatch"}
+            {loading ? (
+              <>
+                <span
+                  className="spinner-border spinner-border-sm"
+                  aria-hidden="true"
+                ></span>
+                <span>Removing...</span>
+              </>
+            ) : (
+              <>
+                <i className="bi bi-heartbreak-fill" aria-hidden="true"></i>
+                <span>Unmatch</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -177,5 +233,4 @@ function MatchCard({ match, onUnmatch }) {
   );
 }
 
-// 👇 EXPORT WITH MEMO - uses default shallow comparison
 export default memo(MatchCard);

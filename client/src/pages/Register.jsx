@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { sendOTP, verifyOTP } from "../services/authService";
@@ -20,7 +20,6 @@ function Register() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  // ✅ Capture form load time for timing-based honeypot
   const [formLoadTime] = useState(Date.now());
 
   const [showPassword, setShowPassword] = useState(false);
@@ -31,7 +30,10 @@ function Register() {
   const [otpLoading, setOtpLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
 
-  // ✅ Turnstile hook
+  // ✅ Refs for timer cleanup + focus management
+  const timerRef = useRef(null);
+  const otpInputRef = useRef(null);
+
   const {
     containerRef: turnstileRef,
     token: turnstileToken,
@@ -39,7 +41,7 @@ function Register() {
     isEnabled: turnstileEnabled,
   } = useTurnstile();
 
-  // ✅ Include website in formData for honeypot
+  // ✅ Remove disconnected honeypot state — read from DOM instead
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -48,8 +50,21 @@ function Register() {
     dateOfBirth: "",
     gender: "",
     relationshipGoal: "",
-    website: "", // ✅ Honeypot field in state
   });
+
+  // ✅ Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  // ✅ Auto-focus OTP input when step 4 appears
+  useEffect(() => {
+    if (step === 4) {
+      setTimeout(() => otpInputRef.current?.focus(), 100);
+    }
+  }, [step]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -86,6 +101,21 @@ function Register() {
     "#16a34a",
   ];
 
+  const startResendTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setResendTimer(60);
+    timerRef.current = setInterval(() => {
+      setResendTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
   const handleSendOTP = async () => {
     setError("");
     setSuccess("");
@@ -99,31 +129,18 @@ function Register() {
     setOtpLoading(true);
 
     try {
-      // ✅ Send honeypot + timing header
-      await sendOTP(
-        formData.email,
-        formData.name,
-        formData.website,
-        formLoadTime
-      );
+      // ✅ Read honeypot directly from DOM
+      const honeypotValue =
+        document.querySelector('input[name="website"]')?.value || "";
+
+      await sendOTP(formData.email, formData.name, honeypotValue, formLoadTime);
       setOtpSent(true);
       setSuccess("OTP sent to your email!");
       toast.success("OTP sent to your email! 📧", "Check your inbox", 5000);
-      setResendTimer(60);
-
-      const interval = setInterval(() => {
-        setResendTimer((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+      startResendTimer();
     } catch (err) {
       const data = err.response?.data || {};
 
-      // ✅ Handle signature errors
       if (data.signatureExpired || data.signatureInvalid) {
         toast.warning(
           "Request expired. Please refresh and try again.",
@@ -134,7 +151,6 @@ function Register() {
         return;
       }
 
-      // ✅ Handle IP block
       if (data.ipBlocked) {
         setError(data.message);
         toast.error(data.message, "🚫 Access Denied", 8000);
@@ -154,7 +170,6 @@ function Register() {
     setError("");
     setSuccess("");
 
-    // ✅ Turnstile check before final registration
     if (turnstileEnabled && !turnstileToken) {
       setError("Please complete the security check below.");
       toast.error("Security check required", "Error", 3000);
@@ -170,11 +185,11 @@ function Register() {
     setOtpLoading(true);
 
     try {
-      await verifyOTP(formData.email, otp,formData.website);
+      const honeypotValue =
+        document.querySelector('input[name="website"]')?.value || "";
+      await verifyOTP(formData.email, otp, honeypotValue);
       setSuccess("Email verified successfully!");
       toast.success("Email verified! ✅", "Almost done", 3000);
-
-      // Now complete registration (with Turnstile token)
       await handleCompleteRegistration();
     } catch (err) {
       const msg = err.response?.data?.message || "Invalid OTP";
@@ -189,8 +204,9 @@ function Register() {
   const handleCompleteRegistration = async () => {
     try {
       setLoading(true);
+      const honeypotValue =
+        document.querySelector('input[name="website"]')?.value || "";
 
-      // ✅ Send all security data: honeypot, timing, turnstile
       await register({
         name: formData.name,
         email: formData.email,
@@ -199,8 +215,8 @@ function Register() {
         gender: formData.gender,
         relationshipGoal: formData.relationshipGoal,
         turnstileToken: turnstileToken || undefined,
-        website: formData.website, // ✅ Honeypot from state
-        _formLoadTime: formLoadTime, // ✅ Timing data
+        website: honeypotValue,
+        _formLoadTime: formLoadTime,
       });
 
       toast.success(
@@ -212,7 +228,6 @@ function Register() {
     } catch (err) {
       const data = err.response?.data || {};
 
-      // ✅ Handle signature errors (tampering detection)
       if (data.signatureExpired || data.signatureInvalid) {
         toast.warning(
           "Request expired or invalid. Please refresh and try again.",
@@ -224,13 +239,11 @@ function Register() {
         return;
       }
 
-      // ✅ Handle IP reputation block
       if (data.ipBlocked) {
-        const reputation = data.reputation;
         setError(data.message);
         toast.error(
           data.message,
-          `🚫 Access Denied (Score: ${reputation?.score || 0}%)`,
+          `🚫 Access Denied (Score: ${data.reputation?.score || 0}%)`,
           8000
         );
         resetTurnstile();
@@ -238,7 +251,6 @@ function Register() {
         return;
       }
 
-      // ✅ Handle breached password
       if (data.passwordBreached) {
         setError(data.message);
         toast.error(
@@ -251,7 +263,6 @@ function Register() {
         return;
       }
 
-      // ✅ Handle bot detection
       if (data.botDetected) {
         resetTurnstile();
         setError("Security verification failed. Please refresh and try again.");
@@ -338,6 +349,14 @@ function Register() {
     setStep((prev) => prev - 1);
   };
 
+  // ✅ Confirm password match state
+  const confirmMatch =
+    formData.confirmPassword.length > 0 &&
+    formData.confirmPassword === formData.password;
+  const confirmMismatch =
+    formData.confirmPassword.length > 0 &&
+    formData.confirmPassword !== formData.password;
+
   return (
     <>
       <SEO
@@ -346,14 +365,14 @@ function Register() {
         path="/register"
       />
 
-      <div className="auth-page">
+      <main className="auth-page" id="main-content">
         <div className="container py-5">
           <div className="row justify-content-center">
             <div className="col-12 col-md-10 col-lg-7 col-xl-6">
               <div className="card auth-card border-0 shadow-lg">
                 <div className="card-body p-4 p-md-5">
                   <div className="text-center mb-4">
-                    <div className="auth-logo mb-3">
+                    <div className="auth-logo mb-3" aria-hidden="true">
                       <i className="bi bi-heart-fill"></i>
                     </div>
                     <h2 className="fw-bold mb-2">Create Your Account</h2>
@@ -362,26 +381,40 @@ function Register() {
                     </p>
                   </div>
 
-                  <div className="register-progress mb-4">
+                  {/* Progress Steps with ARIA */}
+                  <div
+                    className="register-progress mb-4"
+                    role="progressbar"
+                    aria-valuenow={step}
+                    aria-valuemin={1}
+                    aria-valuemax={4}
+                    aria-label={`Step ${step} of 4: ${
+                      ["Account", "About You", "Preferences", "Verify"][
+                        step - 1
+                      ]
+                    }`}
+                  >
                     {[1, 2, 3, 4].map((number) => (
                       <div
                         key={number}
                         className={`progress-step ${
                           step >= number ? "active" : ""
                         }`}
+                        aria-current={step === number ? "step" : undefined}
                       >
                         <div className="step-circle">
                           {step > number ? (
-                            <i className="bi bi-check"></i>
+                            <i className="bi bi-check" aria-hidden="true"></i>
                           ) : (
                             number
                           )}
                         </div>
                         <span>
-                          {number === 1 && "Account"}
-                          {number === 2 && "About You"}
-                          {number === 3 && "Preferences"}
-                          {number === 4 && "Verify"}
+                          {
+                            ["Account", "About You", "Preferences", "Verify"][
+                              number - 1
+                            ]
+                          }
                         </span>
                       </div>
                     ))}
@@ -392,109 +425,145 @@ function Register() {
                       className="alert alert-danger d-flex align-items-center"
                       role="alert"
                     >
-                      <i className="bi bi-exclamation-circle me-2"></i>
+                      <i
+                        className="bi bi-exclamation-circle me-2"
+                        aria-hidden="true"
+                      ></i>
                       <span>{error}</span>
                     </div>
                   )}
                   {success && (
                     <div
                       className="alert alert-success d-flex align-items-center"
-                      role="alert"
+                      role="status"
                     >
-                      <i className="bi bi-check-circle me-2"></i>
+                      <i
+                        className="bi bi-check-circle me-2"
+                        aria-hidden="true"
+                      ></i>
                       <span>{success}</span>
                     </div>
                   )}
 
-                  <form onSubmit={(e) => e.preventDefault()}>
+                  <form onSubmit={(e) => e.preventDefault()} noValidate>
+                    {/* ═══ STEP 1: ACCOUNT ═══ */}
                     {step === 1 && (
-                      <div>
-                        <h5 className="fw-bold mb-3">
+                      <div role="group" aria-labelledby="step1-heading">
+                        <h5 id="step1-heading" className="fw-bold mb-3">
                           Let's create your account
                         </h5>
 
-                        {/* ✅ FIXED: Use ONLY the component, remove duplicate */}
                         <HoneypotField />
 
                         <div className="mb-3">
-                          <label htmlFor="name" className="form-label">
+                          <label htmlFor="reg-name" className="form-label">
                             Full Name
                           </label>
                           <div className="input-group">
                             <span className="input-group-text">
-                              <i className="bi bi-person"></i>
+                              <i
+                                className="bi bi-person"
+                                aria-hidden="true"
+                              ></i>
                             </span>
                             <input
                               type="text"
-                              id="name"
+                              id="reg-name"
                               name="name"
                               className="form-control"
                               placeholder="Enter your name"
                               value={formData.name}
                               onChange={handleChange}
                               autoComplete="name"
+                              required
+                              autoFocus
                             />
                           </div>
                         </div>
 
                         <div className="mb-3">
-                          <label htmlFor="email" className="form-label">
+                          <label htmlFor="reg-email" className="form-label">
                             Email Address
                           </label>
                           <div className="input-group">
                             <span className="input-group-text">
-                              <i className="bi bi-envelope"></i>
+                              <i
+                                className="bi bi-envelope"
+                                aria-hidden="true"
+                              ></i>
                             </span>
                             <input
                               type="email"
-                              id="email"
+                              id="reg-email"
                               name="email"
                               className="form-control"
                               placeholder="you@example.com"
                               value={formData.email}
                               onChange={handleChange}
                               autoComplete="email"
+                              required
                             />
                           </div>
                         </div>
 
                         <div className="mb-3">
-                          <label htmlFor="password" className="form-label">
+                          <label htmlFor="reg-password" className="form-label">
                             Password
                           </label>
                           <div className="input-group">
                             <span className="input-group-text">
-                              <i className="bi bi-lock"></i>
+                              <i className="bi bi-lock" aria-hidden="true"></i>
                             </span>
                             <input
                               type={showPassword ? "text" : "password"}
-                              id="password"
+                              id="reg-password"
                               name="password"
                               className="form-control"
                               placeholder="Minimum 8 characters"
                               value={formData.password}
                               onChange={handleChange}
+                              minLength={8}
                               autoComplete="new-password"
+                              required
+                              aria-describedby={
+                                formData.password
+                                  ? "reg-password-strength"
+                                  : undefined
+                              }
                             />
                             <button
                               type="button"
                               className="input-group-text password-toggle"
                               onClick={() => setShowPassword(!showPassword)}
                               tabIndex={-1}
+                              aria-label={
+                                showPassword ? "Hide password" : "Show password"
+                              }
                             >
                               <i
                                 className={`bi ${
                                   showPassword ? "bi-eye-slash" : "bi-eye"
                                 }`}
+                                aria-hidden="true"
                               ></i>
                             </button>
                           </div>
 
                           {formData.password && (
-                            <div className="mt-2">
+                            <div
+                              className="mt-2"
+                              id="reg-password-strength"
+                              role="status"
+                              aria-live="polite"
+                            >
                               <div
                                 className="progress"
                                 style={{ height: "6px" }}
+                                role="progressbar"
+                                aria-valuenow={strength}
+                                aria-valuemin={0}
+                                aria-valuemax={5}
+                                aria-label={`Password strength: ${strengthLabels[strength]}`}
                               >
                                 <div
                                   className="progress-bar"
@@ -516,31 +585,35 @@ function Register() {
 
                         <div className="mb-4">
                           <label
-                            htmlFor="confirmPassword"
+                            htmlFor="reg-confirmPassword"
                             className="form-label"
                           >
                             Confirm Password
                           </label>
                           <div className="input-group">
                             <span className="input-group-text">
-                              <i className="bi bi-shield-lock"></i>
+                              <i
+                                className="bi bi-shield-lock"
+                                aria-hidden="true"
+                              ></i>
                             </span>
                             <input
                               type={showConfirmPassword ? "text" : "password"}
-                              id="confirmPassword"
+                              id="reg-confirmPassword"
                               name="confirmPassword"
                               className={`form-control ${
-                                formData.confirmPassword
-                                  ? formData.confirmPassword ===
-                                    formData.password
-                                    ? "is-valid"
-                                    : "is-invalid"
+                                confirmMatch
+                                  ? "is-valid"
+                                  : confirmMismatch
+                                  ? "is-invalid"
                                   : ""
                               }`}
                               placeholder="Confirm your password"
                               value={formData.confirmPassword}
                               onChange={handleChange}
                               autoComplete="new-password"
+                              required
+                              aria-describedby="reg-confirm-feedback"
                             />
                             <button
                               type="button"
@@ -549,6 +622,11 @@ function Register() {
                                 setShowConfirmPassword(!showConfirmPassword)
                               }
                               tabIndex={-1}
+                              aria-label={
+                                showConfirmPassword
+                                  ? "Hide confirm password"
+                                  : "Show confirm password"
+                              }
                             >
                               <i
                                 className={`bi ${
@@ -556,9 +634,27 @@ function Register() {
                                     ? "bi-eye-slash"
                                     : "bi-eye"
                                 }`}
+                                aria-hidden="true"
                               ></i>
                             </button>
                           </div>
+                          {confirmMismatch && (
+                            <div
+                              id="reg-confirm-feedback"
+                              className="invalid-feedback d-block"
+                              role="alert"
+                            >
+                              Passwords do not match
+                            </div>
+                          )}
+                          {confirmMatch && (
+                            <div
+                              id="reg-confirm-feedback"
+                              className="valid-feedback d-block"
+                            >
+                              Passwords match
+                            </div>
+                          )}
                         </div>
 
                         <button
@@ -566,22 +662,35 @@ function Register() {
                           className="btn btn-primary w-100"
                           onClick={nextStep}
                         >
-                          Continue <i className="bi bi-arrow-right ms-2"></i>
+                          Continue{" "}
+                          <i
+                            className="bi bi-arrow-right ms-2"
+                            aria-hidden="true"
+                          ></i>
                         </button>
                       </div>
                     )}
 
+                    {/* ═══ STEP 2: ABOUT YOU ═══ */}
                     {step === 2 && (
-                      <div>
-                        <h5 className="fw-bold mb-3">Tell us about yourself</h5>
+                      <div role="group" aria-labelledby="step2-heading">
+                        <h5 id="step2-heading" className="fw-bold mb-3">
+                          Tell us about yourself
+                        </h5>
 
                         <div className="mb-3">
-                          <label htmlFor="dateOfBirth" className="form-label">
+                          <label
+                            htmlFor="reg-dateOfBirth"
+                            className="form-label"
+                          >
                             Date of Birth
                           </label>
                           <div className="input-group">
                             <span className="input-group-text">
-                              <i className="bi bi-calendar"></i>
+                              <i
+                                className="bi bi-calendar"
+                                aria-hidden="true"
+                              ></i>
                             </span>
                             <DatePicker
                               selected={
@@ -591,20 +700,12 @@ function Register() {
                               }
                               onChange={(date) => {
                                 setDob(date);
-                                if (date) {
-                                  const formattedDate = date
-                                    .toISOString()
-                                    .split("T")[0];
-                                  setFormData((prev) => ({
-                                    ...prev,
-                                    dateOfBirth: formattedDate,
-                                  }));
-                                } else {
-                                  setFormData((prev) => ({
-                                    ...prev,
-                                    dateOfBirth: "",
-                                  }));
-                                }
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  dateOfBirth: date
+                                    ? date.toISOString().split("T")[0]
+                                    : "",
+                                }));
                               }}
                               dateFormat="dd/MM/yyyy"
                               placeholderText="dd/mm/yyyy"
@@ -624,15 +725,16 @@ function Register() {
                         </div>
 
                         <div className="mb-4">
-                          <label htmlFor="gender" className="form-label">
+                          <label htmlFor="reg-gender" className="form-label">
                             Gender
                           </label>
                           <select
-                            id="gender"
+                            id="reg-gender"
                             name="gender"
                             className="form-select"
                             value={formData.gender}
                             onChange={handleChange}
+                            required
                           >
                             <option value="">Select your gender</option>
                             <option value="male">Male</option>
@@ -648,37 +750,75 @@ function Register() {
                             className="btn btn-outline-secondary flex-fill"
                             onClick={previousStep}
                           >
-                            <i className="bi bi-arrow-left me-2"></i> Back
+                            <i
+                              className="bi bi-arrow-left me-2"
+                              aria-hidden="true"
+                            ></i>{" "}
+                            Back
                           </button>
                           <button
                             type="button"
                             className="btn btn-primary flex-fill"
                             onClick={nextStep}
                           >
-                            Continue <i className="bi bi-arrow-right ms-2"></i>
+                            Continue{" "}
+                            <i
+                              className="bi bi-arrow-right ms-2"
+                              aria-hidden="true"
+                            ></i>
                           </button>
                         </div>
                       </div>
                     )}
 
+                    {/* ═══ STEP 3: PREFERENCES ═══ */}
                     {step === 3 && (
-                      <div>
-                        <h5 className="fw-bold mb-3">
+                      <div role="group" aria-labelledby="step3-heading">
+                        <h5 id="step3-heading" className="fw-bold mb-3">
                           What are you looking for?
                         </h5>
 
-                        <div className="relationship-options">
+                        <div
+                          className="relationship-options"
+                          role="radiogroup"
+                          aria-label="Relationship goal"
+                        >
                           {[
-                            "serious",
-                            "marriage",
-                            "friendship",
-                            "casual",
-                            "not-sure",
+                            {
+                              value: "serious",
+                              icon: "bi-heart-fill",
+                              label: "Serious Relationship",
+                              desc: "Looking for a meaningful long-term connection.",
+                            },
+                            {
+                              value: "marriage",
+                              icon: "bi-stars",
+                              label: "Marriage",
+                              desc: "Looking for a life partner.",
+                            },
+                            {
+                              value: "friendship",
+                              icon: "bi-people-fill",
+                              label: "Friendship",
+                              desc: "Meet new people and build friendships.",
+                            },
+                            {
+                              value: "casual",
+                              icon: "bi-chat-heart-fill",
+                              label: "Casual Dating",
+                              desc: "Meet people and enjoy getting to know each other.",
+                            },
+                            {
+                              value: "not-sure",
+                              icon: "bi-question-circle-fill",
+                              label: "Not Sure Yet",
+                              desc: "Open to seeing where the connection goes.",
+                            },
                           ].map((goal) => (
                             <label
-                              key={goal}
+                              key={goal.value}
                               className={`relationship-option ${
-                                formData.relationshipGoal === goal
+                                formData.relationshipGoal === goal.value
                                   ? "selected"
                                   : ""
                               }`}
@@ -686,46 +826,19 @@ function Register() {
                               <input
                                 type="radio"
                                 name="relationshipGoal"
-                                value={goal}
-                                checked={formData.relationshipGoal === goal}
+                                value={goal.value}
+                                checked={
+                                  formData.relationshipGoal === goal.value
+                                }
                                 onChange={handleChange}
                               />
                               <div>
                                 <i
-                                  className={`bi ${
-                                    goal === "serious"
-                                      ? "bi-heart-fill"
-                                      : goal === "marriage"
-                                      ? "bi-stars"
-                                      : goal === "friendship"
-                                      ? "bi-people-fill"
-                                      : goal === "casual"
-                                      ? "bi-chat-heart-fill"
-                                      : "bi-question-circle-fill"
-                                  }`}
+                                  className={`bi ${goal.icon}`}
+                                  aria-hidden="true"
                                 ></i>
-                                <strong>
-                                  {goal === "serious"
-                                    ? "Serious Relationship"
-                                    : goal === "marriage"
-                                    ? "Marriage"
-                                    : goal === "friendship"
-                                    ? "Friendship"
-                                    : goal === "casual"
-                                    ? "Casual Dating"
-                                    : "Not Sure Yet"}
-                                </strong>
-                                <small>
-                                  {goal === "serious"
-                                    ? "Looking for a meaningful long-term connection."
-                                    : goal === "marriage"
-                                    ? "Looking for a life partner."
-                                    : goal === "friendship"
-                                    ? "Meet new people and build friendships."
-                                    : goal === "casual"
-                                    ? "Meet people and enjoy getting to know each other."
-                                    : "Open to seeing where the connection goes."}
-                                </small>
+                                <strong>{goal.label}</strong>
+                                <small>{goal.desc}</small>
                               </div>
                             </label>
                           ))}
@@ -737,7 +850,11 @@ function Register() {
                             className="btn btn-outline-secondary flex-fill"
                             onClick={previousStep}
                           >
-                            <i className="bi bi-arrow-left me-2"></i> Back
+                            <i
+                              className="bi bi-arrow-left me-2"
+                              aria-hidden="true"
+                            ></i>{" "}
+                            Back
                           </button>
                           <button
                             type="button"
@@ -745,15 +862,22 @@ function Register() {
                             onClick={nextStep}
                             disabled={loading}
                           >
-                            Continue <i className="bi bi-arrow-right ms-2"></i>
+                            Continue{" "}
+                            <i
+                              className="bi bi-arrow-right ms-2"
+                              aria-hidden="true"
+                            ></i>
                           </button>
                         </div>
                       </div>
                     )}
 
+                    {/* ═══ STEP 4: VERIFY ═══ */}
                     {step === 4 && (
-                      <div>
-                        <h5 className="fw-bold mb-3">Verify Your Email</h5>
+                      <div role="group" aria-labelledby="step4-heading">
+                        <h5 id="step4-heading" className="fw-bold mb-3">
+                          Verify Your Email
+                        </h5>
 
                         <p className="text-muted mb-4">
                           We've sent a 6-digit verification code to{" "}
@@ -761,24 +885,33 @@ function Register() {
                         </p>
 
                         <div className="mb-4">
-                          <label htmlFor="otp" className="form-label">
+                          <label htmlFor="reg-otp" className="form-label">
                             Enter OTP
                           </label>
                           <input
+                            ref={otpInputRef}
                             type="text"
-                            id="otp"
-                            className="form-control form-control-lg text-center"
+                            id="reg-otp"
+                            className="form-control form-control-lg text-center otp-input"
                             placeholder="000000"
-                            maxLength="6"
+                            maxLength={6}
+                            inputMode="numeric"
+                            pattern="[0-9]{6}"
                             value={otp}
                             onChange={(e) =>
                               setOtp(e.target.value.replace(/\D/g, ""))
                             }
-                            style={{ fontSize: "24px", letterSpacing: "8px" }}
+                            autoComplete="one-time-code"
+                            aria-describedby="otp-hint"
                           />
+                          <small
+                            id="otp-hint"
+                            className="text-muted d-block text-center mt-1"
+                          >
+                            6-digit numeric code
+                          </small>
                         </div>
 
-                        {/* ✅ TURNSTILE WIDGET — shown on verify step */}
                         {turnstileEnabled && (
                           <div className="mb-3 d-flex justify-content-center">
                             <div ref={turnstileRef}></div>
@@ -797,13 +930,19 @@ function Register() {
                         >
                           {otpLoading ? (
                             <>
-                              <span className="spinner-border spinner-border-sm me-2"></span>
+                              <span
+                                className="spinner-border spinner-border-sm me-2"
+                                aria-hidden="true"
+                              ></span>
                               Verifying...
                             </>
                           ) : (
                             <>
-                              <i className="bi bi-check-circle me-2"></i>Verify
-                              & Create Account
+                              <i
+                                className="bi bi-check-circle me-2"
+                                aria-hidden="true"
+                              ></i>
+                              Verify & Create Account
                             </>
                           )}
                         </button>
@@ -812,7 +951,9 @@ function Register() {
                           <small className="text-muted">
                             Didn't receive the code?{" "}
                             {resendTimer > 0 ? (
-                              <span>Resend in {resendTimer}s</span>
+                              <span aria-live="polite">
+                                Resend in {resendTimer}s
+                              </span>
                             ) : (
                               <button
                                 type="button"
@@ -832,12 +973,17 @@ function Register() {
                             className="btn btn-outline-secondary flex-fill"
                             onClick={previousStep}
                           >
-                            <i className="bi bi-arrow-left me-2"></i> Back
+                            <i
+                              className="bi bi-arrow-left me-2"
+                              aria-hidden="true"
+                            ></i>{" "}
+                            Back
                           </button>
                         </div>
                       </div>
                     )}
                   </form>
+
                   <div className="text-center mt-4">
                     <span className="text-muted">Already have an account?</span>{" "}
                     <button
@@ -848,17 +994,22 @@ function Register() {
                       Login
                     </button>
                   </div>
+
                   <button
                     type="button"
                     className="google-signup-btn"
                     onClick={() => {
                       const baseUrl =
-                        import.meta.env.VITE_API_URL ||
-                        "http://localhost:5000";
-                        window.location.href = `${baseUrl}/auth/google`;
+                        import.meta.env.VITE_API_URL || "http://localhost:5000";
+                      window.location.href = `${baseUrl}/auth/google`;
                     }}
                   >
-                    <svg width="20" height="20" viewBox="0 0 48 48">
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 48 48"
+                      aria-hidden="true"
+                    >
                       <path
                         fill="#EA4335"
                         d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
@@ -883,7 +1034,7 @@ function Register() {
             </div>
           </div>
         </div>
-      </div>
+      </main>
     </>
   );
 }

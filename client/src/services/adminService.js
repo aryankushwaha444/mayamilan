@@ -35,7 +35,6 @@ export const deleteUserPhoto = async (userId, photoId) => {
   return response.data;
 };
 
-
 export const getUserReports = async (userId) => {
   const response = await api.get(`/admin/users/${userId}/reports`);
   return response.data;
@@ -52,17 +51,17 @@ export const getAllReports = async (params = {}) => {
 };
 
 export const getSuggestions = async (filters = {}) => {
-  const params = new URLSearchParams(filters).toString();
-  const response = await api.get(`/suggestions?${params}`);
+  // ✅ FIXED: Use axios params instead of manual URLSearchParams
+  const response = await api.get("/admin/suggestions", { params: filters });
   return response.data;
 };
 
 export const updateSuggestionStatus = async (id, status) => {
-  const response = await api.patch(`/suggestions/${id}`, { status });
+  const response = await api.patch(`/admin/suggestions/${id}`, { status });
   return response.data;
 };
 
 export const deleteSuggestion = async (id) => {
-  const response = await api.delete(`/suggestions/${id}`);
+  const response = await api.delete(`/admin/suggestions/${id}`);
   return response.data;
 };

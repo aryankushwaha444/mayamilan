@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { postService } from "../services/postService";
 import { compressPostPhoto } from "../utils/imageCompressor";
 import { useAlert } from "../context/AlertContext";
 import { avatarImg } from "../utils/cloudinary";
+import ConfirmDialog from "./ConfirmDialog.jsx";
 
-// ✅ UX-only constants (backend has authoritative limits)
+// ✅ Constants
 const MAX_IMAGES = 5;
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -19,9 +20,13 @@ function CreatePost({ user, onPostCreated }) {
   const [submitting, setSubmitting] = useState(false);
   const [compressing, setCompressing] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [compressionProgress, setCompressionProgress] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
 
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+  const previewsRef = useRef([]); // ✅ Track previews for cleanup
 
   const userPhoto =
     user?.photos?.find((p) => p.isPrimary)?.url ||
@@ -30,12 +35,12 @@ function CreatePost({ user, onPostCreated }) {
 
   const firstName = user?.name?.split(" ")[0] || "there";
 
-  // Cleanup object URLs on unmount
+  // ✅ FIXED: Cleanup only on unmount, not every render
   useEffect(() => {
     return () => {
-      previews.forEach((url) => URL.revokeObjectURL(url));
+      previewsRef.current.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [previews]);
+  }, []);
 
   // Auto-focus textarea when expanded
   useEffect(() => {
@@ -44,44 +49,91 @@ function CreatePost({ user, onPostCreated }) {
     }
   }, [expanded]);
 
-  // ✅ UX-ONLY validation (backend does security validation)
+  // ✅ Shared image handling logic
+  const processFiles = useCallback(
+    async (filesToAdd) => {
+      if (filesToAdd.length === 0) return;
+
+      // Check total count
+      if (images.length + filesToAdd.length > MAX_IMAGES) {
+        toast.warning(`Maximum ${MAX_IMAGES} photos allowed`);
+        return;
+      }
+
+      // Filter by size
+      const validFiles = filesToAdd.filter((f) => {
+        if (f.size > MAX_FILE_SIZE) {
+          toast.warning(`${f.name} exceeds ${MAX_FILE_SIZE_MB}MB`);
+          return false;
+        }
+        return true;
+      });
+
+      if (validFiles.length === 0) return;
+
+      // Create previews
+      const newPreviews = validFiles.map((f) => URL.createObjectURL(f));
+      previewsRef.current = [...previewsRef.current, ...newPreviews];
+
+      const newImages = [...images, ...validFiles].slice(0, MAX_IMAGES);
+      const allPreviews = [...previews, ...newPreviews].slice(0, MAX_IMAGES);
+
+      setImages(newImages);
+      setPreviews(allPreviews);
+    },
+    [images, previews, toast]
+  );
+
   const handleImageChange = (e) => {
-    let files = Array.from(e.target.files);
-    if (files.length === 0) return;
-
-    // Check total count (UX feedback)
-    if (images.length + files.length > MAX_IMAGES) {
-      toast.warning(`Maximum ${MAX_IMAGES} photos allowed`);
-      e.target.value = "";
-      return;
-    }
-
-    // Basic size check (save bandwidth - backend also checks)
-    const oversized = files.filter((f) => f.size > MAX_FILE_SIZE);
-    if (oversized.length > 0) {
-      toast.warning(`${oversized.length} file(s) exceed ${MAX_FILE_SIZE_MB}MB`);
-      files = files.filter((f) => f.size <= MAX_FILE_SIZE);
-    }
-
-    if (files.length === 0) {
-      e.target.value = "";
-      return;
-    }
-
-    // Add files (backend will do security validation)
-    const newImages = [...images, ...files].slice(0, MAX_IMAGES);
-    const newPreviews = [
-      ...previews,
-      ...files.map((f) => URL.createObjectURL(f)),
-    ];
-
-    setImages(newImages);
-    setPreviews(newPreviews);
+    const files = Array.from(e.target.files);
+    processFiles(files);
     e.target.value = "";
+  };
+
+  // ✅ NEW: Drag and drop support
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+
+    const files = Array.from(e.dataTransfer.files).filter((f) =>
+      f.type.startsWith("image/")
+    );
+    processFiles(files);
+  };
+
+  // ✅ NEW: Paste image support
+  const handlePaste = async (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageFiles = [];
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      await processFiles(imageFiles);
+    }
   };
 
   const removeImage = (index) => {
     URL.revokeObjectURL(previews[index]);
+    previewsRef.current = previewsRef.current.filter((_, i) => i !== index);
+
     const newImages = images.filter((_, i) => i !== index);
     const newPreviews = previews.filter((_, i) => i !== index);
     setImages(newImages);
@@ -90,6 +142,7 @@ function CreatePost({ user, onPostCreated }) {
 
   const clearImages = () => {
     previews.forEach((url) => URL.revokeObjectURL(url));
+    previewsRef.current = [];
     setImages([]);
     setPreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -97,14 +150,17 @@ function CreatePost({ user, onPostCreated }) {
 
   const handleClose = () => {
     if (content.trim() || images.length > 0) {
-      if (window.confirm("Discard your post?")) {
-        setContent("");
-        clearImages();
-        setExpanded(false);
-      }
+      setShowDiscardConfirm(true);
     } else {
       setExpanded(false);
     }
+  };
+
+  const confirmDiscard = () => {
+    setContent("");
+    clearImages();
+    setExpanded(false);
+    setShowDiscardConfirm(false);
   };
 
   const handleSubmit = async (e) => {
@@ -117,6 +173,7 @@ function CreatePost({ user, onPostCreated }) {
 
     setSubmitting(true);
     setCompressing(true);
+    setCompressionProgress(0);
 
     try {
       const formData = new FormData();
@@ -129,17 +186,18 @@ function CreatePost({ user, onPostCreated }) {
           2500
         );
 
-        // Compress (best effort - fallback to original on error)
         const compressedImages = [];
-        for (const image of images) {
+        for (let i = 0; i < images.length; i++) {
           try {
-            const compressed = await compressPostPhoto(image);
+            const compressed = await compressPostPhoto(images[i]);
             compressedImages.push(compressed);
+            setCompressionProgress(Math.round(((i + 1) / images.length) * 100));
           } catch (err) {
             console.warn(
-              `Compression failed for ${image.name}, using original`
+              `Compression failed for ${images[i].name}, using original`
             );
-            compressedImages.push(image);
+            compressedImages.push(images[i]);
+            setCompressionProgress(Math.round(((i + 1) / images.length) * 100));
           }
         }
 
@@ -148,7 +206,6 @@ function CreatePost({ user, onPostCreated }) {
 
       setCompressing(false);
 
-      // Backend does all security validation
       const res = await postService.createPost(formData);
       onPostCreated(res.post);
 
@@ -159,15 +216,27 @@ function CreatePost({ user, onPostCreated }) {
       toast.success("Post shared! 🎉");
     } catch (err) {
       console.error(err);
-      // Show backend error message
       toast.error(err.response?.data?.message || "Failed to create post");
     } finally {
       setSubmitting(false);
       setCompressing(false);
+      setCompressionProgress(0);
+    }
+  };
+
+  // ✅ Keyboard shortcut: Ctrl+Enter to post
+  const handleKeyDown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (!isDisabled && (content.trim() || images.length > 0)) {
+        handleSubmit(e);
+      }
     }
   };
 
   const isDisabled = submitting || compressing;
+  const charCount = content.length;
+  const charLimitReached = charCount >= MAX_CONTENT_LENGTH;
 
   return (
     <div className="create-post">
@@ -203,7 +272,13 @@ function CreatePost({ user, onPostCreated }) {
           </button>
         </div>
       ) : (
-        <form className="create-post-expanded" onSubmit={handleSubmit}>
+        <form
+          className={`create-post-expanded ${dragOver ? "drag-over" : ""}`}
+          onSubmit={handleSubmit}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <div className="create-post-header">
             <img
               src={avatarImg(userPhoto)}
@@ -225,16 +300,46 @@ function CreatePost({ user, onPostCreated }) {
             </button>
           </div>
 
+          {/* ✅ Drag overlay */}
+          {dragOver && (
+            <div className="drag-overlay" aria-hidden="true">
+              <i className="bi bi-cloud-upload"></i>
+              <span>Drop images here</span>
+            </div>
+          )}
+
           <textarea
             ref={textareaRef}
             value={content}
             onChange={(e) => setContent(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={`What's on your mind, ${firstName}?`}
             maxLength={MAX_CONTENT_LENGTH}
             rows={3}
             disabled={isDisabled}
             aria-label="Post content"
           />
+
+          {/* ✅ Character counter */}
+          {charCount > MAX_CONTENT_LENGTH * 0.8 && (
+            <div className={`char-counter ${charLimitReached ? "limit" : ""}`}>
+              {charCount}/{MAX_CONTENT_LENGTH}
+            </div>
+          )}
+
+          {/* ✅ Compression progress */}
+          {compressing && images.length > 0 && (
+            <div className="compression-progress" aria-live="polite">
+              <div className="progress-bar">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${compressionProgress}%` }}
+                ></div>
+              </div>
+              <small>Compressing {compressionProgress}%</small>
+            </div>
+          )}
 
           {previews.length > 0 && (
             <div className="image-previews" role="list">
@@ -297,9 +402,10 @@ function CreatePost({ user, onPostCreated }) {
                 disabled={
                   isDisabled || (!content.trim() && images.length === 0)
                 }
+                title="Ctrl+Enter to post"
               >
                 {compressing
-                  ? "Optimizing..."
+                  ? `Optimizing ${compressionProgress}%...`
                   : submitting
                   ? "Posting..."
                   : "Post"}
@@ -309,7 +415,6 @@ function CreatePost({ user, onPostCreated }) {
         </form>
       )}
 
-      {/* ✅ Accept all images - backend validates */}
       <input
         type="file"
         ref={fileInputRef}
@@ -317,6 +422,19 @@ function CreatePost({ user, onPostCreated }) {
         multiple
         onChange={handleImageChange}
         hidden
+      />
+
+      {/* ✅ Replace window.confirm with ConfirmDialog */}
+      <ConfirmDialog
+        open={showDiscardConfirm}
+        title="Discard post?"
+        message="Your post content and photos will be lost."
+        confirmText="Discard"
+        cancelText="Keep editing"
+        danger
+        icon="bi-trash-fill"
+        onCancel={() => setShowDiscardConfirm(false)}
+        onConfirm={confirmDiscard}
       />
     </div>
   );

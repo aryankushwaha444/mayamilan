@@ -1,5 +1,12 @@
-import { createContext, useContext, useEffect, useState, useRef } from "react";
-
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import {
   registerUser,
   loginUser,
@@ -8,34 +15,68 @@ import {
   logoutUser,
 } from "../services/authService";
 import { unsubscribeFromPush } from "../utils/alerts";
+import { setSigningKey, clearSigningKey } from "../utils/signRequest";
 
 const AuthContext = createContext(null);
 
+// Safe localStorage access (works during SSR/build)
+const getStoredToken = () => {
+  try {
+    return typeof window !== "undefined"
+      ? localStorage.getItem("accessToken")
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const getStoredUser = () => {
+  try {
+    if (typeof window === "undefined") return null;
+    const stored = localStorage.getItem("user");
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+};
+
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [accessToken, setAccessToken] = useState(() =>
-    localStorage.getItem("accessToken")
-  );
+  const [user, setUser] = useState(getStoredUser);
+  const [accessToken, setAccessToken] = useState(getStoredToken);
   const [loading, setLoading] = useState(true);
 
-  // ✅ Track mounted state to prevent updates after unmount
   const isMountedRef = useRef(true);
-  // ✅ Mutex for silent refresh to prevent parallel calls
   const refreshPromiseRef = useRef(null);
 
-  const isAuthenticated = !!user && !!accessToken;
+  // Memoized to prevent unnecessary consumer re-renders
+  const isAuthenticated = useMemo(
+    () => !!user && !!accessToken,
+    [user, accessToken]
+  );
 
-  const updateUser = (updatedUser) => {
+  // Stable updateUser reference
+  const updateUser = useCallback((updatedUser) => {
     if (!isMountedRef.current) return;
     setUser(updatedUser);
-    localStorage.setItem("user", JSON.stringify(updatedUser));
-  };
+    try {
+      localStorage.setItem("user", JSON.stringify(updatedUser));
+    } catch {}
+  }, []);
+
+  // ✅ Stable clearSession — clears signing key + storage + state
+  const clearSession = useCallback(() => {
+    if (!isMountedRef.current) return;
+    clearSigningKey(); // ✅ Clear in-memory signing key
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("user");
+    setAccessToken(null);
+    setUser(null);
+  }, []);
 
   // ==========================================
   // SILENT SESSION RESTORE (with mutex)
   // ==========================================
-  const trySilentRefresh = async () => {
-    // ✅ Mutex: if refresh already in flight, wait for it instead of starting new one
+  const trySilentRefresh = useCallback(async () => {
     if (refreshPromiseRef.current) {
       return refreshPromiseRef.current;
     }
@@ -48,6 +89,11 @@ export const AuthProvider = ({ children }) => {
         if (refreshed.success && refreshed.accessToken) {
           localStorage.setItem("accessToken", refreshed.accessToken);
           setAccessToken(refreshed.accessToken);
+
+          // ✅ Rotate signing key on refresh
+          if (refreshed.signingKey) {
+            setSigningKey(refreshed.signingKey);
+          }
 
           const retry = await getCurrentUser();
           if (!isMountedRef.current) return false;
@@ -67,7 +113,7 @@ export const AuthProvider = ({ children }) => {
     })();
 
     return refreshPromiseRef.current;
-  };
+  }, []);
 
   // ==========================================
   // INITIALIZE AUTH + EVENT LISTENERS
@@ -76,25 +122,58 @@ export const AuthProvider = ({ children }) => {
     isMountedRef.current = true;
     const abortController = new AbortController();
 
-    const handleAuthLogout = () => {
-      if (!isMountedRef.current) return;
-      localStorage.removeItem("accessToken");
-      localStorage.removeItem("user");
-      setAccessToken(null);
-      setUser(null);
-    };
+    const handleAuthLogout = () => clearSession();
 
+    // ✅ Cross-tab sync: update token + signing key when refreshed in another tab
     const handleTokenRefreshed = (event) => {
       if (!isMountedRef.current) return;
-      const { accessToken: newToken } = event.detail || {};
+      const { accessToken: newToken, signingKey: newSigningKey } =
+        event.detail || {};
       if (newToken) {
         setAccessToken(newToken);
         localStorage.setItem("accessToken", newToken);
+        // ✅ Sync signing key across tabs
+        if (newSigningKey) {
+          setSigningKey(newSigningKey);
+        }
+        // Re-fetch user to stay in sync
+        getCurrentUser()
+          .then((res) => {
+            if (res?.success && res.user && isMountedRef.current) {
+              setUser(res.user);
+              localStorage.setItem("user", JSON.stringify(res.user));
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
+    // Cross-tab storage sync
+    const handleStorageChange = (e) => {
+      if (!isMountedRef.current) return;
+      if (e.key === "accessToken") {
+        if (!e.newValue) {
+          clearSigningKey(); // ✅ Clear signing key when logged out in another tab
+          setUser(null);
+          setAccessToken(null);
+        } else {
+          setAccessToken(e.newValue);
+        }
+      }
+      if (e.key === "user") {
+        if (!e.newValue) {
+          setUser(null);
+        } else {
+          try {
+            setUser(JSON.parse(e.newValue));
+          } catch {}
+        }
       }
     };
 
     window.addEventListener("auth:logout", handleAuthLogout);
     window.addEventListener("auth:token-refreshed", handleTokenRefreshed);
+    window.addEventListener("storage", handleStorageChange);
 
     const initializeAuth = async () => {
       // Skip auth check on OAuth success page
@@ -128,56 +207,27 @@ export const AuthProvider = ({ children }) => {
         const statusCode = error.response?.status;
         const errorData = error.response?.data;
 
-        // ✅ CRITICAL: Session revoked — don't try refresh, just logout
+        // Session revoked — don't try refresh
         if (errorData?.sessionRevoked) {
-          console.log("🔒 Session revoked — clearing session");
-          localStorage.removeItem("accessToken");
-          localStorage.removeItem("user");
-          if (isMountedRef.current) {
-            setAccessToken(null);
-            setUser(null);
-            setLoading(false);
-          }
+          clearSession();
+          if (isMountedRef.current) setLoading(false);
           return;
         }
 
-        // ✅ CRITICAL: If account is deactivated (403), DON'T try refresh
+        // Account deactivated (403) — don't try refresh
         if (statusCode === 403 && errorData?.deactivated) {
-          console.log(
-            "🔒 Account deactivated — clearing session, waiting for login"
-          );
-          localStorage.removeItem("accessToken");
-          localStorage.removeItem("user");
-          if (isMountedRef.current) {
-            setAccessToken(null);
-            setUser(null);
-            setLoading(false);
-          }
+          clearSession();
+          if (isMountedRef.current) setLoading(false);
           return;
         }
 
-        // For 401 (expired token), try silent refresh
+        // 401 expired token → try silent refresh
         if (statusCode === 401) {
           const restored = await trySilentRefresh();
-
           if (abortController.signal.aborted) return;
-
-          if (!restored) {
-            localStorage.removeItem("accessToken");
-            localStorage.removeItem("user");
-            if (isMountedRef.current) {
-              setAccessToken(null);
-              setUser(null);
-            }
-          }
+          if (!restored) clearSession();
         } else {
-          // Any other error — just clean up
-          localStorage.removeItem("accessToken");
-          localStorage.removeItem("user");
-          if (isMountedRef.current) {
-            setAccessToken(null);
-            setUser(null);
-          }
+          clearSession();
         }
       } finally {
         if (isMountedRef.current && !abortController.signal.aborted) {
@@ -193,112 +243,107 @@ export const AuthProvider = ({ children }) => {
       abortController.abort();
       window.removeEventListener("auth:logout", handleAuthLogout);
       window.removeEventListener("auth:token-refreshed", handleTokenRefreshed);
+      window.removeEventListener("storage", handleStorageChange);
     };
-  }, []);
+  }, [clearSession, trySilentRefresh]);
 
   // ==========================================
   // REGISTER
   // ==========================================
-  const register = async (userData) => {
+  const register = useCallback(async (userData) => {
     const response = await registerUser(userData);
-
     if (!isMountedRef.current) return response;
 
     if (response.success) {
-      const newToken = response.accessToken;
-      const newUser = response.user;
-
-      localStorage.setItem("accessToken", newToken);
-      localStorage.setItem("user", JSON.stringify(newUser));
-
-      setAccessToken(newToken);
-      setUser(newUser);
+      localStorage.setItem("accessToken", response.accessToken);
+      localStorage.setItem("user", JSON.stringify(response.user));
+      setAccessToken(response.accessToken);
+      setUser(response.user);
+      // ✅ Set signing key issued at registration
+      if (response.signingKey) {
+        setSigningKey(response.signingKey);
+      }
     }
 
     return response;
-  };
+  }, []);
 
   // ==========================================
-  // LOGIN (optimized — no redundant getCurrentUser)
+  // LOGIN
   // ==========================================
-  const login = async (credentials) => {
+  const login = useCallback(async (credentials) => {
     try {
       const { _formLoadTime, ...loginData } = credentials;
       const response = await loginUser(loginData, _formLoadTime);
-
       if (!isMountedRef.current) return response;
 
       if (response.success) {
-        const newToken = response.accessToken;
-        const newUser = response.user;
-
-        localStorage.setItem("accessToken", newToken);
-        localStorage.setItem("user", JSON.stringify(newUser));
-
-        setAccessToken(newToken);
-        setUser(newUser);
-
-        return response;
+        localStorage.setItem("accessToken", response.accessToken);
+        localStorage.setItem("user", JSON.stringify(response.user));
+        setAccessToken(response.accessToken);
+        setUser(response.user);
+        // ✅ Set signing key issued at login
+        if (response.signingKey) {
+          setSigningKey(response.signingKey);
+        }
       }
 
       return response;
     } catch (error) {
-      console.error("AuthContext login error:", error);
       throw error;
     }
-  };
+  }, []);
 
   // ==========================================
   // LOGOUT
   // ==========================================
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       await unsubscribeFromPush();
-    } catch (err) {
-      console.warn("Push unsubscribe failed:", err);
-    }
+    } catch {}
 
     try {
       await logoutUser();
-    } catch (error) {
-      console.log(
-        "Logout error:",
-        error.response?.data?.message || error.message
-      );
-    } finally {
-      if (!isMountedRef.current) return;
-      localStorage.removeItem("accessToken");
-      localStorage.removeItem("user");
-      setAccessToken(null);
-      setUser(null);
-    }
-  };
+    } catch {}
+
+    clearSession(); // ✅ Already calls clearSigningKey()
+  }, [clearSession]);
+
+  // Stable context value — prevents consumer re-renders
+  const contextValue = useMemo(
+    () => ({
+      user,
+      accessToken,
+      isAuthenticated,
+      loading,
+      register,
+      login,
+      logout,
+      updateUser,
+      trySilentRefresh,
+    }),
+    [
+      user,
+      accessToken,
+      isAuthenticated,
+      loading,
+      register,
+      login,
+      logout,
+      updateUser,
+      trySilentRefresh,
+    ]
+  );
 
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        accessToken,
-        isAuthenticated,
-        loading,
-        register,
-        login,
-        logout,
-        updateUser,
-        trySilentRefresh,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+    <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>
   );
 };
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-
   if (!context) {
     throw new Error("useAuth must be used inside AuthProvider");
   }
-
   return context;
 };

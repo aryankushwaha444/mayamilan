@@ -1,12 +1,61 @@
+# ========================================
+# Maya~Milan Dating Portal - robots.txt
+# https://mayamilan.vercel.app
+# ========================================
+
+# Allow all crawlers access to public pages
 User-agent: *
 Allow: /
+
+# ========================================
+# DISALLOW: Private/Auth Routes
+# ========================================
 Disallow: /admin
-Disallow: /messages
+Disallow: /admin/
+Disallow: /login
+Disallow: /register
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /change-password
+Disallow: /oauth-success
+Disallow: /2fa
+
+# ========================================
+# DISALLOW: User-Specific Routes
+# ========================================
+Disallow: /profile
+Disallow: /profile/
 Disallow: /discover
 Disallow: /matches
-Disallow: /profile
+Disallow: /messages
 Disallow: /notifications
-Disallow: /change-password
 Disallow: /users/
 
+# ========================================
+# DISALLOW: API Endpoints
+# ========================================
+Disallow: /api/
+Disallow: /api/auth/
+Disallow: /api/users/
+Disallow: /api/admin/
+
+# ========================================
+# DISALLOW: Static Assets (optional)
+# ========================================
+Disallow: /assets/
+Disallow: /.well-known/
+
+# ========================================
+# CRAWL DELAY (be nice to servers)
+# ========================================
+Crawl-delay: 10
+
+# ========================================
+# SITEMAP
+# ========================================
 Sitemap: https://mayamilan.vercel.app/sitemap.xml
+
+# ========================================
+# HOST (preferred domain)
+# ========================================
+Host: https://mayamilan.vercel.app

@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
 import CommentItem from "./CommentItem.jsx";
@@ -26,6 +26,8 @@ function PostCard({ post, onUpdate }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(null);
 
+  const menuRef = useRef(null);
+
   const authorPhoto = avatarImg(
     post.author?.photos?.find((p) => p.isPrimary)?.url ||
       post.author?.photos?.[0]?.url ||
@@ -41,21 +43,56 @@ function PostCard({ post, onUpdate }) {
     return new Date(date).toLocaleDateString();
   };
 
+  // ✅ FIXED: Outside click handler for the 3-dots menu
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setShowMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const handleLike = async () => {
+    // ✅ Optimistic UI Update
+    const previousIsLiked = post.isLiked;
+    const previousLikesCount = post.likes.length;
+
+    onUpdate({
+      ...post,
+      isLiked: !previousIsLiked,
+      likes: !previousIsLiked
+        ? [...post.likes, user._id]
+        : post.likes.filter((id) => id !== user._id),
+    });
+
     try {
       const res = await postService.toggleLike(post._id);
+      // Reconcile with server truth
       onUpdate({
         ...post,
         isLiked: res.isLiked,
-        likes: res.isLiked ? [...post.likes, "dummy"] : post.likes.slice(0, -1),
+        likes: Array.isArray(res.likes) ? res.likes : post.likes, // Assuming server returns array or count
       });
     } catch (err) {
       console.error(err);
       toast.error("Failed to update like");
+      // Revert on error
+      onUpdate({
+        ...post,
+        isLiked: previousIsLiked,
+        likes: previousIsLiked
+          ? [...post.likes, user._id]
+          : post.likes.filter((id) => id !== user._id),
+      });
     }
   };
 
   const handleSave = async () => {
+    const previousIsSaved = post.isSaved;
+    onUpdate({ ...post, isSaved: !previousIsSaved });
+
     try {
       const res = await postService.toggleSave(post._id);
       onUpdate({ ...post, isSaved: res.isSaved });
@@ -63,6 +100,7 @@ function PostCard({ post, onUpdate }) {
     } catch (err) {
       console.error(err);
       toast.error("Failed to save post");
+      onUpdate({ ...post, isSaved: previousIsSaved }); // Revert
     }
   };
 
@@ -82,21 +120,37 @@ function PostCard({ post, onUpdate }) {
   const handleAddComment = async (e) => {
     e.preventDefault();
     if (!commentText.trim()) return;
+
+    // ✅ Optimistic UI for Comments
+    const tempId = `temp-${Date.now()}`;
+    const optimisticComment = {
+      _id: tempId,
+      content: commentText,
+      author: user,
+      createdAt: new Date().toISOString(),
+      isMine: true,
+      repliesCount: 0,
+    };
+
+    setComments((prev) => [optimisticComment, ...prev]);
+    onUpdate({ ...post, commentsCount: post.commentsCount + 1 });
+    setCommentText("");
     setSubmittingComment(true);
+
     try {
       const res = await postService.addComment(post._id, commentText);
 
-      // ✅ GUARD: socket may have already added this comment before the API responded
-      setComments((prev) => {
-        if (prev.some((c) => c._id === res.comment._id)) return prev;
-        return [res.comment, ...prev];
-      });
-
+      // Replace optimistic comment with real one
+      setComments((prev) =>
+        prev.map((c) => (c._id === tempId ? res.comment : c))
+      );
       onUpdate({ ...post, commentsCount: res.commentsCount });
-      setCommentText("");
     } catch (err) {
       console.error(err);
       toast.error("Failed to post comment");
+      // Revert on error
+      setComments((prev) => prev.filter((c) => c._id !== tempId));
+      onUpdate({ ...post, commentsCount: Math.max(0, post.commentsCount - 1) });
     } finally {
       setSubmittingComment(false);
     }
@@ -135,9 +189,7 @@ function PostCard({ post, onUpdate }) {
       if (postId !== post._id) return;
 
       setComments((prev) => {
-        // Prevent duplicate (author already added it locally)
         if (prev.some((c) => c._id === comment._id)) return prev;
-
         return [
           {
             ...comment,
@@ -146,11 +198,32 @@ function PostCard({ post, onUpdate }) {
           ...prev,
         ];
       });
+
+      // Only update count if we aren't the ones who just posted it optimistically
+      if (String(comment.author?._id) !== String(user?._id)) {
+        onUpdate((prevPost) => ({
+          ...prevPost,
+          commentsCount: prevPost.commentsCount + 1,
+        }));
+      }
     };
 
     const handleCommentDeleted = ({ postId, removedIds }) => {
       if (postId !== post._id) return;
-      setComments((prev) => prev.filter((c) => !removedIds.includes(c._id)));
+
+      let deletedCount = 0;
+      setComments((prev) => {
+        const filtered = prev.filter((c) => !removedIds.includes(c._id));
+        deletedCount = prev.length - filtered.length;
+        return filtered;
+      });
+
+      if (deletedCount > 0) {
+        onUpdate((prevPost) => ({
+          ...prevPost,
+          commentsCount: Math.max(0, prevPost.commentsCount - deletedCount),
+        }));
+      }
     };
 
     socket.on("new_comment", handleNewComment);
@@ -160,65 +233,80 @@ function PostCard({ post, onUpdate }) {
       socket.off("new_comment", handleNewComment);
       socket.off("comment_deleted", handleCommentDeleted);
     };
-  }, [socket, post._id, user]);
+  }, [socket, post._id, user, onUpdate]);
+
+  // Calculate images to show (max 4, with overflow indicator)
+  const visibleImages = post.images?.slice(0, 4) || [];
+  const remainingImages = (post.images?.length || 0) - 4;
 
   return (
-    <article className="post-card">
+    <article className="post-card" aria-label={`Post by ${post.author.name}`}>
       {post.sharedBy && (
         <div className="shared-banner">
-          <i className="bi bi-share-fill"></i>
+          <i className="bi bi-share-fill" aria-hidden="true"></i>
           <span>
             Shared with you by <strong>{post.sharedBy.name}</strong>
           </span>
         </div>
       )}
+
       <header className="post-header">
         <Link to={`/users/${post.author._id}`} className="post-author">
-          <img
-            src={authorPhoto}
-            alt={post.author.name}
-            className="post-avatar"
-          />
+          <img src={authorPhoto} alt="" className="post-avatar" />
           <div>
             <div className="post-author-name">
               {post.author.name}
               {post.author.isVerified && (
-                <i className="bi bi-patch-check-fill verified-badge"></i>
+                <i
+                  className="bi bi-patch-check-fill verified-badge"
+                  aria-label="Verified"
+                  title="Verified"
+                ></i>
               )}
             </div>
             <div className="post-meta">
-              {formatTime(post.createdAt)}
+              <time dateTime={post.createdAt}>
+                {formatTime(post.createdAt)}
+              </time>
               {post.isEdited && <span> · edited</span>}
             </div>
           </div>
         </Link>
 
         {post.isMine && (
-          <div className="post-menu">
+          <div className="post-menu" ref={menuRef}>
             <button
+              type="button"
               onClick={() => setShowMenu(!showMenu)}
               className="post-menu-btn"
+              aria-label="Post options"
+              aria-expanded={showMenu}
+              aria-haspopup="true"
             >
-              <i className="bi bi-three-dots"></i>
+              <i className="bi bi-three-dots" aria-hidden="true"></i>
             </button>
             {showMenu && (
-              <div className="post-menu-dropdown">
+              <div className="post-menu-dropdown" role="menu">
                 <button
+                  type="button"
+                  role="menuitem"
                   onClick={() => {
                     setEditing(true);
                     setShowMenu(false);
                   }}
                 >
-                  <i className="bi bi-pencil"></i> Edit
+                  <i className="bi bi-pencil" aria-hidden="true"></i> Edit
                 </button>
                 <button
+                  type="button"
+                  role="menuitem"
                   onClick={() => {
                     setShowDeleteConfirm(true);
                     setShowMenu(false);
                   }}
                   className="delete-action"
                 >
-                  <i className="bi bi-trash"></i> Delete
+                  <i className="bi bi-trash" aria-hidden="true"></i> Delete
                 </button>
               </div>
             )}
@@ -234,6 +322,7 @@ function PostCard({ post, onUpdate }) {
               onChange={(e) => setEditText(e.target.value)}
               maxLength={2000}
               rows={3}
+              aria-label="Edit post content"
             />
             <div className="post-edit-actions">
               <button
@@ -252,22 +341,33 @@ function PostCard({ post, onUpdate }) {
           <p className="post-content">{post.content}</p>
         )}
 
-        {post.images && post.images.length > 0 && (
-          <div
-            className={`post-images post-images-${Math.min(
-              post.images.length,
-              4
-            )}`}
-          >
-            {post.images.map((img, i) => (
-              <img
-                key={i}
-                src={postImg(img.url)}
-                alt={`Post ${i + 1}`}
-                loading="lazy"
-                className="post-image-clickable"
-                onClick={() => setLightboxIndex(i)}
-              />
+        {visibleImages.length > 0 && (
+          <div className={`post-images post-images-${visibleImages.length}`}>
+            {visibleImages.map((img, i) => (
+              <div key={i} className="post-image-wrapper">
+                <img
+                  src={postImg(img.url)}
+                  alt={`Post attachment ${i + 1}`}
+                  loading="lazy"
+                  className="post-image-clickable"
+                  onClick={() => setLightboxIndex(i)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === "Enter" && setLightboxIndex(i)}
+                />
+                {/* ✅ Overlay for extra images */}
+                {i === 3 && remainingImages > 0 && (
+                  <div
+                    className="post-image-overlay"
+                    onClick={() => setLightboxIndex(3)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => e.key === "Enter" && setLightboxIndex(3)}
+                  >
+                    <span>+{remainingImages}</span>
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -285,39 +385,55 @@ function PostCard({ post, onUpdate }) {
         </span>
       </div>
 
-      <div className="post-actions">
+      <div className="post-actions" role="group" aria-label="Post actions">
         <button
+          type="button"
           className={`post-action-btn ${post.isLiked ? "liked" : ""}`}
           onClick={handleLike}
+          aria-pressed={post.isLiked}
+          aria-label={post.isLiked ? "Unlike post" : "Like post"}
         >
           <i
             className={`bi ${post.isLiked ? "bi-heart-fill" : "bi-heart"}`}
+            aria-hidden="true"
           ></i>
           <span>{post.isLiked ? "Liked" : "Like"}</span>
         </button>
 
         <button
+          type="button"
           className={`post-action-btn ${showComments ? "active" : ""}`}
           onClick={loadComments}
+          aria-expanded={showComments}
+          aria-label="Comment on post"
         >
-          <i className="bi bi-chat"></i>
+          <i className="bi bi-chat" aria-hidden="true"></i>
           <span>Comment</span>
         </button>
 
         <button
+          type="button"
           className={`post-action-btn ${post.isSaved ? "saved" : ""}`}
           onClick={handleSave}
+          aria-pressed={post.isSaved}
+          aria-label={post.isSaved ? "Unsave post" : "Save post"}
         >
           <i
             className={`bi ${
               post.isSaved ? "bi-bookmark-fill" : "bi-bookmark"
             }`}
+            aria-hidden="true"
           ></i>
           <span>{post.isSaved ? "Saved" : "Save"}</span>
         </button>
 
-        <button className="post-action-btn" onClick={() => setShowShare(true)}>
-          <i className="bi bi-share"></i>
+        <button
+          type="button"
+          className="post-action-btn"
+          onClick={() => setShowShare(true)}
+          aria-label="Share post"
+        >
+          <i className="bi bi-share" aria-hidden="true"></i>
           <span>Share</span>
         </button>
       </div>
@@ -331,12 +447,14 @@ function PostCard({ post, onUpdate }) {
               onChange={(e) => setCommentText(e.target.value)}
               placeholder="Write a comment..."
               maxLength={500}
+              aria-label="Write a comment"
             />
             <button
               type="submit"
               disabled={submittingComment || !commentText.trim()}
+              aria-label="Post comment"
             >
-              <i className="bi bi-send-fill"></i>
+              <i className="bi bi-send-fill" aria-hidden="true"></i>
             </button>
           </form>
 
@@ -352,11 +470,12 @@ function PostCard({ post, onUpdate }) {
                   canDelete={c.isMine || post.isMine}
                   isPostOwner={post.isMine}
                   onDeleted={(id) => {
+                    // Handled by socket usually, but good fallback
                     setComments((prev) => prev.filter((x) => x._id !== id));
-                    onUpdate({
-                      ...post,
-                      commentsCount: Math.max(0, post.commentsCount - 1),
-                    });
+                    onUpdate((prevPost) => ({
+                      ...prevPost,
+                      commentsCount: Math.max(0, prevPost.commentsCount - 1),
+                    }));
                   }}
                 />
               ))
@@ -370,7 +489,7 @@ function PostCard({ post, onUpdate }) {
           post={post}
           onClose={() => setShowShare(false)}
           onShared={(sharedCount) =>
-            onUpdate({ ...post, sharesCount: sharedCount })
+            onUpdate((prevPost) => ({ ...prevPost, sharesCount: sharedCount }))
           }
         />
       )}
@@ -389,6 +508,7 @@ function PostCard({ post, onUpdate }) {
           handleDelete();
         }}
       />
+
       {lightboxIndex !== null && post.images?.length > 0 && (
         <PhotoLightbox
           photos={post.images}
@@ -400,7 +520,7 @@ function PostCard({ post, onUpdate }) {
   );
 }
 
-// 👇 CUSTOM COMPARISON FUNCTION - Only re-render when these properties change
+// 👇 CUSTOM COMPARISON FUNCTION
 function areEqual(prevProps, nextProps) {
   return (
     prevProps.post._id === nextProps.post._id &&
@@ -410,9 +530,9 @@ function areEqual(prevProps, nextProps) {
     prevProps.post.sharesCount === nextProps.post.sharesCount &&
     prevProps.post.isLiked === nextProps.post.isLiked &&
     prevProps.post.isSaved === nextProps.post.isSaved &&
-    prevProps.post.isEdited === nextProps.post.isEdited
+    prevProps.post.isEdited === nextProps.post.isEdited &&
+    prevProps.post.images?.length === nextProps.post.images?.length
   );
 }
 
-// 👇 EXPORT WITH MEMO + CUSTOM COMPARISON
 export default memo(PostCard, areEqual);

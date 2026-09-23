@@ -1,12 +1,11 @@
 <!DOCTYPE html>
-
 <html lang="en">
   <head>
     <!-- BASIC / SEO -->
-
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#ec4899" />
+    <meta name="color-scheme" content="light dark" />
 
     <meta
       name="google-site-verification"
@@ -29,14 +28,14 @@
     <link rel="canonical" href="https://mayamilan.vercel.app/" />
 
     <!-- GOOGLE ANALYTICS 4 -->
-
     <script
       async
       src="https://www.googletagmanager.com/gtag/js?id=G-X80HBDH82J"
+      crossorigin="anonymous"
     ></script>
-
     <script src="/analytics.js" defer></script>
 
+    <!-- OPEN GRAPH -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Maya Milan" />
     <meta property="og:url" content="https://mayamilan.vercel.app/" />
@@ -63,8 +62,9 @@
       property="og:image:alt"
       content="Maya Milan — Dating Platform for Meaningful Relationships"
     />
-
     <meta property="og:locale" content="en_US" />
+
+    <!-- TWITTER CARD -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Maya Milan — Trusted Dating Platform" />
     <meta
@@ -75,24 +75,28 @@
       name="twitter:image"
       content="https://mayamilan.vercel.app/images/og-cover.png"
     />
-
     <meta
       name="twitter:image:alt"
       content="Maya Milan — Dating Platform for Meaningful Relationships"
     />
 
+    <!-- ICONS -->
     <link rel="icon" type="image/png" href="/images/logo.png" />
-
     <link rel="apple-touch-icon" href="/images/logo.png" />
 
-    <link rel="preconnect" href="https://mayamilan.onrender.com" />
-
-    <link rel="dns-prefetch" href="https://mayamilan.onrender.com" />
-
+    <!-- RESOURCE HINTS — ✅ Fixed: matches actual production origin -->
+    <link rel="preconnect" href="https://mayamilan.vercel.app" />
+    <link rel="dns-prefetch" href="https://mayamilan.vercel.app" />
     <link rel="preconnect" href="https://res.cloudinary.com" />
-
     <link rel="dns-prefetch" href="https://res.cloudinary.com" />
+    <link
+      rel="preconnect"
+      href="https://www.googletagmanager.com"
+      crossorigin
+    />
+    <link rel="dns-prefetch" href="https://www.googletagmanager.com" />
 
+    <!-- STRUCTURED DATA -->
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -113,9 +117,7 @@
             "url": "https://mayamilan.vercel.app/",
             "name": "Maya Milan",
             "description": "Dating platform for meaningful relationships.",
-            "publisher": {
-              "@id": "https://mayamilan.vercel.app/#organization"
-            }
+            "publisher": { "@id": "https://mayamilan.vercel.app/#organization" }
           },
           {
             "@type": "WebApplication",
@@ -131,9 +133,7 @@
               "price": "0",
               "priceCurrency": "USD"
             },
-            "publisher": {
-              "@id": "https://mayamilan.vercel.app/#organization"
-            }
+            "publisher": { "@id": "https://mayamilan.vercel.app/#organization" }
           }
         ]
       }

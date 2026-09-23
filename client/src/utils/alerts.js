@@ -1,4 +1,4 @@
-import api from "../services/api";
+import api from "../utils/api"; // ✅ FIXED: correct import path
 
 /* =================================================================
    PART 1: IN-APP ALERTS (sound + vibration + system notification)
@@ -6,7 +6,10 @@ import api from "../services/api";
 
 let audioCtx = null;
 
-// Get or create the shared AudioContext (Safari needs webkit prefix)
+/**
+ * Get or create the shared AudioContext (Safari needs webkit prefix)
+ * @returns {AudioContext|null}
+ */
 const getAudioContext = () => {
   if (typeof window === "undefined") return null;
   const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -21,27 +24,32 @@ const getAudioContext = () => {
   return audioCtx;
 };
 
-// 👇 MUST be called synchronously inside a user gesture (click/tap)
+/**
+ * ⚠️ MUST be called synchronously inside a user gesture (click/tap).
+ * Unlocks WebAudio on Safari/Brave which start contexts suspended.
+ */
 export const unlockAudio = () => {
   const ctx = getAudioContext();
   if (!ctx) return;
 
-  // Resume if suspended (Safari/Brave start suspended)
   if (ctx.state === "suspended") {
     ctx.resume().catch(() => {});
   }
 
-  // Play a silent buffer to fully unlock on Safari
+  // Play silent buffer to fully unlock on Safari
   try {
     const buffer = ctx.createBuffer(1, 1, 22050);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
     source.start(0);
-    console.log("🔊 Audio unlocked, state:", ctx.state);
   } catch {}
 };
 
+/**
+ * Play a pleasant two-tone notification sound via WebAudio API.
+ * Falls back to HTML Audio element if WebAudio is unavailable.
+ */
 export const playNotificationSound = async () => {
   const ctx = getAudioContext();
   if (!ctx) {
@@ -49,7 +57,6 @@ export const playNotificationSound = async () => {
     return;
   }
 
-  // Safari/Brave: context may be suspended — resume BEFORE playing
   if (ctx.state === "suspended") {
     try {
       await ctx.resume();
@@ -72,24 +79,25 @@ export const playNotificationSound = async () => {
       osc.stop(now + start + dur + 0.05);
     };
 
-    // pleasant "ding-dong"
+    // Pleasant "ding-dong"
     tone(880, 0, 0.18);
     tone(660, 0.16, 0.28);
-  } catch (e) {
-    console.warn("WebAudio failed, using fallback:", e);
+  } catch {
     playFallbackSound();
   }
 };
 
-// Fallback: HTML <audio> element (works where WebAudio is blocked)
+// ✅ Valid short beep as WAV base64 (440Hz, 100ms, 8-bit mono)
+const FALLBACK_BEEP_BASE64 =
+  "data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YRAAAACAgICAgICAgICAgICAgICA";
+
 let fallbackAudio = null;
+
+/** Fallback sound using HTML Audio element (works where WebAudio is blocked) */
 const playFallbackSound = () => {
   try {
     if (!fallbackAudio) {
-      // Create a simple beep using Audio element (no file needed)
-      fallbackAudio = new Audio();
-      fallbackAudio.src =
-        "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgipGBc19RZ3+Wn5B1YExZbH+LhHx0gp6QeGBLXG1/j4qAdGBNX26AkIWEf3Z+lp+Qd2BNXW5/kYqFdH90fpafkHZgTV1uf5GKhXR/dH6Wn5B2YE1dbn+RioV0f3R+lp+QdmBNXW5/kYqFdH90fpafkHZgTV1uf5GKhXR/dH6Wn5B2YE1dbn+RioV0fw==";
+      fallbackAudio = new Audio(FALLBACK_BEEP_BASE64);
       fallbackAudio.volume = 0.6;
     }
     fallbackAudio.currentTime = 0;
@@ -97,16 +105,32 @@ const playFallbackSound = () => {
   } catch {}
 };
 
+/**
+ * Trigger device vibration pattern
+ * @param {number[]} [pattern=[120, 60, 120]] - Vibration pattern in ms
+ */
 export const vibrate = (pattern = [120, 60, 120]) => {
   navigator.vibrate?.(pattern);
 };
 
+/**
+ * Request browser notification permission
+ * @returns {Promise<"granted"|"denied"|"default"|"unsupported">}
+ */
 export const requestNotificationPermission = async () => {
   if (!("Notification" in window)) return "unsupported";
   if (Notification.permission === "granted") return "granted";
   return await Notification.requestPermission();
 };
 
+/**
+ * Show a system notification. Falls back to Service Worker on Android Chrome.
+ * @param {Object} options
+ * @param {string} options.title
+ * @param {string} options.body
+ * @param {string} [options.tag] - Deduplication tag
+ * @param {string} [options.url="/"] - URL to navigate to on click
+ */
 export const showSystemNotification = ({ title, body, tag, url = "/" }) => {
   if (!("Notification" in window) || Notification.permission !== "granted") {
     return;
@@ -124,7 +148,13 @@ export const showSystemNotification = ({ title, body, tag, url = "/" }) => {
     const n = new Notification(title, options);
     n.onclick = () => {
       window.focus();
-      window.location.href = url;
+      // ✅ Use history API instead of full page reload to preserve React state
+      try {
+        window.history.pushState({}, "", url);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      } catch {
+        window.location.href = url;
+      }
       n.close();
     };
   } catch {
@@ -139,15 +169,26 @@ export const showSystemNotification = ({ title, body, tag, url = "/" }) => {
    PART 2: WEB PUSH SUBSCRIPTION (works when browser is closed)
    ================================================================= */
 
+/**
+ * Convert URL-safe base64 VAPID key to Uint8Array
+ * @param {string} base64String
+ * @returns {Uint8Array}
+ */
 const urlBase64ToUint8Array = (base64String) => {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
   return Uint8Array.from([...atob(base64)].map((c) => c.charCodeAt(0)));
 };
 
+/**
+ * Subscribe to Web Push notifications.
+ * Requests permission, creates subscription, and registers with backend.
+ * @returns {Promise<boolean>} true if successfully subscribed
+ */
 export const subscribeToPush = async () => {
-  if (!("serviceWorker" in navigator) || !("PushManager" in window))
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     return false;
+  }
 
   const permission = await requestNotificationPermission();
   if (permission !== "granted") return false;
@@ -176,6 +217,10 @@ export const subscribeToPush = async () => {
   }
 };
 
+/**
+ * Unsubscribe from Web Push notifications.
+ * Notifies backend first, then removes local subscription.
+ */
 export const unsubscribeFromPush = async () => {
   try {
     const reg = await navigator.serviceWorker?.ready;

@@ -9,37 +9,47 @@ import { lazy, Suspense } from "react";
 
 import { useAuth } from "./hooks/useAuth";
 import Loader from "./components/Loader.jsx";
+import Footer from "./components/Footer.jsx";
+import Navbar from "./components/Navbar.jsx";
+import ScrollToTop from "./components/ScrollToTop";
+
+// ═══════════════════════════════════════════
+// EAGER IMPORTS — only public pages needed on first load
+// ═══════════════════════════════════════════
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
-import Profile from "./pages/Profile";
-import EditProfile from "./pages/EditProfile";
-import Discover from "./pages/Discover";
-import Matches from "./pages/Matches.jsx";
-import Messages from "./pages/Messages.jsx";
-import Footer from "./components/Footer.jsx";
-import Navbar from "./components/Navbar.jsx";
-import UserProfile from "./pages/UserProfile";
-import Notifications from "./pages/Notifications";
-import Feed from "./pages/Feed.jsx";
-import ScrollToTop from "./components/ScrollToTop";
-import Settings from "./pages/Settings.jsx";
-import SecurityPolicy from "./pages/SecurityPolicy";
 
-// LAZY IMPORTS (loaded on demand — shrinks initial bundle)
-const ChangePassword = lazy(() => import("./pages/ChangePassword"));
-const ForgotPassword = lazy(() => import("./pages/ForgotPassword.jsx"));
+// ═══════════════════════════════════════════
+// LAZY IMPORTS — everything else loaded on demand
+// ═══════════════════════════════════════════
+
+// Public (lazy)
 const Suggestion = lazy(() => import("./pages/Suggestion.jsx"));
+const ForgotPassword = lazy(() => import("./pages/ForgotPassword.jsx"));
 const OAuthSuccess = lazy(() => import("./pages/OAuthSuccess.jsx"));
 const About = lazy(() => import("./pages/About.jsx"));
 const Safety = lazy(() => import("./pages/Safety.jsx"));
 const SuccessStories = lazy(() => import("./pages/SuccessStories.jsx"));
 const Blog = lazy(() => import("./pages/Blog.jsx"));
 const BlogPost = lazy(() => import("./pages/BlogPost.jsx"));
+const SecurityPolicy = lazy(() => import("./pages/SecurityPolicy"));
+
+// Protected (lazy — ✅ moved from eager)
+const Profile = lazy(() => import("./pages/Profile"));
+const EditProfile = lazy(() => import("./pages/EditProfile"));
+const Discover = lazy(() => import("./pages/Discover"));
+const Matches = lazy(() => import("./pages/Matches.jsx"));
+const Messages = lazy(() => import("./pages/Messages.jsx"));
+const Notifications = lazy(() => import("./pages/Notifications"));
+const Feed = lazy(() => import("./pages/Feed.jsx"));
+const Settings = lazy(() => import("./pages/Settings.jsx"));
+const ChangePassword = lazy(() => import("./pages/ChangePassword"));
+const UserProfile = lazy(() => import("./pages/UserProfile"));
 const SavedPosts = lazy(() => import("./pages/SavedPosts.jsx"));
 const PostDetail = lazy(() => import("./pages/PostDetail.jsx"));
 
-// Admin — lazy (most users never visit)
+// Admin (lazy)
 const AdminRoutes = lazy(() => import("./pages/admin/AdminRoutes.jsx"));
 const AdminDashboard = lazy(() => import("./pages/admin/AdminDashboard.jsx"));
 const Users = lazy(() => import("./pages/admin/Users.jsx"));
@@ -49,6 +59,9 @@ const AdminSuggestions = lazy(() =>
   import("./pages/admin/AdminSuggestions.jsx")
 );
 
+// ═══════════════════════════════════════════
+// PROTECTED ROUTE GUARD
+// ═══════════════════════════════════════════
 function ProtectedRoute({ children, adminOnly = false }) {
   const { isAuthenticated, loading, user } = useAuth();
   const location = useLocation();
@@ -65,7 +78,14 @@ function ProtectedRoute({ children, adminOnly = false }) {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace state={{ from: location }} />;
+    // ✅ Preserve full path + query params for post-login redirect
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: location.pathname + location.search }}
+      />
+    );
   }
 
   if (adminOnly && user?.role !== "admin") {
@@ -75,6 +95,9 @@ function ProtectedRoute({ children, adminOnly = false }) {
   return children;
 }
 
+// ═══════════════════════════════════════════
+// APP SHELL
+// ═══════════════════════════════════════════
 function App() {
   return (
     <BrowserRouter>
@@ -92,7 +115,7 @@ function AppContent() {
       <ScrollToTop />
       <Navbar />
 
-      {/* Suspense wraps Routes — shows Loader while lazy pages load */}
+      {/* ✅ Semantic main landmark wrapping all route content */}
       <Suspense
         fallback={
           <Loader
@@ -104,12 +127,12 @@ function AppContent() {
         }
       >
         <Routes>
-          {/* PUBLIC (eager) */}
+          {/* ── PUBLIC (eager) ─────────────────────── */}
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
 
-          {/* PUBLIC (lazy — loaded on demand) */}
+          {/* ── PUBLIC (lazy) ──────────────────────── */}
           <Route path="/suggestion" element={<Suggestion />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/oauth-success" element={<OAuthSuccess />} />
@@ -120,7 +143,7 @@ function AppContent() {
           <Route path="/blog/:slug" element={<BlogPost />} />
           <Route path="/security-policy" element={<SecurityPolicy />} />
 
-          {/* PROTECTED (any logged-in user) */}
+          {/* ── PROTECTED (lazy) ───────────────────── */}
           <Route
             path="/settings"
             element={
@@ -129,7 +152,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/profile"
             element={
@@ -138,7 +160,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/profile/edit"
             element={
@@ -147,7 +168,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/dashboard"
             element={
@@ -156,7 +176,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/discover"
             element={
@@ -165,7 +184,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/matches"
             element={
@@ -174,7 +192,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/messages"
             element={
@@ -183,7 +200,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/notifications"
             element={
@@ -192,7 +208,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/change-password"
             element={
@@ -201,7 +216,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/users/:userId"
             element={
@@ -210,7 +224,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/feed"
             element={
@@ -219,7 +232,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/saved"
             element={
@@ -228,7 +240,6 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/post/:postId"
             element={
@@ -238,29 +249,42 @@ function AppContent() {
             }
           />
 
-          {/* ADMIN ONLY (lazy — most users never visit) */}
+          {/* ── ADMIN (lazy) ───────────────────────── */}
           <Route element={<AdminRoutes />}>
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/admin/users" element={<Users />} />
             <Route path="/admin/users/:userId" element={<UserDetails />} />
             <Route path="/admin/reports" element={<AdminReports />} />
-            <Route
-              path="/admin/suggestions"
-              element={
-                <ProtectedRoute adminOnly>
-                  <AdminSuggestions />
-                </ProtectedRoute>
-              }
-            />
+            {/* ✅ Removed redundant ProtectedRoute — AdminRoutes already guards */}
+            <Route path="/admin/suggestions" element={<AdminSuggestions />} />
           </Route>
 
-          {/* UNKNOWN */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* ── CATCH-ALL ──────────────────────────── */}
+          <Route path="*" element={<NotFoundRedirect />} />
         </Routes>
       </Suspense>
 
       {!hideFooter && <Footer />}
     </>
+  );
+}
+
+/**
+ * Smart 404 handler: redirects authenticated users to discover,
+ * unauthenticated users to home. Preserves intent via state.
+ */
+function NotFoundRedirect() {
+  const { isAuthenticated, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) return null;
+
+  return (
+    <Navigate
+      to={isAuthenticated ? "/discover" : "/"}
+      replace
+      state={{ notFoundFrom: location.pathname }}
+    />
   );
 }
 

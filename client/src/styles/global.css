@@ -1334,7 +1334,6 @@ body {
   }
 }
 
-
 /* ===== FIX CALENDAR OVERFLOW ISSUES ===== */
 
 /* Allow calendar to escape the card bounds */
@@ -1426,7 +1425,7 @@ body {
 
 /* Navigation arrows */
 .react-datepicker__navigation-icon::before {
-  content: '' !important;
+  content: "" !important;
   position: absolute !important;
   top: 50% !important;
   left: 50% !important;
@@ -1611,7 +1610,7 @@ body {
   .react-datepicker {
     width: 260px !important;
   }
-  
+
   .react-datepicker__day-name,
   .react-datepicker__day {
     width: 36px !important;
@@ -1619,8 +1618,136 @@ body {
     line-height: 36px !important;
     flex: 0 0 36px !important;
   }
-  
+
   .react-datepicker-popper {
     left: -50px !important;
+  }
+}
+
+/* Replace inline avatar styles */
+.notif-avatar-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.notif-avatar {
+  width: 50px;
+  height: 50px;
+  object-fit: cover;
+}
+
+.notif-avatar-placeholder {
+  width: 50px;
+  height: 50px;
+}
+
+.notif-unread-dot {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  transform: translate(-50%, 0);
+  width: 12px;
+  height: 12px;
+  background-color: var(--bs-danger, #dc3545);
+  border: 2px solid var(--bs-body-bg, #fff);
+  border-radius: 50%;
+}
+
+.otp-input {
+  font-size: 24px;
+  letter-spacing: 8px;
+}
+
+.settings-page {
+  max-width: 900px;
+}
+.settings-oauth-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #4285f4, #34a853);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+}
+.settings-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #f1f5f9;
+  flex-shrink: 0;
+}
+.settings-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.settings-avatar-initial {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: #64748b;
+}
+.settings-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.settings-modal {
+  max-width: 420px;
+  width: 100%;
+  background: white;
+  border-radius: 16px;
+  overflow: hidden;
+}
+.settings-modal-padded {
+  padding: 24px;
+}
+.settings-qr-img {
+  width: 240px;
+  height: 240px;
+  margin: 0 auto;
+  display: block;
+}
+.settings-secret-code {
+  letter-spacing: 2px;
+}
+.settings-backup-codes-list {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  font-family: monospace;
+  font-size: 15px;
+}
+.otp-input {
+  letter-spacing: 8px;
+  font-family: monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-modal {
+    background: #1f2937;
+    color: #e5e7eb;
+  }
+  .settings-avatar {
+    background: #374151;
+  }
+  .settings-avatar-initial {
+    color: #9ca3af;
+  }
+  .settings-backup-codes-list {
+    background: #374151;
   }
 }

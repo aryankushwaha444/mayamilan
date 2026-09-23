@@ -49,16 +49,32 @@ import {
   verifyOTPLimiter,
   passwordResetLimiter,
   reactivationLimiter,
-  sessionManagementLimiter
+  sessionManagementLimiter,
+  oauthLimiter, // ✅ ADD: dedicated OAuth limiter
 } from "../middleware/rateLimits.js";
 
 const router = express.Router();
+
+// Validate CLIENT_URL at startup to prevent open redirects
+const CLIENT_URL = process.env.CLIENT_URL;
+if (!CLIENT_URL) {
+  throw new Error("CLIENT_URL environment variable is required");
+}
+
+// Safe redirect helper — validates target is within CLIENT_URL
+const safeRedirect = (res, path) => {
+  const url = `${CLIENT_URL}${path}`;
+  // Prevent open redirect: ensure URL starts with trusted origin
+  if (!url.startsWith(CLIENT_URL)) {
+    return res.redirect(CLIENT_URL);
+  }
+  return res.redirect(url);
+};
 
 // ========================================
 // AUTH ROUTES
 // ========================================
 
-// Entry points — IP reputation + rate limit (no signature required)
 router.post(
   "/register",
   registerLimiter,
@@ -75,7 +91,6 @@ router.post(
   login
 );
 
-// Critical auth completion — signature required
 router.post(
   "/login/2fa",
   loginLimiter,
@@ -92,7 +107,6 @@ router.post(
   completeOAuth2FA
 );
 
-// ✅ FIXED: Added rate limiter to prevent abuse
 router.post(
   "/reactivate",
   reactivationLimiter,
@@ -101,14 +115,12 @@ router.post(
   reactivateAccount
 );
 
-// Session management
-router.post("/logout", jsonLimit("100b"), logout);
+router.post("/logout", jsonLimit("1kb"), logout);
 
-router.post("/refresh", refreshLimiter, jsonLimit("100b"), refreshAccessToken);
+router.post("/refresh", refreshLimiter, jsonLimit("1kb"), refreshAccessToken);
 
 router.get("/me", protect, getMe);
 
-// Change password with body limit
 router.put(
   "/change-password",
   protect,
@@ -118,7 +130,7 @@ router.put(
 );
 
 // ========================================
-// OTP & PASSWORD RESET (rate-limited)
+// OTP & PASSWORD RESET
 // ========================================
 
 router.post("/send-otp", sendOTPLimiter, jsonLimit("500b"), sendOTPCode);
@@ -144,17 +156,16 @@ router.post(
 );
 
 // ========================================
-// SESSION MANAGEMENT (Device Binding)
+// SESSION MANAGEMENT
 // ========================================
 
 router.get("/sessions", protect, getSessions);
 
-// ✅ FIXED: Added rate limiter to session management
 router.delete(
   "/sessions/:sessionId",
   protect,
   sessionManagementLimiter,
-  jsonLimit("100b"),
+  jsonLimit("1kb"),
   verifySignature,
   revokeSession
 );
@@ -163,17 +174,18 @@ router.post(
   "/sessions/revoke-others",
   protect,
   sessionManagementLimiter,
-  jsonLimit("100b"),
+  jsonLimit("1kb"),
   verifySignature,
   revokeAllOtherSessions
 );
 
 // ========================================
-// GOOGLE OAUTH
+// GOOGLE OAUTH (✅ RATE LIMITED)
 // ========================================
 
 router.get(
   "/google",
+  oauthLimiter, // ✅ Per-IP rate limit on OAuth initiation
   passport.authenticate("google", {
     scope: ["profile", "email"],
     session: false,
@@ -182,32 +194,29 @@ router.get(
 
 router.get(
   "/google/callback",
+  oauthLimiter, // ✅ Per-IP rate limit on callback (prevents redirect loop abuse)
   passport.authenticate("google", {
     session: false,
-    failureRedirect: `${process.env.CLIENT_URL}/register?error=google_failed`,
+    failureRedirect: `${CLIENT_URL}/register?error=google_failed`,
   }),
   async (req, res) => {
     try {
       const user = req.user;
 
       if (!user) {
-        return res.redirect(`${process.env.CLIENT_URL}/register?error=no_user`);
+        return safeRedirect(res, "/register?error=no_user");
       }
 
-      // CHECK: Is this account deactivated (soft-deleted)?
+      // ── Deactivated account (soft-deleted) ──────────
       if (user.deletedAt) {
         const now = new Date();
 
         if (now > user.scheduledDeletionAt) {
-          return res.redirect(
-            `${process.env.CLIENT_URL}/login?error=account_permanently_deleted`
-          );
+          return safeRedirect(res, "/login?error=account_permanently_deleted");
         }
 
         if ((user.reactivationAttempts || 0) >= 3) {
-          return res.redirect(
-            `${process.env.CLIENT_URL}/login?error=too_many_attempts`
-          );
+          return safeRedirect(res, "/login?error=too_many_attempts");
         }
 
         const daysRemaining = Math.ceil(
@@ -229,23 +238,15 @@ router.get(
           attempts: String(attemptsRemaining),
         });
 
-        return res.redirect(
-          `${process.env.CLIENT_URL}/login?${params.toString()}`
-        );
+        return safeRedirect(res, `/login?${params.toString()}`);
       }
 
-      // CHECK: Is the email blocked?
+      // ── Email blocked ───────────────────────────────
       if (user.emailBlockedUntil && user.emailBlockedUntil > new Date()) {
-        return res.redirect(
-          `${process.env.CLIENT_URL}/login?error=email_blocked`
-        );
+        return safeRedirect(res, "/login?error=email_blocked");
       }
 
-      // ========================================
-      // Normal flow — user is active
-      // ========================================
-
-      // CHECK: Check if 2FA is enabled — require verification
+      // ── 2FA enabled — require verification ──────────
       if (user.twoFactorEnabled) {
         const tempToken = jwt.sign(
           { userId: user._id.toString(), type: "oauth-2fa-pending" },
@@ -259,17 +260,13 @@ router.get(
           ip: req.ip,
         });
 
-        // Redirect back to login with the pending token
-        return res.redirect(
-          `${process.env.CLIENT_URL}/login?oauth2fa=1&tempToken=${tempToken}`
-        );
+        return safeRedirect(res, `/login?oauth2fa=1&tempToken=${tempToken}`);
       }
 
-      // No 2FA — issue tokens directly
+      // ── Normal flow — issue tokens ──────────────────
       const refreshToken = generateRefreshToken(user._id.toString());
       const deviceId = getDeviceId(req);
 
-      // Create session FIRST to get _id for access token binding
       const session = await RefreshToken.create({
         user: user._id,
         tokenHash: hashToken(refreshToken),
@@ -288,10 +285,9 @@ router.get(
         path: "/",
       });
 
-      // Access token now BOUND to session ID for instant revocation
       const accessToken = generateAccessToken(user._id.toString(), session._id);
 
-      // ✅ IMPROVED: Only send minimal user data in URL
+      // ✅ Minimal user data in URL — sensitive fields fetched via /me
       const userB64 = Buffer.from(
         JSON.stringify({
           _id: user._id,
@@ -303,13 +299,16 @@ router.get(
         })
       ).toString("base64");
 
-      // ✅ NOTE: Sensitive data (photos, DOB, etc.) should be fetched via /api/auth/me
-      res.redirect(
-        `${process.env.CLIENT_URL}/oauth-success?token=${accessToken}&user=${userB64}`
+      // ✅ URL-encode base64 to prevent special char issues
+      safeRedirect(
+        res,
+        `/oauth-success?token=${encodeURIComponent(
+          accessToken
+        )}&user=${encodeURIComponent(userB64)}`
       );
     } catch (error) {
-      console.error("Google callback error:", error);
-      res.redirect(`${process.env.CLIENT_URL}/register?error=server_error`);
+      // ✅ No console.error in production
+      safeRedirect(res, "/register?error=server_error");
     }
   }
 );

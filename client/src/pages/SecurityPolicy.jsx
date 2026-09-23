@@ -5,19 +5,29 @@ function SecurityPolicy() {
     <>
       <SEO
         title="Security Policy — Maya Milan"
-        description="Our vulnerability disclosure policy and safe harbor commitment."
+        description="Our vulnerability disclosure policy and safe harbor commitment. Report security issues responsibly."
         path="/security-policy"
+        type="article"
       />
 
-      <div className="container py-5" style={{ maxWidth: 800 }}>
+      <main className="container py-5 security-policy-page" id="main-content">
         <h1 className="fw-bold mb-4">
-          <i className="bi bi-shield-check me-2 text-primary"></i>
+          <i
+            className="bi bi-shield-check me-2 text-primary"
+            aria-hidden="true"
+          ></i>
           Security Policy
         </h1>
 
-        <div className="card border-0 shadow-sm mb-4">
+        {/* Scope */}
+        <section
+          className="card border-0 shadow-sm mb-4"
+          aria-labelledby="scope-heading"
+        >
           <div className="card-body p-4">
-            <h4 className="fw-bold mb-3"> Scope</h4>
+            <h4 id="scope-heading" className="fw-bold mb-3">
+              Scope
+            </h4>
             <p className="text-muted">
               We welcome security research on the following:
             </p>
@@ -35,11 +45,21 @@ function SecurityPolicy() {
               against your own account.
             </p>
           </div>
-        </div>
+        </section>
 
-        <div className="card border-0 shadow-sm mb-4">
+        {/* Safe Harbor */}
+        <section
+          className="card border-0 shadow-sm mb-4"
+          aria-labelledby="harbor-heading"
+        >
           <div className="card-body p-4">
-            <h4 className="fw-bold mb-3">✅ Safe Harbor</h4>
+            <h4 id="harbor-heading" className="fw-bold mb-3">
+              <i
+                className="bi bi-check-circle-fill me-2 text-success"
+                aria-hidden="true"
+              ></i>
+              Safe Harbor
+            </h4>
             <p className="text-muted mb-0">
               If you conduct good-faith security research in accordance with
               this policy, we consider your research authorized, will work with
@@ -47,15 +67,31 @@ function SecurityPolicy() {
               action.
             </p>
           </div>
-        </div>
+        </section>
 
-        <div className="card border-0 shadow-sm mb-4">
+        {/* Reporting Guidelines */}
+        <section
+          className="card border-0 shadow-sm mb-4"
+          aria-labelledby="reporting-heading"
+        >
           <div className="card-body p-4">
-            <h4 className="fw-bold mb-3">📋 Reporting Guidelines</h4>
+            <h4 id="reporting-heading" className="fw-bold mb-3">
+              <i
+                className="bi bi-envelope-paper-fill me-2 text-primary"
+                aria-hidden="true"
+              ></i>
+              Reporting Guidelines
+            </h4>
             <ul className="text-muted">
               <li>
-                Email <strong>rupnarayan444@gmail.com</strong> with a detailed
-                description
+                Email{" "}
+                <a
+                  href="mailto:rupnarayan444@gmail.com"
+                  className="fw-semibold"
+                >
+                  rupnarayan444@gmail.com
+                </a>{" "}
+                with a detailed description
               </li>
               <li>Include steps to reproduce (PoC scripts welcome)</li>
               <li>
@@ -69,11 +105,21 @@ function SecurityPolicy() {
               </li>
             </ul>
           </div>
-        </div>
+        </section>
 
-        <div className="card border-0 shadow-sm">
+        {/* Our Commitment */}
+        <section
+          className="card border-0 shadow-sm"
+          aria-labelledby="commitment-heading"
+        >
           <div className="card-body p-4">
-            <h4 className="fw-bold mb-3">⏱️ Our Commitment</h4>
+            <h4 id="commitment-heading" className="fw-bold mb-3">
+              <i
+                className="bi bi-clock-history me-2 text-warning"
+                aria-hidden="true"
+              ></i>
+              Our Commitment
+            </h4>
             <ul className="text-muted mb-0">
               <li>
                 <strong>48 hours:</strong> We acknowledge your report
@@ -90,8 +136,8 @@ function SecurityPolicy() {
               </li>
             </ul>
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     </>
   );
 }
