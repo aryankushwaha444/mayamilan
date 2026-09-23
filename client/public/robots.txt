@@ -46,16 +46,6 @@ Disallow: /assets/
 Disallow: /.well-known/
 
 # ========================================
-# CRAWL DELAY (be nice to servers)
-# ========================================
-Crawl-delay: 10
-
-# ========================================
 # SITEMAP
 # ========================================
 Sitemap: https://mayamilan.vercel.app/sitemap.xml
-
-# ========================================
-# HOST (preferred domain)
-# ========================================
-Host: https://mayamilan.vercel.app
