@@ -203,26 +203,36 @@ export const discoverUsers = async (req, res, next) => {
 
     const myCoords = getCoords(me?.location);
 
-    const formattedUsers = users.map((user) => ({
-      ...user,
-      isLiked: false,
-      isMatched: false,
-      isProfileComplete: !!(
-        user.photos?.length > 0 &&
-        user.dateOfBirth &&
-        user.gender
-      ),
-      age: user.dateOfBirth
-        ? Math.floor(
-            (new Date() - new Date(user.dateOfBirth)) /
-              (365.25 * 24 * 60 * 60 * 1000)
-          )
-        : null,
-      distanceKm:
-        hasValidCoordinates(user.location) && myCoords
-          ? Math.round(calculateDistance(myCoords, getCoords(user.location)))
+    // ✅ FIX: the liked/matched data was already fetched above but discarded, so every
+    // card rendered isLiked:false -> clicking an already-liked person POSTed /likes and
+    // got 400 alreadyLiked (the Discover/ProfileCard bug). Populate the real flags from
+    // the sets we already built. matchedUserIds are excluded from the feed today, so
+    // isMatched is always false here, but computing it is correct + future-proof and
+    // costs nothing (it's an O(1) Set lookup, not a new query).
+    const likedSet = new Set(likedUserIds);
+    const formattedUsers = users.map((user) => {
+      const uid = user._id.toString();
+      return {
+        ...user,
+        isLiked: likedSet.has(uid),
+        isMatched: matchedUserIds.has(uid),
+        isProfileComplete: !!(
+          user.photos?.length > 0 &&
+          user.dateOfBirth &&
+          user.gender
+        ),
+        age: user.dateOfBirth
+          ? Math.floor(
+              (new Date() - new Date(user.dateOfBirth)) /
+                (365.25 * 24 * 60 * 60 * 1000)
+            )
           : null,
-    }));
+        distanceKm:
+          hasValidCoordinates(user.location) && myCoords
+            ? Math.round(calculateDistance(myCoords, getCoords(user.location)))
+            : null,
+      };
+    });
 
     // ✅ ADDED: Audit logging for discovery queries
     await safeLogAudit(req, "discovery_feed_viewed", {
@@ -277,7 +287,7 @@ function calculateDistance(coords1, coords2) {
   const [lon2, lat2] = coords2;
   const R = 6371;
   const dLat = (lat2 - lat1) * (Math.PI / 180);
-  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const dLon = (lon2 - lat1) * (Math.PI / 180);
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(lat1 * (Math.PI / 180)) *

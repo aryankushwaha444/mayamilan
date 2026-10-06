@@ -33,7 +33,6 @@ function Discover() {
     hasNextPage: false,
   });
 
-  // ✅ Refs to avoid stale closures in socket handlers
   const filtersRef = useRef(filters);
   const paginationRef = useRef(pagination);
 
@@ -44,13 +43,11 @@ function Discover() {
     paginationRef.current = pagination;
   }, [pagination]);
 
-  // ✅ Memoized active filter count
   const activeFilterCount = useMemo(
     () => Object.values(filters).filter((v) => v !== "").length,
     [filters]
   );
 
-  // ✅ Stable fetch function
   const fetchUsers = useCallback(
     async (currentFilters = filtersRef.current, page = 1) => {
       try {
@@ -77,7 +74,6 @@ function Discover() {
         }
       } catch (err) {
         console.error("Discovery error:", err);
-        // 🛑 Use local setError, DO NOT use toast.error here to prevent global re-renders
         setError(
           err.response?.status === 429
             ? "Too many requests. Please wait a moment and retry."
@@ -90,16 +86,16 @@ function Discover() {
     []
   );
 
-  // ✅ Initial load
   useEffect(() => {
     fetchUsers();
   }, []);
 
-  // ✅ SOCKET LISTENERS — use refs to avoid stale closures
+  // ✅ SOCKET LISTENERS — payloads now match the server (matchedUserId / userId).
   useEffect(() => {
     if (!socket) return;
 
     const handleMatchRemoved = ({ userId }) => {
+      if (!userId) return;
       setUsers((prev) =>
         prev.map((u) =>
           u._id === userId ? { ...u, isMatched: false, isLiked: false } : u
@@ -108,9 +104,10 @@ function Discover() {
     };
 
     const handleNewMatch = ({ matchedUserId }) => {
+      if (!matchedUserId) return;
       setUsers((prev) =>
         prev.map((u) =>
-          u._id === matchedUserId ? { ...u, isMatched: true } : u
+          u._id === matchedUserId ? { ...u, isMatched: true, isLiked: true } : u
         )
       );
     };
@@ -139,56 +136,82 @@ function Discover() {
     fetchUsers(EMPTY_FILTERS, 1);
   };
 
-  // ✅ Optimistic like/unlike — NO full refetch
+  // ✅ Optimistic like/unlike — NO full refetch; duplicate/alreadyLiked reconciles
+  // instead of reverting; unlike clears the match flag when the server unmatches.
   const handleLike = async (user) => {
     const previousUsers = [...users];
 
     try {
       if (user.isLiked) {
-        // Optimistic unlike
         setUsers((prev) =>
           prev.map((u) => (u._id === user._id ? { ...u, isLiked: false } : u))
         );
 
         const response = await unlikeUser(user._id);
         if (!response.success) {
-          setUsers(previousUsers); // Revert
+          setUsers(previousUsers);
           toast.error("Failed to remove like", "Error", 3000);
         } else {
+          if (response.unmatched) {
+            setUsers((prev) =>
+              prev.map((u) =>
+                u._id === user._id ? { ...u, isMatched: false } : u
+              )
+            );
+          }
           toast.info("Removed like", "Unlike", 2000);
         }
         return;
       }
 
-      // Optimistic like
       setUsers((prev) =>
         prev.map((u) => (u._id === user._id ? { ...u, isLiked: true } : u))
       );
 
       const response = await likeUser(user._id);
       if (response.success) {
+        // Server is idempotent: a duplicate like returns 200 { liked, alreadyLiked, matched }.
+        setUsers((prev) =>
+          prev.map((u) =>
+            u._id === user._id
+              ? {
+                  ...u,
+                  isLiked: true,
+                  isMatched: response.matched ? true : u.isMatched,
+                }
+              : u
+          )
+        );
         if (response.matched) {
-          // Update match status locally
-          setUsers((prev) =>
-            prev.map((u) =>
-              u._id === user._id ? { ...u, isMatched: true } : u
-            )
-          );
           toast.success("It's a Match! 💕", "New Match", 5000);
-        } else {
+        } else if (!response.alreadyLiked) {
           toast.success("Like sent! ❤️", "Liked", 2000);
         }
+        // alreadyLiked && !matched -> silent no‑op (stale UI), heart stays filled.
       } else {
-        setUsers(previousUsers); // Revert
+        setUsers(previousUsers);
         toast.error("Failed to like user", "Error", 3000);
       }
     } catch (err) {
-      setUsers(previousUsers); // Revert on any error
-      toast.error(
-        err.response?.data?.message || "Failed to like user",
-        "Error",
-        4000
-      );
+      const data = err.response?.data || {};
+      // Back‑compat: if an OLD server still 400s alreadyLiked, reconcile silently
+      // (and flip matched if it happens to report one) instead of reverting.
+      if (data.alreadyLiked) {
+        setUsers((prev) =>
+          prev.map((u) =>
+            u._id === user._id
+              ? {
+                  ...u,
+                  isLiked: true,
+                  isMatched: data.matched ? true : u.isMatched,
+                }
+              : u
+          )
+        );
+        return;
+      }
+      setUsers(previousUsers);
+      toast.error(data.message || "Failed to like user", "Error", 4000);
     }
   };
 
@@ -201,7 +224,6 @@ function Discover() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  // ✅ Smart pagination: show current page ± 2 with ellipsis
   const paginationPages = useMemo(() => {
     const { page, totalPages } = pagination;
     if (totalPages <= 7)
@@ -223,7 +245,6 @@ function Discover() {
 
   return (
     <main className="container py-4 py-md-5" id="main-content">
-      {/* Header */}
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-4">
         <h1 className="fw-bold mb-1">Discover</h1>
         {pagination.total > 0 && (
@@ -233,7 +254,6 @@ function Discover() {
         )}
       </div>
 
-      {/* Filters */}
       <div className="filter-composer mb-4">
         {!showFilters ? (
           <div className="filter-composer-collapsed">
@@ -411,7 +431,6 @@ function Discover() {
         )}
       </div>
 
-      {/* Error */}
       {error && (
         <div className="alert alert-danger" role="alert">
           <i
@@ -422,7 +441,6 @@ function Discover() {
         </div>
       )}
 
-      {/* Content */}
       {loading ? (
         <Loader
           full

@@ -112,13 +112,19 @@ const getLastMessagePreviews = async (matchIds, currentUserId) => {
 
 /**
  * Format match for API response
+ * ✅ GUARD: a populated `users` array can contain `null` for a peer whose User doc was
+ * hard-deleted (post-grace) while their Match row survived an incomplete cascade. The
+ * old `.find(u => u._id.toString() ...)` threw on that null -> 500 on the Matches page.
+ * Skip null/missing sides so the match simply drops out (getMatches filters it;
+ * getMatchById returns its existing 404). No signature/return-shape change.
  */
 const formatMatch = (match, currentUserId, previewMap) => {
-  const matchedUser = match.users.find(
-    (u) => u._id.toString() !== currentUserId.toString()
+  const meStr = currentUserId.toString();
+  const matchedUser = (match.users || []).find(
+    (u) => u && u._id && u._id.toString() !== meStr
   );
 
-  if (!matchedUser) return null;
+  if (!matchedUser || !matchedUser._id) return null;
 
   const age = matchedUser.dateOfBirth
     ? Math.floor(

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { submitSuggestion } from "../services/suggestionService.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import SEO from "../components/SEO";
-import "../styles/suggestion.css";
+import "../styles/pages/suggestion.css";
 
 const MAX_MESSAGE_LENGTH = 2000;
 

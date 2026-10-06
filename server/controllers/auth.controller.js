@@ -4,6 +4,12 @@ import User from "../models/User.js";
 import RefreshToken from "../models/RefreshToken.js";
 import { registerSchema, loginSchema } from "../validators/auth.validator.js";
 import { sendOTP, sendSuspiciousLoginEmail } from "../config/email.js";
+import mongoose from "mongoose";
+import Match from "../models/Match.js";
+import Like from "../models/Like.js";
+import Conversation from "../models/Conversation.js";
+import Notification from "../models/Notification.js";
+import { getIO } from "../sockets/socket.js";
 import {
   generateOTP,
   saveOTP,
@@ -914,6 +920,113 @@ export const refreshAccessToken = async (req, res, next) => {
   }
 };
 
+/**
+ * Grace‑layer repair: when a user reactivates, any Match that went INACTIVE during
+ * soft‑delete (because the old deleteAccount over‑cascaded) but whose two like rows
+ * still mutually exist is reactivated, its archived conversation revived, and both
+ * feeds notified — so the partner sees the match again with NO re‑like. Guards:
+ * mutual‑like required (never resurrect from a one‑sided like), two‑way block checked,
+ * the *other* side must still be active/not deleted, notifications deduped, ids
+ * normalized to ObjectId so conversation $all dedupe actually matches stored rows.
+ * No‑op when deleteAccount is already correct (finds zero such matches).
+ */
+const restoreMatchesForReactivatedUser = async (userId, req) => {
+  const me = new mongoose.Types.ObjectId(userId.toString());
+  const meStr = me.toString();
+  const inactive = await Match.find({ users: me, isActive: false }).lean();
+  if (!inactive.length) return 0;
+
+  let restored = 0;
+  for (const m of inactive) {
+    const otherRaw = (m.users || []).find(
+      (u) => u && u.toString() !== meStr
+    );
+    if (!otherRaw) continue;
+    const other = new mongoose.Types.ObjectId(otherRaw.toString());
+    const otherStr = other.toString();
+
+    // mutual likes still present? (don't rebuild a match from a purged side)
+    const [ab, ba] = await Promise.all([
+      Like.exists({ from: me, to: other }),
+      Like.exists({ from: other, to: me }),
+    ]);
+    if (!ab || !ba) continue;
+
+    // two‑way block + other‑side liveness guard
+    const [um, uo] = await Promise.all([
+      User.findById(me).select("blockedUsers").lean(),
+      User.findById(other).select("blockedUsers isActive deletedAt").lean(),
+    ]);
+    const blocked =
+      (um?.blockedUsers || []).some((id) => id.toString() === otherStr) ||
+      (uo?.blockedUsers || []).some((id) => id.toString() === meStr);
+    if (blocked) continue;
+    if (!uo || uo.isActive === false || uo.deletedAt) continue;
+
+    // reactivate the match row
+    await Match.updateOne(
+      { _id: m._id },
+      { $set: { isActive: true, unmatchedAt: null, unmatchedBy: null } }
+    );
+
+    // revive the archived conversation (normalized ObjectId participants)
+    const participants = [me, other].sort((x, y) =>
+      x.toString().localeCompare(y.toString())
+    );
+    const conv = await Conversation.findOne({
+      participants: { $all: participants, $size: 2 },
+    });
+    if (conv) {
+      let changed = false;
+      if (conv.isActive !== true) { conv.isActive = true; changed = true; }
+      if (!conv.match || conv.match.toString() !== m._id.toString()) {
+        conv.match = m._id; changed = true;
+      }
+      if (
+        Array.isArray(conv.hiddenBy) &&
+        conv.hiddenBy.some((id) => id.toString() === meStr || id.toString() === otherStr)
+      ) {
+        conv.hiddenBy = conv.hiddenBy.filter(
+          (id) => id.toString() !== meStr && id.toString() !== otherStr
+        );
+        changed = true;
+      }
+      if (changed) await conv.save();
+      if (!m.conversation || m.conversation.toString() !== conv._id.toString()) {
+        await Match.updateOne({ _id: m._id }, { $set: { conversation: conv._id } });
+      }
+    }
+
+    // idempotent match notifications (so a re‑restore can't double‑notify)
+    const already = await Notification.exists({
+      $or: [
+        { recipient: me, sender: other, type: "match" },
+        { recipient: other, sender: me, type: "match" },
+      ],
+    });
+    if (!already) {
+      await Notification.insertMany([
+        { recipient: me, sender: other, type: "match", message: "You matched!", isRead: false },
+        { recipient: other, sender: me, type: "match", message: "You matched!", isRead: false },
+      ]).catch(() => {});
+    }
+
+    const io = getIO();
+    if (io) {
+      io.to(`user:${me}`).emit("new_match", {
+        matchId: m._id, conversationId: conv?._id, matchedUserId: otherStr,
+      });
+      io.to(`user:${other}`).emit("new_match", {
+        matchId: m._id, conversationId: conv?._id, matchedUserId: meStr,
+      });
+    }
+    restored++;
+  }
+  return restored;
+};
+
+
+
 export const reactivateAccount = async (req, res, next) => {
   try {
     const { reactivationToken } = req.body;
@@ -987,6 +1100,23 @@ export const reactivateAccount = async (req, res, next) => {
     console.log("✅ Account reactivated successfully:", user.email);
 
     const { accessToken } = await createSessionAndTokens(user, req, res);
+
+    // ✅ grace‑layer repair: bring back any match that the old soft‑delete cascade
+    // deactivated, so the partner sees it again with NO re‑like. No‑op if
+    // deleteAccount is already correct. Response shape intentionally unchanged.
+    try {
+      const restored = await restoreMatchesForReactivatedUser(user._id, req);
+      if (restored > 0) {
+        await logAudit(req, "matches_restored_on_reactivation", {
+          userId: user._id,
+          restored,
+        });
+        console.log(`♻️ Restored ${restored} match(es) on reactivation`);
+      }
+    } catch (restoreErr) {
+      // never fail a reactivation because of the repair step
+      console.error("Match restore on reactivation failed:", restoreErr.message);
+    }
 
     await logAudit(req, "account_reactivated", {
       userId: user._id,
