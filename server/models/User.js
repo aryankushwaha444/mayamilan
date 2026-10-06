@@ -21,16 +21,31 @@ const locationSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+
+// ✅ Single source of truth for preference defaults, reused by the schema AND the
+// repair hook below so they can never drift out of sync.
+const PREF_DEFAULTS = {
+  minAge: 18,
+  maxAge: 80,
+  maxDistance: 50,
+  preferredGender: "all",
+};
+
 const preferencesSchema = new mongoose.Schema(
   {
-    minAge: { type: Number, default: 18, min: 18, max: 100 },
-    maxAge: { type: Number, default: 80, min: 18, max: 100 },
+    minAge: { type: Number, default: PREF_DEFAULTS.minAge, min: 18, max: 100 },
+    maxAge: { type: Number, default: PREF_DEFAULTS.maxAge, min: 18, max: 100 },
     preferredGender: {
       type: String,
       enum: ["male", "female", "non-binary", "other", "all"],
-      default: "all",
+      default: PREF_DEFAULTS.preferredGender,
     },
-    maxDistance: { type: Number, default: 50, min: 1, max: 500 },
+    maxDistance: {
+      type: Number,
+      default: PREF_DEFAULTS.maxDistance,
+      min: 1,
+      max: 500,
+    },
   },
   { _id: false }
 );
@@ -162,7 +177,31 @@ userSchema.index({ oauthProvider: 1, oauthId: 1 }, { sparse: true });
 userSchema.index({ deletedAt: 1, scheduledDeletionAt: 1 }, { sparse: true });
 userSchema.index({ blockedUsers: 1 });
 
-userSchema.pre("validate", async function () {
+userSchema.pre("validate", function () {
+  // ✅ PROD FIX (the reported 500): a stored empty-string in preferences is a DEFINED
+  // value that fails the enum (preferredGender) / min-max (numbers) validators, so ANY
+  // full document save() — photo upload, detectSuspiciousLogin's user.save(), profile
+  // edits — throws "`` is not a valid enum value for path `preferredGender`". Local DBs
+  // simply never had the poisoned row, which is why it only errors in production. We
+  // coerce "" -> the schema default BEFORE validation runs; because pre('validate') fires
+  // on hydrated docs too, this repairs existing bad rows in-place on the next save with
+  // NO migration, and validation then passes. Healthy rows (no "") are untouched.
+  //
+  // Scope note: we only coerce the empty STRING (the observed, String-typed poison on
+  // preferredGender). null/undefined already skip the validators and are left alone. If
+  // you ever also see numeric 500s like "minAge must be >= 18" from a poisoned numeric
+  // pref, extend the same coercion to 0/null there — but the current error is purely the
+  // String enum, so "" on preferredGender is the targeted repair.
+  if (this.preferences) {
+    const p = this.preferences;
+    if (p.preferredGender === "")
+      p.preferredGender = PREF_DEFAULTS.preferredGender;
+    if (p.minAge === "") p.minAge = PREF_DEFAULTS.minAge;
+    if (p.maxAge === "") p.maxAge = PREF_DEFAULTS.maxAge;
+    if (p.maxDistance === "") p.maxDistance = PREF_DEFAULTS.maxDistance;
+  }
+
+  // existing business rule, now evaluated against the coerced values
   if (this.preferences && this.preferences.minAge > this.preferences.maxAge) {
     this.invalidate(
       "preferences.minAge",

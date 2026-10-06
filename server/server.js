@@ -54,22 +54,19 @@ const startServer = async () => {
     const connectionCounts = new Map();
     const MAX_CONNECTIONS_PER_IP = 50; // Max 50 connections per IP
 
+    // behind a single shared proxy (i.e. local / direct exposure).
+    const ENFORCE_SOCKET_IP_CAP = process.env.NODE_ENV !== "production";
     server.on("connection", (socket) => {
       const ip = socket.remoteAddress;
-
-      // Track connections per IP
       const currentCount = connectionCounts.get(ip) || 0;
-
-      if (currentCount >= MAX_CONNECTIONS_PER_IP) {
+      if (ENFORCE_SOCKET_IP_CAP && currentCount >= MAX_CONNECTIONS_PER_IP) {
         console.warn(
           `⚠️ Too many connections from ${ip} (${currentCount}), closing`
         );
         socket.destroy();
         return;
       }
-
       connectionCounts.set(ip, currentCount + 1);
-
       socket.on("close", () => {
         const count = connectionCounts.get(ip) || 1;
         if (count <= 1) {

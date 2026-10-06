@@ -257,7 +257,12 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Trust proxy (1 hop for Nginx/Cloudflare)
-app.set("trust proxy", process.env.TRUST_PROXY || 1);
+const _rawTrust = process.env.TRUST_PROXY;
+const _trustNum =
+  _rawTrust === undefined || _rawTrust === "" ? 1 : Number(_rawTrust);
+const TRUST_PROXY_HOPS =
+  Number.isInteger(_trustNum) && _trustNum >= 1 ? _trustNum : 1;
+app.set("trust proxy", TRUST_PROXY_HOPS);
 
 // ═══════════════════════════════════════════
 // BODY PARSERS & GLOBAL MIDDLEWARE

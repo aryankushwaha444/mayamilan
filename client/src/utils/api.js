@@ -1,6 +1,7 @@
 import axios from "axios";
 import { signRequest } from "./signRequest.js";
 import { getDeviceId, getDeviceInfo } from "./deviceId";
+import.meta.env.VITE_API_SECRET
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
