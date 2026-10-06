@@ -1,206 +1,295 @@
 /**
- * Node.js 24+ compatible input sanitizer
- * Prevents NoSQL injection via $ and . operators
- * Safe for Express 5's read-only req.query
+ * Production-grade input sanitizer for Express.js
+ * Prevents NoSQL injection, XSS, and other injection attacks
+ * Compatible with Node.js 24+ and Express 5
  */
+
+import { logAudit } from "../utils/auditLogger.js";
+
+// ═══════════════════════════════════════════
+// CONFIGURATION
+// ═══════════════════════════════════════════
 
 const MAX_DEPTH = 20;
 const MAX_KEYS = 1000;
+const MAX_ARRAY_LENGTH = 1000;
+const MAX_STRING_LENGTH = 50000; // 50KB per string
+const NODE_ENV = process.env.NODE_ENV || "development";
 
-/**
- * Check if value is a plain object (not a special type)
- */
+// NoSQL injection patterns
+const NOSQL_OPERATORS =
+  /^\$(gt|gte|lt|lte|ne|eq|in|nin|exists|type|mod|regex|text|where|jsonSchema|expr|all|elemMatch|size|bitsAllClear|bitsAllSet|bitsAnyClear|bitsAnySet|comment|meta|slice|natural|hint|maxTimeMS|orderby|explain|snapshot|maxScan|returnKey|showDiskLoc|min|max|comment)$/i;
+
+// XSS patterns to escape in strings
+const XSS_PATTERNS = [
+  /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+  /javascript:/gi,
+  /on\w+\s*=/gi,
+  /data:\s*text\/html/gi,
+];
+
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
+
+const safeLogAudit = async (req, action, metadata) => {
+  try {
+    await logAudit(req, action, metadata);
+  } catch {
+    // Silent failure
+  }
+};
+
 const isPlainObject = (obj) => {
   if (obj === null || typeof obj !== "object") return false;
-
   const proto = Object.getPrototypeOf(obj);
   return proto === null || proto === Object.prototype;
 };
 
-/**
- * Recursively sanitize an object, removing NoSQL injection operators
- * @param {*} obj - The object to sanitize
- * @param {number} depth - Current recursion depth
- * @param {WeakMap} seen - WeakMap to detect circular references
- * @returns {*} - Sanitized object
- */
-const sanitize = (obj, depth = 0, seen = new WeakMap()) => {
-  // Prevent stack overflow from deeply nested objects
-  if (depth > MAX_DEPTH) {
-    console.warn("Sanitization depth limit reached");
-    return null;
+const escapeHtml = (str) => {
+  if (typeof str !== "string") return str;
+  if (str.length > MAX_STRING_LENGTH)
+    return str.substring(0, MAX_STRING_LENGTH);
+
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/\//g, "&#x2F;");
+};
+
+const sanitizeString = (str, context = "unknown") => {
+  if (typeof str !== "string") return str;
+  if (str.length > MAX_STRING_LENGTH) {
+    if (NODE_ENV === "development")
+      console.warn(`String truncated: ${context}`);
+    return str.substring(0, MAX_STRING_LENGTH);
   }
 
-  // Handle null, undefined, primitives
+  let cleaned = str;
+  XSS_PATTERNS.forEach((pattern) => {
+    cleaned = cleaned.replace(pattern, "");
+  });
+
+  if (context === "html" || context === "body") {
+    cleaned = escapeHtml(cleaned);
+  }
+  return cleaned;
+};
+
+const sanitizeKey = (key, context = "unknown") => {
+  if (typeof key !== "string") return key;
+  if (key.startsWith("$") || NOSQL_OPERATORS.test(key)) return null;
+  if (key.includes(".")) return null;
+
+  if (context === "headers") {
+    if (!/^[a-zA-Z0-9_\-]+$/.test(key)) return null;
+    return key.toLowerCase();
+  }
+
+  if (!/^[a-zA-Z0-9_\-\s]+$/.test(key)) return null;
+  return key;
+};
+
+const sanitize = (
+  obj,
+  depth = 0,
+  seen = new WeakMap(),
+  context = "unknown"
+) => {
+  if (depth > MAX_DEPTH) return null;
   if (obj === null || obj === undefined) return obj;
+  if (typeof obj === "string") return sanitizeString(obj, context);
   if (typeof obj !== "object") return obj;
-
-  // Detect and prevent circular references
-  if (seen.has(obj)) {
-    return "[Circular]";
-  }
+  if (seen.has(obj)) return "[Circular]";
   seen.set(obj, true);
 
-  // Handle Date - return as-is
   if (obj instanceof Date) return obj;
-
-  // Handle Buffer - return as-is (binary data)
   if (Buffer.isBuffer(obj)) return obj;
-
-  // Handle RegExp - return as-is
   if (obj instanceof RegExp) return obj;
 
-  // Handle Map - sanitize keys and values
   if (obj instanceof Map) {
     const sanitizedMap = new Map();
     for (const [key, value] of obj.entries()) {
-      const sanitizedKey = typeof key === "string" ? sanitizeKey(key) : key;
-      if (sanitizedKey !== null) {
-        sanitizedMap.set(sanitizedKey, sanitize(value, depth + 1, seen));
-      }
+      const sanitizedKey =
+        typeof key === "string" ? sanitizeKey(key, context) : key;
+      if (sanitizedKey !== null)
+        sanitizedMap.set(
+          sanitizedKey,
+          sanitize(value, depth + 1, seen, context)
+        );
     }
     return sanitizedMap;
   }
 
-  // Handle Set - sanitize values
   if (obj instanceof Set) {
     const sanitizedSet = new Set();
-    for (const value of obj) {
-      sanitizedSet.add(sanitize(value, depth + 1, seen));
-    }
+    for (const value of obj)
+      sanitizedSet.add(sanitize(value, depth + 1, seen, context));
     return sanitizedSet;
   }
 
-  // Handle Arrays
   if (Array.isArray(obj)) {
-    // Limit array size to prevent DoS
-    if (obj.length > MAX_KEYS) {
-      console.warn(`Array too large (${obj.length}), truncating`);
-      return obj
-        .slice(0, MAX_KEYS)
-        .map((item) => sanitize(item, depth + 1, seen));
-    }
-    return obj.map((item) => sanitize(item, depth + 1, seen));
+    if (obj.length > MAX_ARRAY_LENGTH) obj = obj.slice(0, MAX_ARRAY_LENGTH);
+    return obj.map((item) => sanitize(item, depth + 1, seen, context));
   }
 
-  // Handle plain objects - sanitize keys and values
   if (isPlainObject(obj)) {
     const cleaned = {};
     const keys = Object.keys(obj);
-
-    // Limit number of keys to prevent DoS
-    if (keys.length > MAX_KEYS) {
-      console.warn(`Object has too many keys (${keys.length}), truncating`);
-    }
-
     let keyCount = 0;
     for (const key of keys) {
       if (keyCount >= MAX_KEYS) break;
-
-      const sanitizedKey = sanitizeKey(key);
+      const sanitizedKey = sanitizeKey(key, context);
       if (sanitizedKey !== null) {
-        cleaned[sanitizedKey] = sanitize(obj[key], depth + 1, seen);
+        cleaned[sanitizedKey] = sanitize(obj[key], depth + 1, seen, context);
         keyCount++;
       }
     }
     return cleaned;
   }
 
-  // For other object types (class instances), return as-is
   return obj;
 };
 
-/**
- * Sanitize a single key
- * @param {string} key - The key to sanitize
- * @returns {string|null} - Sanitized key or null if it should be removed
- */
-const sanitizeKey = (key) => {
-  if (typeof key !== "string") return key;
+// ═══════════════════════════════════════════
+// MIDDLEWARE
+// ═══════════════════════════════════════════
 
-  // Remove keys starting with $ (NoSQL operators)
-  if (key.startsWith("$")) return null;
+export const sanitizeInput = async (req, res, next) => {
+  const requestId = req.id || req.requestId || `req-${Date.now()}`;
+  const sanitizationErrors = [];
 
-  // Remove keys containing . (field path traversal)
-  if (key.includes(".")) return null;
-
-  // Remove keys with special characters that could be exploited
-  // Allow: alphanumeric, underscore, hyphen
-  // Block: everything else
-  if (!/^[a-zA-Z0-9_\-]+$/.test(key)) {
-    return null;
-  }
-
-  return key;
-};
-
-/**
- * Safely replace a property on an object, handling read-only properties
- * @param {Object} obj - The object to modify
- * @param {string} prop - The property name
- * @param {*} value - The new value
- */
-const safeReplace = (obj, prop, value) => {
   try {
-    // Try direct assignment first
-    obj[prop] = value;
-  } catch (error) {
-    // If it fails (read-only), try defining a new property
-    try {
-      Object.defineProperty(obj, prop, {
-        value,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    } catch (defineError) {
-      // If that also fails, log and continue
-      console.warn(`Failed to replace ${prop}:`, defineError.message);
-    }
-  }
-};
+    if (!req || typeof req !== "object") return next();
 
-/**
- * Express middleware to sanitize req.body, req.query, req.params, and req.headers
- * Compatible with Node.js 24+ and Express 5
- */
-export const sanitizeInput = (req, res, next) => {
-  try {
-    // Validate req object
-    if (!req || typeof req !== "object") {
-      return next();
+    // ✅ FIX: Mutate in place to bypass Express 5 read-only getters (req.query, req.headers, etc.)
+    const mutateInPlace = (target, sanitized) => {
+      if (!target || typeof target !== "object") return;
+      for (const key of Object.keys(target)) delete target[key];
+      Object.assign(target, sanitized);
+    };
+
+    if (req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
+      try {
+        mutateInPlace(req.body, sanitize(req.body, 0, new WeakMap(), "body"));
+      } catch (error) {
+        sanitizationErrors.push(`body: ${error.message}`);
+      }
     }
 
-    // Sanitize body (usually writable)
-    if (req.body && typeof req.body === "object") {
-      const sanitizedBody = sanitize(req.body);
-      safeReplace(req, "body", sanitizedBody);
-    }
-
-    // Sanitize query (may be read-only in Express 5)
     if (req.query && typeof req.query === "object") {
-      const sanitizedQuery = sanitize(req.query);
-      safeReplace(req, "query", sanitizedQuery);
+      try {
+        mutateInPlace(
+          req.query,
+          sanitize(req.query, 0, new WeakMap(), "query")
+        );
+      } catch (error) {
+        sanitizationErrors.push(`query: ${error.message}`);
+      }
     }
 
-    // Sanitize params (usually writable)
     if (req.params && typeof req.params === "object") {
-      const sanitizedParams = sanitize(req.params);
-      safeReplace(req, "params", sanitizedParams);
+      try {
+        mutateInPlace(
+          req.params,
+          sanitize(req.params, 0, new WeakMap(), "params")
+        );
+      } catch (error) {
+        sanitizationErrors.push(`params: ${error.message}`);
+      }
     }
 
-    // Sanitize headers (optional but recommended)
     if (req.headers && typeof req.headers === "object") {
-      const sanitizedHeaders = sanitize(req.headers);
-      safeReplace(req, "headers", sanitizedHeaders);
+      try {
+        mutateInPlace(
+          req.headers,
+          sanitize(req.headers, 0, new WeakMap(), "headers")
+        );
+      } catch (error) {
+        sanitizationErrors.push(`headers: ${error.message}`);
+      }
+    }
+
+    if (sanitizationErrors.length > 0) {
+      await safeLogAudit(req, "sanitization_error", {
+        requestId,
+        errors: sanitizationErrors,
+        path: req.path,
+        method: req.method,
+        ip: req.ip,
+      });
+      if (NODE_ENV === "production") {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid request format",
+          code: "INVALID_INPUT",
+          requestId,
+        });
+      }
     }
 
     next();
   } catch (error) {
-    console.error("Sanitization error:", error);
-    // Continue even if sanitization fails (fail-open for availability)
+    await safeLogAudit(req, "sanitization_crash", {
+      requestId,
+      error: error.message,
+      path: req.path,
+      method: req.method,
+    });
+    if (NODE_ENV === "production") {
+      return res.status(400).json({
+        success: false,
+        message: "Request processing error",
+        code: "PROCESSING_ERROR",
+        requestId,
+      });
+    }
     next();
   }
+};
+
+export const sanitizeFields = (fields) => {
+  return (req, res, next) => {
+    fields.forEach((field) => {
+      if (req.body && req.body[field]) {
+        req.body[field] = sanitize(req.body[field], 0, new WeakMap(), "body");
+      }
+    });
+    next();
+  };
+};
+
+export const sanitizeStrings = (req, res, next) => {
+  const sanitizeStringOnly = (obj, depth = 0, seen = new WeakMap()) => {
+    if (depth > MAX_DEPTH || obj === null || obj === undefined) return obj;
+    if (typeof obj === "string") return sanitizeString(obj, "generic");
+    if (typeof obj !== "object") return obj;
+    if (seen.has(obj)) return "[Circular]";
+    seen.set(obj, true);
+    if (Array.isArray(obj))
+      return obj.map((item) => sanitizeStringOnly(item, depth + 1, seen));
+    if (isPlainObject(obj)) {
+      const cleaned = {};
+      Object.keys(obj).forEach((key) => {
+        cleaned[key] = sanitizeStringOnly(obj[key], depth + 1, seen);
+      });
+      return cleaned;
+    }
+    return obj;
+  };
+
+  if (req.body && typeof req.body === "object") {
+    for (const key of Object.keys(req.body)) delete req.body[key];
+    Object.assign(req.body, sanitizeStringOnly(req.body));
+  }
+  if (req.query && typeof req.query === "object") {
+    for (const key of Object.keys(req.query)) delete req.query[key];
+    Object.assign(req.query, sanitizeStringOnly(req.query));
+  }
+  next();
 };
 
 export default sanitizeInput;

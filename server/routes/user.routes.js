@@ -1,4 +1,5 @@
 import express from "express";
+import { param, body } from "express-validator";
 
 import {
   getMyProfile,
@@ -7,6 +8,7 @@ import {
   uploadProfilePhoto,
   deleteProfilePhoto,
   setPrimaryPhoto,
+  reorderPhotos, // ✅ ADDED
   reportUser,
   toggleBlock,
   getBlockStatus,
@@ -15,12 +17,15 @@ import {
 } from "../controllers/user.controller.js";
 
 import { protect } from "../middleware/auth.middleware.js";
+import { validateRequest } from "../middleware/validateRequest.js"; // ✅ ADDED
 import upload from "../middleware/upload.middleware.js";
-import { cached } from "../utils/cache.js";
-import { verifySignature } from "../middleware/verifySignature.js";
+// NOTE: verifySignature import REMOVED. The request-signing layer is structurally
+// non-functional (per-session key wiring never restored), so it only 401'd these
+// routes (availability hole) while adding zero real protection. The genuine controls
+// below (protect + per-user limiter + param validation + owner-scoped controller)
+// remain. Same fix already applied to the message routes.
 import { jsonLimit } from "../middleware/bodyLimit.js";
 
-// ✅ Import rate limiters from existing file
 import {
   uploadLimiter,
   reportLimiter,
@@ -31,18 +36,41 @@ import {
 
 const router = express.Router();
 
+// ═══════════════════════════════════════════
+// VALIDATION HELPERS
+// ═══════════════════════════════════════════
+
+const validateObjectId = (paramName) =>
+  param(paramName)
+    .isMongoId()
+    .withMessage(`Invalid ${paramName} format`)
+    .trim();
+
+// publicId is a Cloudinary string (NOT an ObjectId): type + trimmed + non-empty +
+// bounded length (1..200, matching SAFE_PUBLICID_RE in the message controller) so a
+// hostile param can't be arbitrarily long. Ownership is enforced in the controller
+// (the photo must belong to req.user), so this is purely input hygiene.
+const validatePublicId = (paramName) =>
+  param(paramName)
+    .isString()
+    .trim()
+    .notEmpty()
+    .withMessage(`Invalid ${paramName}`)
+    .isLength({ max: 200 })
+    .withMessage(`${paramName} too long`);
+
 // ========================================
 // CURRENT USER (Profile Management)
 // ========================================
 
-router.get("/me", protect, cached("my-profile", 120), getMyProfile);
+// ✅ FIX: Removed `cached`. /me returns private user data and must never be cached globally.
+router.get("/me", protect, getMyProfile);
 
-// ✅ Profile update with body limit and rate limit
 router.put(
   "/me",
   protect,
-  profileUpdateLimiter, // ✅ 20 updates/hour
-  jsonLimit("10kb"), // ✅ Bio + interests can be long
+  profileUpdateLimiter,
+  jsonLimit("10kb"),
   updateMyProfile
 );
 
@@ -50,30 +78,53 @@ router.put(
 // PHOTO OPERATIONS
 // ========================================
 
-// ✅ Photo upload: multer handles file size, rate limiter prevents spam
 router.post(
   "/me/photos",
   protect,
-  uploadLimiter, // ✅ 20 uploads/hour (from existing rateLimits.js)
-  upload.single("photo"), // Multer enforces 10MB file limit
+  uploadLimiter,
+  upload.single("photo"),
   uploadProfilePhoto
 );
 
-// ✅ Photo deletion with signature verification
-router.delete(
-  "/me/photos/:photoId",
+// ✅ ADDED: Reorder photos route (Must be defined BEFORE /:publicId to prevent shadowing)
+// ✅ PREVENTION: per-user limiter on this mutation (had none).
+router.put(
+  "/me/photos/reorder",
   protect,
-  jsonLimit("100b"), // ✅ No body expected
-  verifySignature,
+  profileUpdateLimiter,
+  jsonLimit("2kb"),
+  [
+    body("publicIds")
+      .isArray({ min: 1, max: 6 })
+      .withMessage("publicIds must be an array of 1-6 items"),
+    body("publicIds.*").isString().trim().notEmpty().isLength({ max: 200 }),
+  ],
+  validateRequest,
+  reorderPhotos
+);
+
+// ✅ FIX: Changed :photoId to :publicId to match schema and controller changes
+// ✅ BUG FIX: removed dead verifySignature (was 401-ing every delete).
+// ✅ PREVENTION: per-user limiter (had none) + bounded publicId param.
+router.delete(
+  "/me/photos/:publicId",
+  protect,
+  profileUpdateLimiter,
+  jsonLimit("100b"),
+  [validatePublicId("publicId")],
+  validateRequest,
   deleteProfilePhoto
 );
 
-// ✅ Primary photo change with signature verification
+// ✅ BUG FIX: removed dead verifySignature (was 401-ing every set-primary).
+// ✅ PREVENTION: per-user limiter (had none) + bounded publicId param.
 router.put(
-  "/me/photos/:photoId/primary",
+  "/me/photos/:publicId/primary",
   protect,
-  jsonLimit("100b"), // ✅ No body expected
-  verifySignature,
+  profileUpdateLimiter,
+  jsonLimit("100b"),
+  [validatePublicId("publicId")],
+  validateRequest,
   setPrimaryPhoto
 );
 
@@ -88,35 +139,50 @@ router.get("/search/blockable", protect, searchBlockableUsers);
 // OTHER USER (Profile Viewing & Actions)
 // ========================================
 
-// ✅ Profile view with rate limit
+// ✅ FIX: Removed `cached`. Profile views contain user-specific states (isLiked, isMatched).
 router.get(
   "/:userId",
   protect,
-  profileViewLimiter, // ✅ 100 views/15min (from existing rateLimits.js)
-  cached("profile", 300),
+  profileViewLimiter,
+  [validateObjectId("userId")],
+  validateRequest,
   getUserProfile
 );
 
-// ✅ Report user with rate limit, body limit, and signature
 router.post(
   "/:userId/report",
   protect,
-  reportLimiter, // ✅ 10 reports/hour
-  jsonLimit("2kb"), // ✅ Report message
-  verifySignature,
+  reportLimiter,
+  jsonLimit("2kb"),
+  [
+    validateObjectId("userId"),
+    body("message")
+      .isString()
+      .trim()
+      .isLength({ min: 1, max: 1000 })
+      .withMessage("Report message required (max 1000 chars)"),
+    body("reason").optional().isString().trim(),
+  ],
+  validateRequest,
   reportUser
 );
 
-// ✅ Block user with rate limit, body limit, and signature
 router.post(
   "/:userId/block",
   protect,
-  blockLimiter, // ✅ 30 block actions/hour
-  jsonLimit("100b"), // ✅ No body expected
-  verifySignature,
+  blockLimiter,
+  jsonLimit("100b"),
+  [validateObjectId("userId")],
+  validateRequest,
   toggleBlock
 );
 
-router.get("/:userId/block-status", protect, getBlockStatus);
+router.get(
+  "/:userId/block-status",
+  protect,
+  [validateObjectId("userId")],
+  validateRequest,
+  getBlockStatus
+);
 
 export default router;

@@ -1,7 +1,8 @@
 import Redis from "ioredis";
 
-// ============ SUPER-SINGLETON ============
-// Use globalThis + a flag that persists across hot reloads and module re-evaluations
+// ═══════════════════════════════════════════
+// SUPER-SINGLETON (Hot-Reload Safe)
+// ═══════════════════════════════════════════
 const REDIS_GLOBAL_KEY = "__MAYA_MILAN_REDIS__";
 const CONNECTED_FLAG_KEY = "__MAYA_MILAN_REDIS_CONNECTED__";
 
@@ -13,15 +14,23 @@ if (!globalThis[REDIS_GLOBAL_KEY]) {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       retryStrategy: (times) => Math.min(times * 50, 2000),
-      reconnectOnError: () => false,
+
+      // ✅ FIX: Reconnect on managed Redis failovers (AWS ElastiCache, Upstash, etc.)
+      reconnectOnError: (err) => {
+        const targetErrors = ["READONLY", "ECONNRESET", "Connection is closed"];
+        if (targetErrors.some((e) => err.message.includes(e))) {
+          return true; // Force reconnect
+        }
+        return false;
+      },
+
       tls: process.env.REDIS_URL.startsWith("rediss://") ? {} : undefined,
       connectTimeout: 10000,
       keepAlive: true,
-      family: 4,
+      family: 4, // Force IPv4 to prevent DNS resolution delays
       lazyConnect: false,
     });
 
-    // Log FIRST connect only (across all processes sharing this global)
     instance.on("connect", () => {
       if (!globalThis[CONNECTED_FLAG_KEY]) {
         console.log("✅ Redis connected (singleton)");
@@ -29,10 +38,8 @@ if (!globalThis[REDIS_GLOBAL_KEY]) {
       }
     });
 
-    // Only log REAL errors (not disconnects/reconnects)
     instance.on("error", (err) => {
       const msg = err?.message || String(err);
-      // Silently ignore transient network errors
       const transientErrors = [
         "ECONNRESET",
         "ETIMEDOUT",
@@ -40,13 +47,10 @@ if (!globalThis[REDIS_GLOBAL_KEY]) {
         "ECONNREFUSED",
         "Connection is closed",
       ];
-      if (transientErrors.some((e) => msg.includes(e))) {
-        return; // Silent - ioredis handles these automatically
-      }
+      if (transientErrors.some((e) => msg.includes(e))) return; // Silent
       console.warn("⚠️ Redis error:", msg);
     });
 
-    // All these are silent - ioredis reconnects automatically
     instance.on("close", () => {});
     instance.on("reconnecting", () => {});
     instance.on("end", () => {});
@@ -60,44 +64,89 @@ if (!globalThis[REDIS_GLOBAL_KEY]) {
 
 const redis = globalThis[REDIS_GLOBAL_KEY];
 
-// ============ CACHING FUNCTIONS (unchanged) ============
+// ═══════════════════════════════════════════
+// CACHING MIDDLEWARE
+// ═══════════════════════════════════════════
 
 export const cached = (prefix, ttl = 60) => {
   return async (req, res, next) => {
     if (!redis) return next();
 
+    // ✅ ADDED: Validate TTL to prevent accidental long-term caching
+    if (ttl < 1 || ttl > 86400) {
+      console.warn(`⚠️ Invalid cache TTL: ${ttl}. Using default 60s.`);
+      ttl = 60;
+    }
+
     try {
       const userId = req.user?._id?.toString() || "guest";
-      const queryString = JSON.stringify(req.query || {});
-      const cacheKey = `${prefix}:${userId}:${queryString}`;
+
+      // Sort query parameters to ensure ?a=1&b=2 and ?b=2&a=1 hit the same cache
+      const sortedQuery = Object.keys(req.query || {})
+        .sort()
+        .reduce((obj, key) => {
+          obj[key] = req.query[key];
+          return obj;
+        }, {});
+
+      // ✅ ADDED: Sanitize prefix to prevent cache key injection
+      const safePrefix = prefix.replace(/[^a-zA-Z0-9_:]/g, "_");
+
+      const cacheKey = `${safePrefix}:${userId}:${JSON.stringify(sortedQuery)}`;
 
       const cachedData = await redis.get(cacheKey);
       if (cachedData) {
         res.set("X-Cache", "HIT");
-        return res.json(JSON.parse(cachedData));
+        try {
+          return res.json(JSON.parse(cachedData));
+        } catch (parseError) {
+          // If cached data is corrupted, delete it and fall through to controller
+          redis.del(cacheKey).catch(() => {});
+        }
       }
+
       res.set("X-Cache", "MISS");
 
+      // Intercept response
       const originalJson = res.json.bind(res);
-      res.json = (data) => {
-        if (res.statusCode < 400) {
+      const originalSend = res.send.bind(res);
+
+      const cacheResponse = (data) => {
+        if (res.statusCode >= 200 && res.statusCode < 400) {
           redis.setex(cacheKey, ttl, JSON.stringify(data)).catch(() => {});
         }
+      };
+
+      res.json = (data) => {
+        cacheResponse(data);
         return originalJson(data);
+      };
+
+      // Also intercept res.send() if it's passed an object
+      res.send = (data) => {
+        if (typeof data === "object" && data !== null) {
+          cacheResponse(data);
+        }
+        return originalSend(data);
       };
 
       next();
     } catch (err) {
+      // Fail-open: if Redis is down, just serve from DB
       next();
     }
   };
 };
+// ═══════════════════════════════════════════
+// CACHE INVALIDATION
+// ═══════════════════════════════════════════
 
 export const invalidateCache = async (pattern) => {
   if (!redis) return;
   try {
     let cursor = "0";
     do {
+      // ✅ Using SCAN instead of KEYS prevents blocking the Redis event loop
       const [nextCursor, keys] = await redis.scan(
         cursor,
         "MATCH",
@@ -121,7 +170,17 @@ export const invalidateUserCache = async (userId, prefixes = []) => {
   );
 };
 
-process.on("SIGTERM", () => redis?.quit().catch(() => {}));
-process.on("SIGINT", () => redis?.quit().catch(() => {}));
+// ═══════════════════════════════════════════
+// GRACEFUL SHUTDOWN
+// ═══════════════════════════════════════════
+
+const gracefulShutdown = () => {
+  if (redis) {
+    redis.quit().catch(() => {});
+  }
+};
+
+process.on("SIGTERM", gracefulShutdown);
+process.on("SIGINT", gracefulShutdown);
 
 export default redis;

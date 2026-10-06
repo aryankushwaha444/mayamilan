@@ -76,7 +76,6 @@ const ConversationItem = memo(function ConversationItem({
     onSelect(conversation);
   };
 
-  // ✅ Format last message preview
   const getMessagePreview = () => {
     if (!lastMessage) return "Start a conversation";
     if (lastMessage.deletedForEveryone) return "This message was deleted";
@@ -100,7 +99,6 @@ const ConversationItem = memo(function ConversationItem({
 
   return (
     <div className={`conversation-item-shell ${revealed ? "revealed" : ""}`}>
-      {/* Delete Button */}
       <button
         type="button"
         className="conversation-delete"
@@ -114,7 +112,6 @@ const ConversationItem = memo(function ConversationItem({
         <i className="bi bi-trash-fill" aria-hidden="true"></i>
       </button>
 
-      {/* Row (slides on mobile) */}
       <div
         role="button"
         tabIndex={0}
@@ -195,12 +192,10 @@ function Messages() {
   const openingRef = useRef(false);
   const conversationsRef = useRef([]);
 
-  // ✅ Keep ref in sync for socket handlers
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
 
-  // ✅ Search results (memoized)
   const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return [];
@@ -209,11 +204,9 @@ function Messages() {
     );
   }, [matches, search]);
 
-  // ✅ Stable load functions
+  // ✅ CRITICAL FIX 1: Remove `toast` from dependencies to make these functions 100% STABLE
   const loadConversations = useCallback(async () => {
     try {
-      setLoading(true);
-      setError("");
       const data = await getConversations();
       const sorted = (data.conversations || []).sort(
         (a, b) =>
@@ -222,14 +215,11 @@ function Messages() {
       );
       setConversations(sorted);
     } catch (err) {
-      setError(err.response?.data?.message || "Unable to load conversations.");
-      toast.error("Failed to load conversations", "Error", 4000);
-    } finally {
-      setLoading(false);
+      console.error("Load conversations error:", err);
+      throw err; // Throw so the caller can catch it and show toast
     }
-  }, [toast]);
+  }, []); // ✅ EMPTY ARRAY = STABLE
 
-  // ✅ Use service layer instead of raw fetch
   const loadMatches = useCallback(async () => {
     try {
       const data = await getMatches();
@@ -237,15 +227,39 @@ function Messages() {
     } catch (err) {
       console.error("Load matches error:", err);
     }
-  }, []);
+  }, []); // ✅ EMPTY ARRAY = STABLE
 
-  // ✅ Correct dependency arrays
+  // ✅ CRITICAL FIX 2: Initial load runs STRICTLY ONCE on mount
   useEffect(() => {
-    loadConversations();
-    loadMatches();
-  }, [loadConversations, loadMatches]);
+    let isMounted = true;
 
-  // ✅ Stable reorder function using ref (no stale closure)
+    const fetchInitialData = async () => {
+      try {
+        setLoading(true);
+        setError("");
+        await Promise.all([loadConversations(), loadMatches()]);
+      } catch (err) {
+        if (isMounted) {
+          setError(
+            err.response?.data?.message || "Unable to load conversations."
+          );
+          toast.error("Failed to load conversations", "Error", 4000);
+        }
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchInitialData();
+
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // ✅ EMPTY ARRAY = RUNS ONLY ONCE! NO INFINITE LOOP!
+
   const moveConversationToTop = useCallback(
     (conversationId, message) => {
       if (!conversationId) return;
@@ -280,7 +294,6 @@ function Messages() {
     [loadConversations]
   );
 
-  // ✅ Open (or create) chat from search result
   const handleOpenMatch = useCallback(
     async (match) => {
       try {
@@ -312,7 +325,6 @@ function Messages() {
     [user, loadConversations, toast]
   );
 
-  // ✅ Auto-open from ?matchId= URL param
   useEffect(() => {
     if (!matchIdFromUrl || !user || openingRef.current) return;
     openingRef.current = true;
@@ -346,7 +358,6 @@ function Messages() {
     })();
   }, [matchIdFromUrl, user, navigate, loadConversations]);
 
-  // ✅ Socket listeners — stable via useCallback + refs
   useEffect(() => {
     if (!socket) return;
 
@@ -410,9 +421,6 @@ function Messages() {
     }
   }, [conversationToDelete, selectedConversation, toast]);
 
-  // ═══════════════════════════════════════
-  // LOADING STATE
-  // ═══════════════════════════════════════
   if (loading && conversations.length === 0) {
     return (
       <>
@@ -430,9 +438,6 @@ function Messages() {
     );
   }
 
-  // ═══════════════════════════════════════
-  // ERROR STATE
-  // ═══════════════════════════════════════
   if (error && conversations.length === 0) {
     return (
       <>
@@ -449,7 +454,12 @@ function Messages() {
               <button
                 type="button"
                 className="btn btn-primary mt-2"
-                onClick={loadConversations}
+                onClick={() => {
+                  setLoading(true);
+                  Promise.all([loadConversations(), loadMatches()]).finally(
+                    () => setLoading(false)
+                  );
+                }}
               >
                 <i
                   className="bi bi-arrow-clockwise me-2"
@@ -464,9 +474,6 @@ function Messages() {
     );
   }
 
-  // ═══════════════════════════════════════
-  // MAIN VIEW
-  // ═══════════════════════════════════════
   return (
     <>
       <SEO
@@ -477,7 +484,6 @@ function Messages() {
 
       <main className="messages-page" id="main-content">
         <div className="messages-container">
-          {/* SIDEBAR */}
           <aside
             className={`conversation-sidebar ${
               selectedConversation ? "conversation-sidebar-hidden-mobile" : ""
@@ -486,10 +492,8 @@ function Messages() {
           >
             <div className="conversation-header">
               <h1>Messages</h1>
-              <span aria-live="polite">{conversations.length}</span>
             </div>
 
-            {/* Search */}
             <div className="conversation-search">
               <label
                 htmlFor="conversation-search-input"
@@ -518,7 +522,6 @@ function Messages() {
               )}
             </div>
 
-            {/* SEARCH MODE */}
             {search.trim() ? (
               <div
                 className="conversation-list"
@@ -614,7 +617,6 @@ function Messages() {
             )}
           </aside>
 
-          {/* CHAT AREA */}
           <div
             className={`messages-chat-area ${
               !selectedConversation ? "messages-chat-empty-mobile" : ""
@@ -639,7 +641,6 @@ function Messages() {
           </div>
         </div>
 
-        {/* Delete Confirmation */}
         <ConfirmDialog
           open={conversationToDelete !== null}
           title="Delete this conversation?"

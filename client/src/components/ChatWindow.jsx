@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import ChatInputBar from "./ChatInputBar.jsx";
 import MessageBubble from "./MessageBubble.jsx";
 import PhotoLightbox from "./PhotoLightbox.jsx";
@@ -15,6 +15,80 @@ import {
 import { useSocket } from "../hooks/useSocket.js";
 
 const MESSAGES_PER_PAGE = 50;
+const MAX_TEXT = 2000;
+
+// Defence-in-depth: even though the server normalises URLs, never render a
+// javascript:/data:/non-allow-listed host from a socket/HTTP payload.
+const MEDIA_HOSTS = [
+  /([a-z0-9-]+\.)?cloudinary\.com$/i,
+  /^media\.giphy\.com$/i,
+  /^i\.giphy\.com$/i,
+  /^media-0\.giphy\.com$/i,
+  /^media\d*\.tenor\.com$/i,
+  /([a-z0-9-]+\.)?tenor\.googleusercontent\.com$/i,
+];
+const isSafeUrl = (u) => {
+  if (typeof u !== "string" || !u) return false;
+  try {
+    const p = new URL(u);
+    return (
+      (p.protocol === "https:" || p.protocol === "http:") &&
+      MEDIA_HOSTS.some((r) => r.test(p.hostname))
+    );
+  } catch {
+    return false;
+  }
+};
+
+// Whitelist message fields coming from socket/HTTP → drops unknown keys
+// (anti mass-assignment / anti prototype-propagation into React state).
+const pickMessage = (m) => {
+  if (!m || typeof m !== "object") return m;
+  const out = {
+    _id: m._id,
+    conversation: m.conversation,
+    sender: m.sender,
+    receiver: m.receiver,
+    text: typeof m.text === "string" ? m.text.slice(0, MAX_TEXT) : "",
+    type: m.type,
+    isDelivered: !!m.isDelivered,
+    deliveredAt: m.deliveredAt || null,
+    isRead: !!m.isRead,
+    readAt: m.readAt || null,
+    deletedForEveryone: !!m.deletedForEveryone,
+    deletedFor: Array.isArray(m.deletedFor) ? m.deletedFor : [],
+    isEdited: !!m.isEdited,
+    editedAt: m.editedAt || null,
+    createdAt: m.createdAt,
+    reactions: Array.isArray(m.reactions) ? m.reactions : [],
+    post: m.post || null,
+  };
+  if (m.attachment && typeof m.attachment === "object") {
+    out.attachment = {
+      url: isSafeUrl(m.attachment.url) ? m.attachment.url : null,
+      publicId:
+        typeof m.attachment.publicId === "string"
+          ? m.attachment.publicId
+          : null,
+      mimeType:
+        typeof m.attachment.mimeType === "string"
+          ? m.attachment.mimeType
+          : null,
+      width: Number.isFinite(+m.attachment.width) ? +m.attachment.width : null,
+      height: Number.isFinite(+m.attachment.height)
+        ? +m.attachment.height
+        : null,
+      duration: Number.isFinite(+m.attachment.duration)
+        ? +m.attachment.duration
+        : 0,
+      size: Number.isFinite(+m.attachment.size) ? +m.attachment.size : null,
+      thumbnailUrl: isSafeUrl(m.attachment.thumbnailUrl)
+        ? m.attachment.thumbnailUrl
+        : null,
+    };
+  } else out.attachment = null;
+  return out;
+};
 
 function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const { socket } = useSocket();
@@ -34,41 +108,28 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const isInitialLoad = useRef(true);
   const readRequestedRef = useRef(new Set());
   const typingTimeoutRef = useRef(null);
+  const sendingRef = useRef(false);
 
-  // LOAD MESSAGES (with pagination)
   const loadMessages = useCallback(
     async (pageNum = 1, append = false) => {
       try {
-        if (pageNum === 1) {
-          setLoading(true);
-        } else {
-          setLoadingMore(true);
-        }
-
+        pageNum === 1 ? setLoading(true) : setLoadingMore(true);
         const data = await getMessages(conversationId, {
           page: pageNum,
           limit: MESSAGES_PER_PAGE,
         });
-
-        const newMessages = data.messages || [];
-
-        if (append) {
-          setMessages((prev) => [...newMessages, ...prev]);
-        } else {
-          setMessages(newMessages);
-        }
-
-        setHasMore(newMessages.length === MESSAGES_PER_PAGE);
+        const fresh = (data.messages || []).map(pickMessage);
+        append ? setMessages((p) => [...fresh, ...p]) : setMessages(fresh);
+        setHasMore(fresh.length === MESSAGES_PER_PAGE);
         setPage(pageNum);
-      } catch (err) {
-        console.error("Load messages error:", err);
-        toast.error("Failed to load messages");
+      } catch (e) {
+        console.error("Load messages error:", e);
       } finally {
         setLoading(false);
         setLoadingMore(false);
       }
     },
-    [conversationId, toast]
+    [conversationId]
   );
 
   useEffect(() => {
@@ -78,333 +139,333 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     setHasMore(true);
     setPage(1);
     loadMessages(1, false);
-  }, [conversationId, loadMessages]);
-
-  // Track active chat ID
-  useEffect(() => {
-    if (conversationId) {
-      sessionStorage.setItem("activeChatId", conversationId);
-    }
-    return () => {
-      sessionStorage.removeItem("activeChatId");
-    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
-  // AUTO-SCROLL
+  useEffect(() => {
+    if (conversationId) sessionStorage.setItem("activeChatId", conversationId);
+    return () => sessionStorage.removeItem("activeChatId");
+  }, [conversationId]);
+
   useEffect(() => {
     if (!scrollRef.current || messages.length === 0) return;
-
     if (isInitialLoad.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       isInitialLoad.current = false;
     } else {
       const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-
-      if (isNearBottom) {
-        scrollRef.current.scrollTo({
-          top: scrollRef.current.scrollHeight,
-          behavior: "smooth",
-        });
-      } else {
-        setShowScrollButton(true);
-      }
+      scrollHeight - scrollTop - clientHeight < 100
+        ? scrollRef.current.scrollTo({
+            top: scrollRef.current.scrollHeight,
+            behavior: "smooth",
+          })
+        : setShowScrollButton(true);
     }
   }, [messages]);
 
-  // Handle scroll for pagination + scroll button
   const handleScroll = useCallback(() => {
     if (!scrollRef.current) return;
-
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-
-    // Show/hide scroll-to-bottom button
-    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-    setShowScrollButton(!isNearBottom);
-
-    // Load more messages when scrolling up
-    if (scrollTop < 50 && hasMore && !loadingMore) {
-      loadMessages(page + 1, true);
-    }
+    setShowScrollButton(scrollHeight - scrollTop - clientHeight >= 100);
+    if (scrollTop < 50 && hasMore && !loadingMore) loadMessages(page + 1, true);
   }, [hasMore, loadingMore, page, loadMessages]);
 
-  // Mobile keyboard resize handler
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-
     const onResize = () => {
-      if (scrollRef.current) {
+      if (scrollRef.current)
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      }
     };
-
     vv.addEventListener("resize", onResize);
     return () => vv.removeEventListener("resize", onResize);
   }, []);
 
-  // Reset read-requested tracker
   useEffect(() => {
     readRequestedRef.current = new Set();
   }, [conversationId]);
 
-  // MARK AS READ
+  // ✅ clear typing timer on unmount (was a leak before)
+  useEffect(
+    () => () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    },
+    []
+  );
+
   useEffect(() => {
     if (!socket || !conversationId || messages.length === 0) return;
-
     const pending = messages.filter((m) => {
-      const receiverId =
+      const r =
         typeof m.receiver === "string"
           ? m.receiver
           : m.receiver?._id?.toString?.();
-
       return (
-        receiverId === currentUserId &&
+        r === currentUserId &&
         !m.deletedForEveryone &&
         (!m.isRead || !m.isDelivered)
       );
     });
-
     pending.forEach((m) => {
-      const messageId = typeof m._id === "string" ? m._id : m._id?.toString?.();
-
-      if (readRequestedRef.current.has(messageId)) return;
-      readRequestedRef.current.add(messageId);
-      socket.emit("mark_read", { messageId });
-      markMessageAsRead(messageId).catch(() => {});
+      const id = typeof m._id === "string" ? m._id : m._id?.toString?.();
+      if (readRequestedRef.current.has(id)) return;
+      readRequestedRef.current.add(id);
+      markMessageAsRead(id).catch(() => {}); // REST only; server broadcasts cumulative read
     });
-
-    if (pending.length > 0) {
+    if (pending.length)
       window.dispatchEvent(new CustomEvent("chat:messages-read"));
-    }
   }, [messages, conversationId, currentUserId, socket]);
 
-  // SOCKET EVENTS
   useEffect(() => {
     if (!socket || !conversationId) return;
-
     socket.emit("join_conversation", conversationId);
+    const sameId = (a, b) =>
+      (typeof a === "string" ? a : a?._id?.toString?.()) ===
+      (typeof b === "string" ? b : b?._id?.toString?.());
+    const senderOf = (m) =>
+      typeof m.sender === "string" ? m.sender : m.sender?._id?.toString?.();
 
-    const sameId = (a, b) => {
-      const idA =
-        typeof a === "string" ? a : a?._id?.toString?.() || a?.toString?.();
-      const idB =
-        typeof b === "string" ? b : b?._id?.toString?.() || b?.toString?.();
-      return idA === idB;
-    };
-
-    const handleNewMessage = (msg) => {
-      const msgConvId =
+    const onNew = (raw) => {
+      const msg = pickMessage(raw);
+      const cid =
         typeof msg.conversation === "string"
           ? msg.conversation
           : msg.conversation?._id?.toString?.();
-
-      if (msgConvId !== conversationId) return;
-
-      setMessages((prev) => {
-        if (prev.some((m) => sameId(m._id, msg._id))) return prev;
-        return [...prev, msg];
-      });
-
-      const receiverId =
+      if (cid !== conversationId) return;
+      setMessages((p) =>
+        p.some((m) => sameId(m._id, msg._id)) ? p : [...p, msg]
+      );
+      const r =
         typeof msg.receiver === "string"
           ? msg.receiver
           : msg.receiver?._id?.toString?.();
-
-      if (receiverId === currentUserId) {
-        const messageId =
+      if (r === currentUserId) {
+        const id =
           typeof msg._id === "string" ? msg._id : msg._id?.toString?.();
-
-        if (!readRequestedRef.current.has(messageId)) {
-          readRequestedRef.current.add(messageId);
-          socket.emit("mark_read", { messageId });
-          markMessageAsRead(msg._id).catch(() => {});
+        if (!readRequestedRef.current.has(id)) {
+          readRequestedRef.current.add(id);
+          markMessageAsRead(id).catch(() => {});
         }
       }
     };
-
-    const handleDelivered = ({ messageId }) => {
-      setMessages((prev) =>
-        prev.map((m) =>
+    const onDelivered = ({ messageId }) =>
+      setMessages((p) =>
+        p.map((m) =>
           sameId(m._id, messageId) ? { ...m, isDelivered: true } : m
         )
       );
-    };
-
-    const handleRead = ({ messageId }) => {
-      setMessages((prev) =>
-        prev.map((m) =>
+    const onRead = ({ messageId }) =>
+      setMessages((p) => {
+        const t = p.find((m) => sameId(m._id, messageId));
+        const cut = t ? new Date(t.createdAt).getTime() : null;
+        return p.map((m) =>
           sameId(m._id, messageId)
             ? { ...m, isRead: true, isDelivered: true, readAt: new Date() }
+            : cut !== null &&
+              senderOf(m) === currentUserId &&
+              new Date(m.createdAt).getTime() <= cut
+            ? { ...m, isRead: true, isDelivered: true, readAt: new Date() }
+            : m
+        );
+      });
+    const onMessagesRead = ({ conversationId: cid, readUpTo, readerId }) => {
+      if (cid && cid !== conversationId) return;
+      if (readerId === currentUserId) return;
+      const cut = new Date(readUpTo).getTime();
+      setMessages((p) =>
+        p.map((m) =>
+          senderOf(m) === currentUserId &&
+          new Date(m.createdAt).getTime() <= cut
+            ? { ...m, isDelivered: true, isRead: true, readAt: readUpTo }
             : m
         )
       );
     };
-
-    const handleReacted = ({ messageId, reactions }) => {
-      setMessages((prev) =>
-        prev.map((m) => (sameId(m._id, messageId) ? { ...m, reactions } : m))
+    const onReacted = ({ messageId, reactions }) =>
+      setMessages((p) =>
+        p.map((m) =>
+          sameId(m._id, messageId)
+            ? {
+                ...m,
+                reactions: Array.isArray(reactions) ? reactions : m.reactions,
+              }
+            : m
+        )
       );
-    };
-
-    const handleDeleted = ({ messageId }) => {
-      setMessages((prev) =>
-        prev.map((m) =>
+    const onDeleted = ({ messageId }) =>
+      setMessages((p) =>
+        p.map((m) =>
           sameId(m._id, messageId) ? { ...m, deletedForEveryone: true } : m
         )
       );
-    };
-
-    // ✅ NEW: Typing indicator
-    const handleTyping = ({ userId, isTyping }) => {
-      setTypingUsers((prev) => {
-        const next = new Set(prev);
-        if (isTyping) {
-          next.add(userId);
-        } else {
-          next.delete(userId);
-        }
-        return next;
+    const onTyping = ({ userId, isTyping }) =>
+      setTypingUsers((p) => {
+        const n = new Set(p);
+        isTyping ? n.add(userId) : n.delete(userId);
+        return n;
       });
-    };
 
-    socket.on("new_message", handleNewMessage);
-    socket.on("message_delivered", handleDelivered);
-    socket.on("message_read", handleRead);
-    socket.on("message_reacted", handleReacted);
-    socket.on("message_deleted", handleDeleted);
-    socket.on("user_typing", handleTyping);
-
+    socket.on("new_message", onNew);
+    socket.on("message_delivered", onDelivered);
+    socket.on("message_read", onRead);
+    socket.on("messages_read", onMessagesRead);
+    socket.on("message_reacted", onReacted);
+    socket.on("message_deleted", onDeleted);
+    socket.on("user_typing", onTyping);
     return () => {
       socket.emit("leave_conversation", conversationId);
-      socket.off("new_message", handleNewMessage);
-      socket.off("message_delivered", handleDelivered);
-      socket.off("message_read", handleRead);
-      socket.off("message_reacted", handleReacted);
-      socket.off("message_deleted", handleDeleted);
-      socket.off("user_typing", handleTyping);
+      socket.off("new_message", onNew);
+      socket.off("message_delivered", onDelivered);
+      socket.off("message_read", onRead);
+      socket.off("messages_read", onMessagesRead);
+      socket.off("message_reacted", onReacted);
+      socket.off("message_deleted", onDeleted);
+      socket.off("user_typing", onTyping);
     };
   }, [socket, conversationId, currentUserId]);
 
-  // SEND MESSAGE (with retry)
   const handleSend = async ({
     type = "text",
     text = "",
     file = null,
     attachment = null,
   }) => {
-    const tempId = `temp-${Date.now()}`;
-    const optimisticMessage = {
-      _id: tempId,
-      text,
-      type,
-      attachment,
-      sender: currentUserId,
-      receiver: otherUser?._id,
-      createdAt: new Date(),
-      isDelivered: false,
-      isRead: false,
-      failed: false,
-      sending: true,
-    };
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    if (type === "text" && (!text || !text.trim())) {
+      sendingRef.current = false;
+      return;
+    }
+    if (text && text.length > MAX_TEXT) {
+      toast.error(`Message too long (max ${MAX_TEXT} characters)`);
+      sendingRef.current = false;
+      return;
+    }
 
-    setMessages((prev) => [...prev, optimisticMessage]);
+    const tempId = `temp-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 9)}`;
+    setMessages((p) => [
+      ...p,
+      {
+        _id: tempId,
+        text,
+        type,
+        attachment,
+        sender: currentUserId,
+        receiver: otherUser?._id,
+        createdAt: new Date(),
+        isDelivered: false,
+        isRead: false,
+        failed: false,
+        sending: true,
+      },
+    ]);
 
     try {
       setSending(true);
       let att = attachment;
-
       if (file) {
-        const up = await uploadChatAttachment(file);
+        const up = await uploadChatAttachment(file, conversationId);
         att = up.attachment;
-      }
-
+      } // server-trusted duration/url
       const response = await sendMessage(conversationId, {
         text,
         type,
         attachment: att,
       });
-
-      // ✅ Replace optimistic message with real one
-      setMessages((prev) =>
-        prev.map((m) =>
-          m._id === tempId ? { ...response.message, sending: false } : m
-        )
-      );
-    } catch (err) {
-      console.error("Send error:", err);
-      toast.error("Failed to send message. Tap to retry.");
-
-      setMessages((prev) =>
-        prev.map((m) =>
+      const real = pickMessage(response.message);
+      const rid = real._id;
+      setMessages((p) => {
+        const sock = p.find((m) => m._id === rid);
+        const finalMsg = {
+          ...real,
+          sending: false,
+          failed: false,
+          isDelivered: real.isDelivered || sock?.isDelivered || false,
+          deliveredAt: real.deliveredAt || sock?.deliveredAt || null,
+          isRead: real.isRead || sock?.isRead || false,
+          readAt: real.readAt || sock?.readAt || null,
+        };
+        return p
+          .filter((m) => m._id !== tempId && m._id !== rid)
+          .concat(finalMsg); // dedupe temp + socket twin
+      });
+    } catch (e) {
+      console.error("Send error:", e);
+      toast.error(e.message || "Failed to send message. Tap to retry.");
+      setMessages((p) =>
+        p.map((m) =>
           m._id === tempId ? { ...m, failed: true, sending: false } : m
         )
       );
     } finally {
       setSending(false);
+      sendingRef.current = false;
     }
   };
 
-  // ✅ NEW: Retry failed message
-  const handleRetry = async (failedMessage) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m._id === failedMessage._id ? { ...m, failed: false, sending: true } : m
+  const handleRetry = async (failed) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setMessages((p) =>
+      p.map((m) =>
+        m._id === failed._id ? { ...m, failed: false, sending: true } : m
       )
     );
-
     try {
       const response = await sendMessage(conversationId, {
-        text: failedMessage.text,
-        type: failedMessage.type,
-        attachment: failedMessage.attachment,
+        text: failed.text,
+        type: failed.type,
+        attachment: failed.attachment,
       });
-
-      setMessages((prev) =>
-        prev.map((m) =>
-          m._id === failedMessage._id
-            ? { ...response.message, sending: false }
-            : m
-        )
-      );
-    } catch (err) {
+      const real = pickMessage(response.message);
+      const rid = real._id;
+      setMessages((p) => {
+        const sock = p.find((m) => m._id === rid);
+        const finalMsg = {
+          ...real,
+          sending: false,
+          failed: false,
+          isDelivered: real.isDelivered || sock?.isDelivered || false,
+          deliveredAt: real.deliveredAt || sock?.deliveredAt || null,
+          isRead: real.isRead || sock?.isRead || false,
+          readAt: real.readAt || sock?.readAt || null,
+        };
+        return p
+          .filter((m) => m._id !== failed._id && m._id !== rid)
+          .concat(finalMsg);
+      });
+    } catch {
       toast.error("Retry failed. Please try again.");
-      setMessages((prev) =>
-        prev.map((m) =>
-          m._id === failedMessage._id
-            ? { ...m, failed: true, sending: false }
-            : m
+      setMessages((p) =>
+        p.map((m) =>
+          m._id === failed._id ? { ...m, failed: true, sending: false } : m
         )
       );
+    } finally {
+      sendingRef.current = false;
     }
   };
 
-  // REACTIONS & DELETE
-  const handleReact = async (messageId, emoji) => {
+  const handleReact = async (id, emoji) => {
     try {
-      await reactToMessage(messageId, emoji);
-    } catch (e) {
+      await reactToMessage(id, emoji);
+    } catch {
       toast.error("Failed to add reaction");
     }
   };
-
-  const handleDeleteMessage = async (messageId, scope) => {
+  const handleDeleteMessage = async (id, scope) => {
     try {
-      await deleteMessage(messageId, scope);
-      if (scope === "me") {
-        setMessages((prev) => prev.filter((m) => m._id !== messageId));
-      }
+      await deleteMessage(id, scope);
+      if (scope === "me") setMessages((p) => p.filter((m) => m._id !== id));
     } catch (e) {
       toast.error(e.response?.data?.message || "Failed to delete message");
     }
   };
-
-  // LIGHTBOX HANDLER
   const handleImageClick = (url) => {
-    setLightbox({ photos: [url], index: 0 });
+    if (isSafeUrl(url)) setLightbox({ photos: [url], index: 0 });
   };
-
-  // ✅ NEW: Scroll to bottom
   const scrollToBottom = () => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({
@@ -414,46 +475,37 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       setShowScrollButton(false);
     }
   };
-
-  // ✅ NEW: Handle typing indicator
   const handleTypingStart = () => {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     socket?.emit("typing_start", { conversationId });
-
-    typingTimeoutRef.current = setTimeout(() => {
-      socket?.emit("typing_stop", { conversationId });
-    }, 2000);
+    typingTimeoutRef.current = setTimeout(
+      () => socket?.emit("typing_stop", { conversationId }),
+      2000
+    );
   };
 
-  // Group messages by date
-  const groupMessagesByDate = (msgs) => {
-    const groups = [];
-    let currentDate = null;
+  const grouped = useMemo(() => {
+    const g = [];
+    let cur = null;
+    messages
+      .filter((m) => !m.deletedFor?.includes(currentUserId))
+      .forEach((m) => {
+        const d = new Date(m.createdAt).toDateString();
+        if (d !== cur) {
+          cur = d;
+          g.push({ type: "date", date: d });
+        }
+        g.push({ type: "message", data: m });
+      });
+    return g;
+  }, [messages, currentUserId]);
 
-    msgs.forEach((msg) => {
-      const msgDate = new Date(msg.createdAt).toDateString();
+  const otherTyping = typingUsers.has(otherUser?._id?.toString());
+  const otherPhoto = otherUser?.photos?.[0]?.url;
+  const safeOtherPhoto = isSafeUrl(otherPhoto) ? avatarImg(otherPhoto) : null;
 
-      if (msgDate !== currentDate) {
-        currentDate = msgDate;
-        groups.push({ type: "date", date: msgDate });
-      }
-
-      groups.push({ type: "message", data: msg });
-    });
-
-    return groups;
-  };
-
-  const groupedMessages = groupMessagesByDate(
-    messages.filter((m) => !m.deletedFor?.includes(currentUserId))
-  );
-
-  const isOtherUserTyping = typingUsers.has(otherUser?._id?.toString());
-
-  // RENDER
   return (
     <div className="chat-window">
-      {/* HEADER */}
       <div className="chat-header" role="banner">
         <button
           className="chat-back-btn"
@@ -462,13 +514,12 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         >
           <i className="bi bi-arrow-left" aria-hidden="true"></i>
         </button>
-
         <div className="chat-header-user">
           <div className="chat-header-avatar">
-            {otherUser?.photos?.[0]?.url ? (
+            {safeOtherPhoto ? (
               <img
-                src={avatarImg(otherUser.photos[0].url)}
-                alt={`${otherUser.name}'s avatar`}
+                src={safeOtherPhoto}
+                alt={`${otherUser?.name || "user"}'s avatar`}
               />
             ) : (
               <span aria-hidden="true">
@@ -482,7 +533,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           <div>
             <strong>{otherUser?.name}</strong>
             <small>
-              {isOtherUserTyping
+              {otherTyping
                 ? "Typing..."
                 : otherUser?.isOnline
                 ? "Active now"
@@ -497,7 +548,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         </div>
       </div>
 
-      {/* MESSAGES */}
       <div
         className="chat-messages"
         ref={scrollRef}
@@ -529,47 +579,37 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
                 <div className="spinner-border spinner-border-sm text-primary"></div>
               </div>
             )}
-
-            {groupedMessages.map((item, idx) => {
-              if (item.type === "date") {
-                const isToday = item.date === new Date().toDateString();
-                const isYesterday =
-                  item.date === new Date(Date.now() - 86400000).toDateString();
-
-                return (
-                  <div key={`date-${idx}`} className="chat-date-separator">
-                    <span>
-                      {isToday
-                        ? "Today"
-                        : isYesterday
-                        ? "Yesterday"
-                        : new Date(item.date).toLocaleDateString()}
-                    </span>
-                  </div>
-                );
-              }
-
-              const m = item.data;
-              return (
+            {grouped.map((it, idx) =>
+              it.type === "date" ? (
+                <div key={`date-${idx}`} className="chat-date-separator">
+                  <span>
+                    {it.date === new Date().toDateString()
+                      ? "Today"
+                      : it.date ===
+                        new Date(Date.now() - 86400000).toDateString()
+                      ? "Yesterday"
+                      : new Date(it.date).toLocaleDateString()}
+                  </span>
+                </div>
+              ) : (
                 <MessageBubble
-                  key={m._id}
-                  message={m}
+                  key={it.data._id}
+                  message={it.data}
                   isMine={
-                    (typeof m.sender === "string"
-                      ? m.sender
-                      : m.sender?._id) === currentUserId
+                    (typeof it.data.sender === "string"
+                      ? it.data.sender
+                      : it.data.sender?._id) === currentUserId
                   }
-                  onReact={(emoji) => handleReact(m._id, emoji)}
-                  onDelete={(scope) => handleDeleteMessage(m._id, scope)}
+                  onReact={(e) => handleReact(it.data._id, e)}
+                  onDelete={(s) => handleDeleteMessage(it.data._id, s)}
                   onImageClick={handleImageClick}
-                  onRetry={() => handleRetry(m)}
-                  sending={m.sending}
-                  failed={m.failed}
+                  onRetry={() => handleRetry(it.data)}
+                  sending={it.data.sending}
+                  failed={it.data.failed}
                 />
-              );
-            })}
-
-            {isOtherUserTyping && (
+              )
+            )}
+            {otherTyping && (
               <div
                 className="chat-typing-indicator"
                 aria-label="Other user is typing"
@@ -586,7 +626,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         )}
       </div>
 
-      {/* ✅ Scroll to bottom button */}
       {showScrollButton && (
         <button
           className="chat-scroll-to-bottom"
@@ -596,15 +635,11 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           <i className="bi bi-chevron-down"></i>
         </button>
       )}
-
-      {/* INPUT */}
       <ChatInputBar
         onSend={handleSend}
         disabled={sending}
         onTyping={handleTypingStart}
       />
-
-      {/* LIGHTBOX */}
       {lightbox && (
         <PhotoLightbox
           photos={lightbox.photos}

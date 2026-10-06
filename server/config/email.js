@@ -1,18 +1,89 @@
 import { BrevoClient } from "@getbrevo/brevo";
 import { suspiciousLoginTemplate } from "../templates/suspiciousLoginEmail.js";
+import { otpTemplate } from "../templates/otpEmail.js"; // ✅ Create this template
 
-// ✅ Brevo client FIRST (used by both functions below)
-const brevo = new BrevoClient({
-  apiKey: process.env.BREVO_API_KEY,
-});
+// ═══════════════════════════════════════════
+// ENV VALIDATION (fail fast at startup)
+// ═══════════════════════════════════════════
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL;
+const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || "Maya Milan";
 
-// ========================================
-// SUSPICIOUS LOGIN ALERT (Brevo version)
-// ========================================
+if (!BREVO_API_KEY) {
+  throw new Error("BREVO_API_KEY environment variable is required");
+}
+if (!BREVO_SENDER_EMAIL) {
+  throw new Error("BREVO_SENDER_EMAIL environment variable is required");
+}
+
+// Singleton Brevo client
+const brevo = new BrevoClient({ apiKey: BREVO_API_KEY });
+
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
+
+/**
+ * Validate email format
+ * @param {string} email
+ * @returns {boolean}
+ */
+const isValidEmail = (email) => {
+  if (!email || typeof email !== "string") return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+};
+
+/**
+ * Sanitize user input to prevent HTML injection in email templates.
+ * Escapes < > & " ' characters.
+ * @param {string} input
+ * @returns {string}
+ */
+const sanitize = (input) => {
+  if (!input || typeof input !== "string") return "";
+  return input
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+};
+
+/**
+ * Extract plain text from HTML for multipart emails
+ * @param {string} html
+ * @returns {string}
+ */
+const htmlToPlainText = (html) => {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+// ═══════════════════════════════════════════
+// SUSPICIOUS LOGIN ALERT
+// ═══════════════════════════════════════════
+
+/**
+ * Send security alert when login occurs from unusual location/device
+ * @param {string} to - Recipient email
+ * @param {Object} data - { name, ip, city, country, userAgent }
+ * @returns {Promise<{success: boolean, messageId?: string}>}
+ */
 export const sendSuspiciousLoginEmail = async (
   to,
   { name, ip, city, country, userAgent }
 ) => {
+  if (!isValidEmail(to)) return { success: false };
+
   try {
     const time = new Date().toLocaleString("en-US", {
       weekday: "long",
@@ -24,166 +95,99 @@ export const sendSuspiciousLoginEmail = async (
       timeZoneName: "short",
     });
 
-    const html = suspiciousLoginTemplate({
-      name,
-      ip,
-      city,
-      country,
-      userAgent,
+    // ✅ Sanitize all user-provided data
+    const safeData = {
+      name: sanitize(name),
+      ip: sanitize(ip),
+      city: sanitize(city),
+      country: sanitize(country),
+      userAgent: sanitize(userAgent),
       time,
-    });
+    };
 
-    // ✅ Use Brevo instead of transporter.sendMail
+    const html = suspiciousLoginTemplate(safeData);
+    const text = htmlToPlainText(html);
+
     const response = await brevo.transactionalEmails.sendTransacEmail({
       sender: {
-        name: "Maya~Milan Security",
-        email: process.env.BREVO_SENDER_EMAIL,
+        name: `${BREVO_SENDER_NAME} Security`,
+        email: BREVO_SENDER_EMAIL,
       },
-      to: [{ email: to, name: name }],
-      subject: `🔔 New login from ${city}, ${country}`,
+      to: [{ email: to, name: safeData.name }],
+      replyTo: {
+        email: `security@${BREVO_SENDER_EMAIL.split("@")[1]}`,
+        name: `${BREVO_SENDER_NAME} Security`,
+      },
+      subject: `🔔 New login from ${safeData.city || "unknown location"}`,
       htmlContent: html,
+      textContent: text, // ✅ Plain text version for deliverability
+      headers: {
+        "X-Mailer": BREVO_SENDER_NAME,
+        "X-Priority": "1", // High priority for security alerts
+        "X-Entity-Ref": "no", // Prevent Gmail snippet preview of malicious content
+      },
     });
 
-    console.log(`📧 Suspicious login email sent to ${to}:`, response.messageId);
-    return true;
-  } catch (err) {
-    // Never crash login because of an email failure
-    console.error("Failed to send suspicious login email:", err.message);
-    return false;
+    return { success: true, messageId: response.messageId };
+  } catch {
+    // Silent failure — email issues should never block login
+    return { success: false };
   }
 };
 
-// ========================================
-// OTP EMAIL (unchanged)
-// ========================================
+// ═══════════════════════════════════════════
+// OTP EMAIL
+// ═══════════════════════════════════════════
+
+/**
+ * Send email verification OTP
+ * @param {string} email - Recipient email
+ * @param {string} otp - 6-digit verification code
+ * @param {string} userName - Recipient display name
+ * @returns {Promise<{success: boolean, messageId?: string}>}
+ */
 export const sendOTP = async (email, otp, userName) => {
+  if (!isValidEmail(email)) {
+    throw new Error("Invalid email address");
+  }
+
+  if (
+    !otp ||
+    typeof otp !== "string" ||
+    otp.length !== 6 ||
+    !/^\d{6}$/.test(otp)
+  ) {
+    throw new Error("OTP must be a 6-digit numeric code");
+  }
+
+  const safeName = sanitize(userName);
+
   try {
+    // ✅ Use template file instead of inline HTML
+    const html = otpTemplate({ userName: safeName, otp });
+    const text = htmlToPlainText(html);
+
     const response = await brevo.transactionalEmails.sendTransacEmail({
-      sender: {
-        name: "Maya~Milan",
-        email: process.env.BREVO_SENDER_EMAIL,
+      sender: { name: BREVO_SENDER_NAME, email: BREVO_SENDER_EMAIL },
+      to: [{ email: email.trim(), name: safeName }],
+      replyTo: {
+        email: `noreply@${BREVO_SENDER_EMAIL.split("@")[1]}`,
+        name: BREVO_SENDER_NAME,
       },
-
-      to: [
-        {
-          email: email,
-          name: userName,
-        },
-      ],
-
-      subject: "Verify Your Email - Maya~Milan",
-
-      htmlContent: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          
-          <div style="
-            background: linear-gradient(135deg, #ec4899, #f43f5e);
-            padding: 30px;
-            text-align: center;
-            border-radius: 10px 10px 0 0;
-          ">
-            <h1 style="color: white; margin: 0;">
-              Maya~Milan
-            </h1>
-          </div>
-
-          <div style="
-            padding: 40px;
-            background: #f9fafb;
-            border-radius: 0 0 10px 10px;
-          ">
-
-            <h2 style="color: #1f2937; margin-top: 0;">
-              Hi ${userName}! 👋
-            </h2>
-
-            <p style="
-              color: #4b5563;
-              font-size: 16px;
-              line-height: 1.6;
-            ">
-              Thank you for signing up! To complete your registration,
-              please verify your email address using the code below:
-            </p>
-
-            <div style="
-              background: white;
-              padding: 30px;
-              text-align: center;
-              border-radius: 8px;
-              margin: 30px 0;
-              border: 2px dashed #ec4899;
-            ">
-
-              <p style="
-                margin: 0 0 10px;
-                color: #6b7280;
-                font-size: 14px;
-              ">
-                Your verification code:
-              </p>
-
-              <h1 style="
-                color: #ec4899;
-                font-size: 48px;
-                margin: 0;
-                letter-spacing: 8px;
-                font-weight: 700;
-              ">
-                ${otp}
-              </h1>
-
-            </div>
-
-            <p style="
-              color: #6b7280;
-              font-size: 14px;
-              line-height: 1.6;
-            ">
-              ⏰ This code will expire in
-              <strong>10 minutes</strong>.
-            </p>
-
-            <p style="
-              color: #6b7280;
-              font-size: 14px;
-              line-height: 1.6;
-            ">
-              If you didn't request this code, please ignore this email
-              or contact support if you have concerns.
-            </p>
-
-            <div style="
-              margin-top: 40px;
-              padding-top: 20px;
-              border-top: 1px solid #e5e7eb;
-            ">
-
-              <p style="
-                color: #9ca3af;
-                font-size: 12px;
-                text-align: center;
-                margin: 0;
-              ">
-                This is an automated message, please do not reply to this email.
-              </p>
-
-            </div>
-
-          </div>
-        </div>
-      `,
+      subject: `Your ${BREVO_SENDER_NAME} verification code`,
+      htmlContent: html,
+      textContent: text, // ✅ Plain text version
+      headers: {
+        "X-Mailer": BREVO_SENDER_NAME,
+        "X-Entity-Ref": "no",
+        "List-Unsubscribe": `<mailto:unsubscribe@${
+          BREVO_SENDER_EMAIL.split("@")[1]
+        }>`,
+      },
     });
 
-    console.log("✅ OTP email sent:", response.messageId);
-
-    return {
-      success: true,
-      messageId: response.messageId,
-    };
+    return { success: true, messageId: response.messageId };
   } catch (error) {
-    console.error("❌ Brevo email error:", error);
-
     throw new Error("Failed to send verification email");
   }
 };

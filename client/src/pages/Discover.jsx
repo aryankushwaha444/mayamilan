@@ -77,19 +77,23 @@ function Discover() {
         }
       } catch (err) {
         console.error("Discovery error:", err);
-        setError(err.response?.data?.message || "Unable to load profiles");
-        toast.error("Failed to load profiles", "Error", 4000);
+        // 🛑 Use local setError, DO NOT use toast.error here to prevent global re-renders
+        setError(
+          err.response?.status === 429
+            ? "Too many requests. Please wait a moment and retry."
+            : err.response?.data?.message || "Unable to load profiles"
+        );
       } finally {
         setLoading(false);
       }
     },
-    [toast]
+    []
   );
 
   // ✅ Initial load
   useEffect(() => {
     fetchUsers();
-  }, [fetchUsers]);
+  }, []);
 
   // ✅ SOCKET LISTENERS — use refs to avoid stale closures
   useEffect(() => {

@@ -80,7 +80,15 @@ export function useRealtimeAlerts() {
     ({ title, body, tag, url, vibrationPattern, isMessage }) => {
       // Deduplication: skip if we already processed this event
       if (tag && processedEventsRef.current.has(tag)) return;
-      if (tag) processedEventsRef.current.add(tag);
+
+      if (tag) {
+        // ✅ SECURITY: Hard limit to prevent memory exhaustion from event spam
+        if (processedEventsRef.current.size >= 1000) {
+          const oldestKey = processedEventsRef.current.values().next().value;
+          processedEventsRef.current.delete(oldestKey);
+        }
+        processedEventsRef.current.add(tag);
+      }
 
       // Rate limiting
       const canTrigger = isMessage

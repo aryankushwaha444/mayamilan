@@ -66,7 +66,7 @@ export const AuthProvider = ({ children }) => {
   // ✅ Stable clearSession — clears signing key + storage + state
   const clearSession = useCallback(() => {
     if (!isMountedRef.current) return;
-    clearSigningKey(); // ✅ Clear in-memory signing key
+    clearSigningKey();
     localStorage.removeItem("accessToken");
     localStorage.removeItem("user");
     setAccessToken(null);
@@ -90,7 +90,6 @@ export const AuthProvider = ({ children }) => {
           localStorage.setItem("accessToken", refreshed.accessToken);
           setAccessToken(refreshed.accessToken);
 
-          // ✅ Rotate signing key on refresh
           if (refreshed.signingKey) {
             setSigningKey(refreshed.signingKey);
           }
@@ -105,7 +104,12 @@ export const AuthProvider = ({ children }) => {
           }
         }
         return false;
-      } catch {
+      } catch (err) {
+        // ✅ FIX: If refresh fails due to network (offline), throw so caller knows
+        // it's not an auth failure. This prevents clearing the session when offline.
+        if (!err.response) {
+          throw err;
+        }
         return false;
       } finally {
         refreshPromiseRef.current = null;
@@ -132,11 +136,9 @@ export const AuthProvider = ({ children }) => {
       if (newToken) {
         setAccessToken(newToken);
         localStorage.setItem("accessToken", newToken);
-        // ✅ Sync signing key across tabs
         if (newSigningKey) {
           setSigningKey(newSigningKey);
         }
-        // Re-fetch user to stay in sync
         getCurrentUser()
           .then((res) => {
             if (res?.success && res.user && isMountedRef.current) {
@@ -153,7 +155,7 @@ export const AuthProvider = ({ children }) => {
       if (!isMountedRef.current) return;
       if (e.key === "accessToken") {
         if (!e.newValue) {
-          clearSigningKey(); // ✅ Clear signing key when logged out in another tab
+          clearSigningKey();
           setUser(null);
           setAccessToken(null);
         } else {
@@ -176,7 +178,6 @@ export const AuthProvider = ({ children }) => {
     window.addEventListener("storage", handleStorageChange);
 
     const initializeAuth = async () => {
-      // Skip auth check on OAuth success page
       if (window.location.pathname === "/oauth-success") {
         if (isMountedRef.current) setLoading(false);
         return;
@@ -204,28 +205,46 @@ export const AuthProvider = ({ children }) => {
       } catch (error) {
         if (abortController.signal.aborted) return;
 
+        // ✅ FIX: Network error (offline/server down) — DO NOT log the user out
+        if (!error.response) {
+          console.warn(
+            "Network error during auth check. Keeping existing session."
+          );
+          if (isMountedRef.current) setLoading(false);
+          return;
+        }
+
         const statusCode = error.response?.status;
         const errorData = error.response?.data;
 
-        // Session revoked — don't try refresh
         if (errorData?.sessionRevoked) {
           clearSession();
           if (isMountedRef.current) setLoading(false);
           return;
         }
 
-        // Account deactivated (403) — don't try refresh
         if (statusCode === 403 && errorData?.deactivated) {
           clearSession();
           if (isMountedRef.current) setLoading(false);
           return;
         }
 
-        // 401 expired token → try silent refresh
+        if (statusCode === 429 || statusCode >= 500) {
+          if (isMountedRef.current) setLoading(false);
+          return;
+        }
+
         if (statusCode === 401) {
-          const restored = await trySilentRefresh();
-          if (abortController.signal.aborted) return;
-          if (!restored) clearSession();
+          try {
+            const restored = await trySilentRefresh();
+            if (abortController.signal.aborted) return;
+            if (!restored) clearSession();
+          } catch (refreshErr) {
+            // ✅ FIX: Network error during silent refresh — keep session
+            console.warn(
+              "Network error during silent refresh. Keeping session."
+            );
+          }
         } else {
           clearSession();
         }
@@ -259,7 +278,6 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem("user", JSON.stringify(response.user));
       setAccessToken(response.accessToken);
       setUser(response.user);
-      // ✅ Set signing key issued at registration
       if (response.signingKey) {
         setSigningKey(response.signingKey);
       }
@@ -282,7 +300,6 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem("user", JSON.stringify(response.user));
         setAccessToken(response.accessToken);
         setUser(response.user);
-        // ✅ Set signing key issued at login
         if (response.signingKey) {
           setSigningKey(response.signingKey);
         }
@@ -306,7 +323,7 @@ export const AuthProvider = ({ children }) => {
       await logoutUser();
     } catch {}
 
-    clearSession(); // ✅ Already calls clearSigningKey()
+    clearSession();
   }, [clearSession]);
 
   // Stable context value — prevents consumer re-renders

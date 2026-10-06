@@ -91,7 +91,7 @@ function UserProfile() {
     return () => {
       cancelled = true;
     };
-  }, [userId, toast]);
+  }, [userId]);
 
   // ✅ Focus trap for report modal
   useEffect(() => {

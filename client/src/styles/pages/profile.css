@@ -1,0 +1,330 @@
+/* ============================================================
+   PROFILE — view, edit, photos, danger zone, delete modals
+   ============================================================ */
+
+.profile-avatar {
+  width: 72px;
+  height: 72px;
+  min-width: 72px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #f1f1f1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+}
+
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-info {
+  padding: 16px;
+  border-radius: 14px;
+  background: #f8f7fb;
+}
+
+.profile-info small {
+  display: block;
+  color: #6b7280;
+  margin-bottom: 5px;
+  font-weight: 500;
+}
+
+.profile-info div {
+  font-weight: 600;
+  color: #374151;
+}
+
+/* ── Edit profile ── */
+.profile-edit-card {
+  border-radius: 24px;
+}
+
+.profile-edit-card .form-control,
+.profile-edit-card .form-select,
+.profile-edit-card .input-group-text {
+  min-height: 48px;
+  border-color: #e5e7eb;
+}
+
+.profile-edit-card textarea.form-control {
+  min-height: 120px;
+}
+
+.profile-edit-card .form-control:focus,
+.profile-edit-card .form-select:focus {
+  border-color: #a855f7;
+  box-shadow: 0 0 0 0.2rem rgba(168, 85, 247, 0.12);
+}
+
+.profile-edit-card .input-group-text {
+  background: #f8f7fb;
+  color: #8b5cf6;
+}
+
+.profile-edit-card .btn-primary {
+  min-height: 48px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  font-weight: 600;
+}
+
+/* ── Profile photos ── */
+.profile-photo-card {
+  height: 280px;
+  overflow: hidden;
+  border-radius: 18px;
+  background: #f5f5f5;
+}
+
+.profile-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.3s ease;
+}
+
+.profile-photo-card:hover .profile-photo {
+  transform: scale(1.03);
+}
+
+.profile-photo-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+}
+
+.profile-photo-actions .btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.empty-photo-icon {
+  width: 70px;
+  height: 70px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: #f1f1f1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+}
+
+/* ── Danger zone ── */
+.profile-danger-zone {
+  border: 2px solid #dc2626;
+  background: linear-gradient(135deg, #fef2f2 0%, #fff 100%);
+}
+
+.profile-danger-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #fee2e2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 1.5rem;
+  color: #dc2626;
+}
+
+.profile-danger-title {
+  color: #991b1b;
+}
+
+.profile-danger-action {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: white;
+  border: 1px solid #fecaca;
+}
+
+@media (min-width: 768px) {
+  .profile-danger-action {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+/* ── Delete account modal ── */
+.delete-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 15, 15, 0.45);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.delete-modal {
+  max-width: 500px;
+  width: 100%;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: white;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.25);
+}
+
+.delete-modal-header {
+  background: linear-gradient(135deg, #dc2626, #991b1b);
+  color: white;
+  padding: 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.delete-modal-body {
+  padding: 1.5rem;
+}
+
+.delete-modal-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
+  background: #fef3c7;
+  border: 1px solid #fbbf24;
+}
+
+.delete-modal-oauth-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
+  background: #dbeafe;
+  border: 1px solid #60a5fa;
+}
+
+.delete-modal-footer {
+  padding: 0 1.5rem 1.5rem;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* ── Report modal ── */
+.report-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: lightboxFade 0.2s ease;
+}
+
+.report-modal {
+  width: 100%;
+  max-width: 460px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.3);
+  animation: lightboxZoom 0.25s ease;
+}
+
+/* ── Dark danger-action box: force light text for contrast ── */
+.profile-danger-action h6,
+.profile-danger-action .fw-bold {
+  color: #f9fdfc;
+}
+
+.profile-danger-action .text-muted {
+  color: #cbd5e1 !important; /* light slate on dark background */
+}
+
+.profile-danger-action p {
+  color: #cbd5e1;
+}
+
+/* ── Dark mode ── */
+@media (prefers-color-scheme: dark) {
+  .profile-danger-zone {
+    background: linear-gradient(
+      135deg,
+      rgba(254, 242, 242, 0.05),
+      rgba(255, 255, 255, 0.02)
+    );
+  }
+
+  .profile-danger-action {
+    background: #1f2937;
+    border-color: rgba(254, 202, 202, 0.2);
+  }
+
+  .delete-modal {
+    background: #1f2937;
+    color: #e5e7eb;
+  }
+
+  .delete-modal-body {
+    background: #1f2937;
+  }
+
+  .delete-modal-warning {
+    background: rgba(254, 243, 199, 0.1);
+    border-color: rgba(251, 191, 36, 0.3);
+  }
+
+  .delete-modal-oauth-info {
+    background: rgba(219, 234, 254, 0.1);
+    border-color: rgba(96, 165, 250, 0.3);
+  }
+}
+
+/* ── Responsive ── */
+@media (max-width: 576px) {
+  .profile-edit-card {
+    border-radius: 18px;
+  }
+
+  .profile-edit-card .card-body {
+    padding: 24px !important;
+  }
+}
+
+@media (max-width: 575.98px) {
+  .profile-photo-card {
+    height: 220px;
+    border-radius: 14px;
+  }
+
+  .profile-photo-actions .btn {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+@media (min-width: 576px) and (max-width: 991.98px) {
+  .profile-photo-card {
+    height: 250px;
+  }
+}

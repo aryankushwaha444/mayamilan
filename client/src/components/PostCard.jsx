@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { Link } from "react-router-dom";
 import { postService } from "../services/postService";
 import CommentItem from "./CommentItem.jsx";
@@ -14,6 +14,17 @@ function PostCard({ post, onUpdate }) {
   const toast = useAlert();
   const { socket } = useSocket();
   const { user } = useAuth();
+  const userId = user?._id?.toString();
+
+  // ✅ Keep latest onUpdate without forcing socket re-subscriptions
+  const onUpdateRef = useRef(onUpdate);
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
+
+  const updatePost = useCallback((updater) => {
+    onUpdateRef.current?.(updater);
+  }, []);
 
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
@@ -21,16 +32,20 @@ function PostCard({ post, onUpdate }) {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(post.content);
+  const [editText, setEditText] = useState(post?.content || "");
   const [showShare, setShowShare] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(null);
 
   const menuRef = useRef(null);
 
+  useEffect(() => {
+    setEditText(post?.content || "");
+  }, [post?.content]);
+
   const authorPhoto = avatarImg(
-    post.author?.photos?.find((p) => p.isPrimary)?.url ||
-      post.author?.photos?.[0]?.url ||
+    post?.author?.photos?.find((p) => p.isPrimary)?.url ||
+      post?.author?.photos?.[0]?.url ||
       "/images/default-avatar.png"
   );
 
@@ -43,7 +58,7 @@ function PostCard({ post, onUpdate }) {
     return new Date(date).toLocaleDateString();
   };
 
-  // ✅ FIXED: Outside click handler for the 3-dots menu
+  // Outside click handler for the 3-dots menu
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (menuRef.current && !menuRef.current.contains(event.target)) {
@@ -55,57 +70,98 @@ function PostCard({ post, onUpdate }) {
   }, []);
 
   const handleLike = async () => {
-    // ✅ Optimistic UI Update
-    const previousIsLiked = post.isLiked;
-    const previousLikesCount = post.likes.length;
+    const previousIsLiked = !!post.isLiked;
+    const previousLikesCount = Number(
+      post.likesCount ?? post.likes?.length ?? 0
+    );
 
-    onUpdate({
-      ...post,
-      isLiked: !previousIsLiked,
-      likes: !previousIsLiked
-        ? [...post.likes, user._id]
-        : post.likes.filter((id) => id !== user._id),
+    // Optimistic update using server-style counter, not likes array
+    updatePost((prev) => {
+      const prevLiked = !!prev.isLiked;
+      const prevCount = Number(prev.likesCount ?? prev.likes?.length ?? 0);
+
+      return {
+        ...prev,
+        isLiked: !prevLiked,
+        likesCount: Math.max(0, prevCount + (prevLiked ? -1 : 1)),
+      };
     });
 
     try {
       const res = await postService.toggleLike(post._id);
+      const serverLikesCount = Number(res?.likesCount);
+
       // Reconcile with server truth
-      onUpdate({
-        ...post,
-        isLiked: res.isLiked,
-        likes: Array.isArray(res.likes) ? res.likes : post.likes, // Assuming server returns array or count
-      });
+      updatePost((prev) => ({
+        ...prev,
+        isLiked: !!res?.isLiked,
+        likesCount: Number.isFinite(serverLikesCount)
+          ? serverLikesCount
+          : Number(prev.likesCount ?? previousLikesCount),
+      }));
     } catch (err) {
       console.error(err);
       toast.error("Failed to update like");
-      // Revert on error
-      onUpdate({
-        ...post,
+
+      // Revert
+      updatePost((prev) => ({
+        ...prev,
         isLiked: previousIsLiked,
-        likes: previousIsLiked
-          ? [...post.likes, user._id]
-          : post.likes.filter((id) => id !== user._id),
-      });
+        likesCount: previousLikesCount,
+      }));
     }
   };
 
   const handleSave = async () => {
-    const previousIsSaved = post.isSaved;
-    onUpdate({ ...post, isSaved: !previousIsSaved });
+    const previousIsSaved = !!post.isSaved;
+    const previousSavesCount = Number(post.savesCount ?? 0);
+
+    updatePost((prev) => {
+      const prevSaved = !!prev.isSaved;
+      const prevCount = Number(prev.savesCount ?? previousSavesCount);
+
+      return {
+        ...prev,
+        isSaved: !prevSaved,
+        savesCount: Math.max(0, prevCount + (prevSaved ? -1 : 1)),
+      };
+    });
 
     try {
       const res = await postService.toggleSave(post._id);
-      onUpdate({ ...post, isSaved: res.isSaved });
-      toast.success(res.isSaved ? "Post saved! 📌" : "Removed from saved");
+      const serverSavesCount = Number(res?.savesCount);
+
+      if (!res?.isSaved) {
+        // Confirmed un-save: remove via the null path the parent already handles
+        // safely. (No revert happens after a confirmed success, so this is safe.)
+        updatePost(null);
+      } else {
+        updatePost((prev) => ({
+          ...prev,
+          isSaved: true,
+          savesCount: Number.isFinite(serverSavesCount)
+            ? serverSavesCount
+            : Number(prev.savesCount ?? previousSavesCount),
+        }));
+      }
+
+      toast.success(res?.isSaved ? "Post saved! 📌" : "Removed from saved");
     } catch (err) {
       console.error(err);
       toast.error("Failed to save post");
-      onUpdate({ ...post, isSaved: previousIsSaved }); // Revert
+
+      updatePost((prev) => ({
+        ...prev,
+        isSaved: previousIsSaved,
+        savesCount: previousSavesCount,
+      }));
     }
   };
 
   const loadComments = async () => {
-    if (!showComments && comments.length === 0) {
+    const nextShow = !showComments;
+
+    if (nextShow && comments.length === 0) {
       try {
         const res = await postService.getComments(post._id);
         setComments(res.comments || []);
@@ -114,43 +170,68 @@ function PostCard({ post, onUpdate }) {
         toast.error("Failed to load comments");
       }
     }
-    setShowComments(!showComments);
+
+    setShowComments(nextShow);
   };
 
   const handleAddComment = async (e) => {
     e.preventDefault();
-    if (!commentText.trim()) return;
 
-    // ✅ Optimistic UI for Comments
-    const tempId = `temp-${Date.now()}`;
+    const text = commentText.trim();
+    if (!text) return;
+
+    const tempId = `temp-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 7)}`;
+
     const optimisticComment = {
       _id: tempId,
-      content: commentText,
+      content: text,
       author: user,
       createdAt: new Date().toISOString(),
       isMine: true,
       repliesCount: 0,
+      reactionSummary: [],
     };
 
+    const previousCommentsCount = Number(post.commentsCount ?? 0);
+
     setComments((prev) => [optimisticComment, ...prev]);
-    onUpdate({ ...post, commentsCount: post.commentsCount + 1 });
+    updatePost((prev) => ({
+      ...prev,
+      commentsCount: Number(prev.commentsCount ?? previousCommentsCount) + 1,
+    }));
+
     setCommentText("");
     setSubmittingComment(true);
 
     try {
-      const res = await postService.addComment(post._id, commentText);
+      const res = await postService.addComment(post._id, text);
 
-      // Replace optimistic comment with real one
       setComments((prev) =>
         prev.map((c) => (c._id === tempId ? res.comment : c))
       );
-      onUpdate({ ...post, commentsCount: res.commentsCount });
+
+      const serverCommentsCount = Number(res?.commentsCount);
+
+      updatePost((prev) => ({
+        ...prev,
+        commentsCount: Number.isFinite(serverCommentsCount)
+          ? serverCommentsCount
+          : Number(prev.commentsCount ?? previousCommentsCount + 1),
+      }));
     } catch (err) {
       console.error(err);
       toast.error("Failed to post comment");
-      // Revert on error
+
       setComments((prev) => prev.filter((c) => c._id !== tempId));
-      onUpdate({ ...post, commentsCount: Math.max(0, post.commentsCount - 1) });
+      updatePost((prev) => ({
+        ...prev,
+        commentsCount: Math.max(
+          0,
+          Number(prev.commentsCount ?? previousCommentsCount + 1) - 1
+        ),
+      }));
     } finally {
       setSubmittingComment(false);
     }
@@ -159,7 +240,7 @@ function PostCard({ post, onUpdate }) {
   const handleDelete = async () => {
     try {
       await postService.deletePost(post._id);
-      onUpdate(null);
+      updatePost(null);
       toast.success("Post deleted successfully 🗑️");
     } catch (err) {
       console.error(err);
@@ -169,61 +250,79 @@ function PostCard({ post, onUpdate }) {
 
   const handleEdit = async (e) => {
     e.preventDefault();
-    if (!editText.trim()) return;
+
+    const text = editText.trim();
+    if (!text) {
+      toast.warning("Post content cannot be empty");
+      return;
+    }
+
     try {
-      const res = await postService.editPost(post._id, editText);
-      onUpdate({ ...post, ...res.post, content: editText, isEdited: true });
+      const res = await postService.editPost(post._id, text);
+
+      updatePost((prev) => ({
+        ...prev,
+        ...(res?.post || {}),
+        content: text,
+        isEdited: true,
+        editedAt: res?.post?.editedAt || new Date().toISOString(),
+      }));
+
       setEditing(false);
       toast.success("Post updated successfully ✏️");
     } catch (err) {
       console.error(err);
-      toast.error("Failed to update post");
+      // 🔒 Show the REAL server reason (e.g. "Content cannot exceed 2000 characters")
+      toast.error(
+        err.response?.data?.message || "Failed to update post",
+        "Error",
+        4000
+      );
     }
   };
 
-  // ✅ REAL-TIME COMMENT SYNC
+  // Real-time comment sync
   useEffect(() => {
-    if (!socket) return;
+    if (!socket || !userId) return;
 
     const handleNewComment = ({ postId, comment }) => {
       if (postId !== post._id) return;
 
       setComments((prev) => {
         if (prev.some((c) => c._id === comment._id)) return prev;
+
         return [
           {
             ...comment,
-            isMine: String(comment.author?._id) === String(user?._id),
+            isMine: String(comment?.author?._id) === userId,
           },
           ...prev,
         ];
       });
 
-      // Only update count if we aren't the ones who just posted it optimistically
-      if (String(comment.author?._id) !== String(user?._id)) {
-        onUpdate((prevPost) => ({
-          ...prevPost,
-          commentsCount: prevPost.commentsCount + 1,
+      // If this comment is not mine, increment count.
+      // If it is mine, optimistic update already incremented it.
+      if (String(comment?.author?._id) !== userId) {
+        updatePost((prev) => ({
+          ...prev,
+          commentsCount: Number(prev.commentsCount ?? 0) + 1,
         }));
       }
     };
 
-    const handleCommentDeleted = ({ postId, removedIds }) => {
+    const handleCommentDeleted = ({ postId, commentId, commentsCount }) => {
       if (postId !== post._id) return;
 
-      let deletedCount = 0;
-      setComments((prev) => {
-        const filtered = prev.filter((c) => !removedIds.includes(c._id));
-        deletedCount = prev.length - filtered.length;
-        return filtered;
-      });
+      setComments((prev) => prev.filter((c) => c._id !== commentId));
 
-      if (deletedCount > 0) {
-        onUpdate((prevPost) => ({
-          ...prevPost,
-          commentsCount: Math.max(0, prevPost.commentsCount - deletedCount),
-        }));
-      }
+      const count = Number(commentsCount);
+
+      updatePost((prev) => ({
+        ...prev,
+        commentsCount: Number.isFinite(count)
+          ? count
+          : Math.max(0, Number(prev.commentsCount ?? 1) - 1),
+      }));
     };
 
     socket.on("new_comment", handleNewComment);
@@ -233,14 +332,24 @@ function PostCard({ post, onUpdate }) {
       socket.off("new_comment", handleNewComment);
       socket.off("comment_deleted", handleCommentDeleted);
     };
-  }, [socket, post._id, user, onUpdate]);
+  }, [socket, post._id, userId, updatePost]);
 
-  // Calculate images to show (max 4, with overflow indicator)
-  const visibleImages = post.images?.slice(0, 4) || [];
+  const visibleImages = Array.isArray(post.images)
+    ? post.images.slice(0, 4)
+    : [];
+
   const remainingImages = (post.images?.length || 0) - 4;
 
+  // ✅ Use server counters, not local arrays
+  const likeCount = Number(post.likesCount ?? post.likes?.length ?? 0);
+  const commentCount = Number(post.commentsCount ?? comments.length ?? 0);
+  const shareCount = Number(post.sharesCount ?? 0);
+
   return (
-    <article className="post-card" aria-label={`Post by ${post.author.name}`}>
+    <article
+      className="post-card"
+      aria-label={`Post by ${post?.author?.name || "Unknown"}`}
+    >
       {post.sharedBy && (
         <div className="shared-banner">
           <i className="bi bi-share-fill" aria-hidden="true"></i>
@@ -251,12 +360,12 @@ function PostCard({ post, onUpdate }) {
       )}
 
       <header className="post-header">
-        <Link to={`/users/${post.author._id}`} className="post-author">
+        <Link to={`/users/${post.author?._id}`} className="post-author">
           <img src={authorPhoto} alt="" className="post-avatar" />
           <div>
             <div className="post-author-name">
-              {post.author.name}
-              {post.author.isVerified && (
+              {post.author?.name}
+              {post.author?.isVerified && (
                 <i
                   className="bi bi-patch-check-fill verified-badge"
                   aria-label="Verified"
@@ -285,18 +394,21 @@ function PostCard({ post, onUpdate }) {
             >
               <i className="bi bi-three-dots" aria-hidden="true"></i>
             </button>
+
             {showMenu && (
               <div className="post-menu-dropdown" role="menu">
                 <button
                   type="button"
                   role="menuitem"
                   onClick={() => {
+                    setEditText(post?.content || "");
                     setEditing(true);
                     setShowMenu(false);
                   }}
                 >
                   <i className="bi bi-pencil" aria-hidden="true"></i> Edit
                 </button>
+
                 <button
                   type="button"
                   role="menuitem"
@@ -324,6 +436,7 @@ function PostCard({ post, onUpdate }) {
               rows={3}
               aria-label="Edit post content"
             />
+
             <div className="post-edit-actions">
               <button
                 type="button"
@@ -332,6 +445,7 @@ function PostCard({ post, onUpdate }) {
               >
                 Cancel
               </button>
+
               <button type="submit" className="btn btn-sm btn-primary">
                 Save
               </button>
@@ -355,7 +469,7 @@ function PostCard({ post, onUpdate }) {
                   tabIndex={0}
                   onKeyDown={(e) => e.key === "Enter" && setLightboxIndex(i)}
                 />
-                {/* ✅ Overlay for extra images */}
+
                 {i === 3 && remainingImages > 0 && (
                   <div
                     className="post-image-overlay"
@@ -375,13 +489,15 @@ function PostCard({ post, onUpdate }) {
 
       <div className="post-stats">
         <span>
-          <strong>{post.likes.length}</strong> likes
+          <strong>{likeCount}</strong> likes
         </span>
+
         <span>
-          <strong>{post.commentsCount}</strong> comments
+          <strong>{commentCount}</strong> comments
         </span>
+
         <span>
-          <strong>{post.sharesCount || 0}</strong> shares
+          <strong>{shareCount}</strong> shares
         </span>
       </div>
 
@@ -449,6 +565,7 @@ function PostCard({ post, onUpdate }) {
               maxLength={500}
               aria-label="Write a comment"
             />
+
             <button
               type="submit"
               disabled={submittingComment || !commentText.trim()}
@@ -470,11 +587,14 @@ function PostCard({ post, onUpdate }) {
                   canDelete={c.isMine || post.isMine}
                   isPostOwner={post.isMine}
                   onDeleted={(id) => {
-                    // Handled by socket usually, but good fallback
                     setComments((prev) => prev.filter((x) => x._id !== id));
-                    onUpdate((prevPost) => ({
-                      ...prevPost,
-                      commentsCount: Math.max(0, prevPost.commentsCount - 1),
+
+                    updatePost((prev) => ({
+                      ...prev,
+                      commentsCount: Math.max(
+                        0,
+                        Number(prev.commentsCount ?? 1) - 1
+                      ),
                     }));
                   }}
                 />
@@ -488,9 +608,16 @@ function PostCard({ post, onUpdate }) {
         <ShareModal
           post={post}
           onClose={() => setShowShare(false)}
-          onShared={(sharedCount) =>
-            onUpdate((prevPost) => ({ ...prevPost, sharesCount: sharedCount }))
-          }
+          onShared={(sharedCount) => {
+            const count = Number(sharedCount);
+
+            updatePost((prev) => ({
+              ...prev,
+              sharesCount: Number.isFinite(count)
+                ? count
+                : Number(prev.sharesCount ?? 0),
+            }));
+          }}
         />
       )}
 
@@ -509,29 +636,38 @@ function PostCard({ post, onUpdate }) {
         }}
       />
 
-      {lightboxIndex !== null && post.images?.length > 0 && (
-        <PhotoLightbox
-          photos={post.images}
-          initialIndex={lightboxIndex}
-          onClose={() => setLightboxIndex(null)}
-        />
-      )}
+      {lightboxIndex !== null &&
+        Array.isArray(post.images) &&
+        post.images.length > 0 && (
+          <PhotoLightbox
+            photos={post.images}
+            initialIndex={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+          />
+        )}
     </article>
   );
 }
 
-// 👇 CUSTOM COMPARISON FUNCTION
+// ✅ Correct memo comparison: compare server counters, not likes array length
 function areEqual(prevProps, nextProps) {
+  const p = prevProps.post;
+  const n = nextProps.post;
+
+  if (!p || !n) return p === n;
+
   return (
-    prevProps.post._id === nextProps.post._id &&
-    prevProps.post.content === nextProps.post.content &&
-    prevProps.post.likes.length === nextProps.post.likes.length &&
-    prevProps.post.commentsCount === nextProps.post.commentsCount &&
-    prevProps.post.sharesCount === nextProps.post.sharesCount &&
-    prevProps.post.isLiked === nextProps.post.isLiked &&
-    prevProps.post.isSaved === nextProps.post.isSaved &&
-    prevProps.post.isEdited === nextProps.post.isEdited &&
-    prevProps.post.images?.length === nextProps.post.images?.length
+    p._id === n._id &&
+    p.content === n.content &&
+    Number(p.likesCount ?? p.likes?.length ?? 0) ===
+      Number(n.likesCount ?? n.likes?.length ?? 0) &&
+    Number(p.savesCount ?? 0) === Number(n.savesCount ?? 0) &&
+    Number(p.commentsCount ?? 0) === Number(n.commentsCount ?? 0) &&
+    Number(p.sharesCount ?? 0) === Number(n.sharesCount ?? 0) &&
+    !!p.isLiked === !!n.isLiked &&
+    !!p.isSaved === !!n.isSaved &&
+    !!p.isEdited === !!n.isEdited &&
+    (p.images?.length || 0) === (n.images?.length || 0)
   );
 }
 

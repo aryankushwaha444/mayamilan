@@ -1,4 +1,7 @@
-/* SUGGESTION PAGE */
+/* ============================================================
+   SUGGESTION PAGE — feedback form with success state
+   ============================================================ */
+
 .suggestion-page {
   min-height: calc(100vh - 76px);
   background: linear-gradient(180deg, #fff5f9 0%, #fdf2f8 50%, #fff 100%);
@@ -58,7 +61,7 @@
   line-height: 1.6;
 }
 
-/* Form */
+/* ── Form ─ */
 .suggestion-form {
   display: flex;
   flex-direction: column;
@@ -156,13 +159,7 @@
   animation: spin 0.8s linear infinite;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* Success state */
+/* ── Success state ── */
 .suggestion-success {
   text-align: center;
   padding: 40px 20px;
@@ -172,18 +169,6 @@
   font-size: 72px;
   margin-bottom: 16px;
   animation: bounceIn 0.6s ease;
-}
-
-@keyframes bounceIn {
-  0% {
-    transform: scale(0);
-  }
-  60% {
-    transform: scale(1.1);
-  }
-  100% {
-    transform: scale(1);
-  }
 }
 
 .suggestion-success h2 {
@@ -203,37 +188,22 @@
   margin-top: 18px !important;
 }
 
-/* Responsive */
+/* ── Responsive ── */
 @media (max-width: 575px) {
   .suggestion-page {
     padding: 30px 16px;
   }
+
   .suggestion-container {
     padding: 32px 24px;
     border-radius: 22px;
   }
+
   .form-row {
     grid-template-columns: 1fr;
   }
+
   .suggestion-header h1 {
     font-size: 26px;
   }
-}
-
-.form-counter {
-  display: block;
-  margin-top: 4px;
-  font-size: 0.8rem;
-  color: #6b7280;
-  text-align: right;
-}
-
-.form-counter-warning {
-  color: #d97706;
-  font-weight: 600;
-}
-
-.form-counter-danger {
-  color: #dc2626;
-  font-weight: 600;
 }

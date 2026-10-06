@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef, useCallback, memo } from "react";
 import { useNavigate } from "react-router-dom";
 
-const REACTIONS = ["❤️", "😂", "", "😢", "😡", "👍"];
+// ✅ FIXED: exactly matches backend ALLOWED_REACTION_EMOJIS
+const REACTIONS = ["❤️", "😂", "😮", "😢", "👍", "👎", "", ""];
 
 function MessageBubble({
   message,
@@ -17,8 +18,9 @@ function MessageBubble({
   const navigate = useNavigate();
   const menuRef = useRef(null);
   const bubbleRef = useRef(null);
+  const longPressRef = useRef(null);
 
-  // ✅ FIXED: Proper outside click handling without setTimeout hack
+  // ✅ FIXED: outside-click now checks the WHOLE bubble wrap (actions + menus)
   useEffect(() => {
     if (!menu) return;
 
@@ -29,9 +31,7 @@ function MessageBubble({
     };
 
     const handleEscape = (event) => {
-      if (event.key === "Escape") {
-        setMenu(null);
-      }
+      if (event.key === "Escape") setMenu(null);
     };
 
     document.addEventListener("mousedown", handleClickOutside);
@@ -43,12 +43,18 @@ function MessageBubble({
     };
   }, [menu]);
 
-  // ✅ Retry handler for failed messages
   const handleRetry = useCallback(() => {
-    if (onRetry) {
-      onRetry(message);
-    }
+    if (onRetry) onRetry(message);
   }, [onRetry, message]);
+
+  // ✅ Mobile long-press opens the react menu
+  const startLongPress = () => {
+    longPressRef.current = setTimeout(() => {
+      setMenu("react");
+      navigator.vibrate?.(30);
+    }, 500);
+  };
+  const cancelLongPress = () => clearTimeout(longPressRef.current);
 
   if (message.failed) {
     return (
@@ -132,9 +138,21 @@ function MessageBubble({
         return (
           <audio
             controls
+            preload="metadata"
             src={message.attachment?.url}
             className="message-audio"
             aria-label="Voice message"
+            onLoadedMetadata={(e) => {
+              // ✅ FIX: webm recordings report Infinity/0 duration — force browser to compute it
+              const el = e.currentTarget;
+              if (!isFinite(el.duration) || el.duration === 0) {
+                el.currentTime = 1e101;
+                el.ontimeupdate = () => {
+                  el.ontimeupdate = null;
+                  el.currentTime = 0;
+                };
+              }
+            }}
           >
             Your browser does not support audio playback.
           </audio>
@@ -155,8 +173,7 @@ function MessageBubble({
             <i className="bi bi-heart-fill" aria-hidden="true"></i>
           </div>
         );
-      case "post":
-        // Post was deleted after sharing
+      case "post": {
         if (!message.post) {
           return (
             <div className="chat-shared-post chat-shared-dead" role="status">
@@ -172,7 +189,6 @@ function MessageBubble({
           );
         }
 
-        // Safe post ID extraction
         const postId =
           typeof message.post === "string"
             ? message.post
@@ -246,6 +262,7 @@ function MessageBubble({
             </div>
           </div>
         );
+      }
       default:
         return <div className="message-text">{message.text}</div>;
     }
@@ -254,7 +271,7 @@ function MessageBubble({
   const getStatusIcon = () => {
     if (!isMine) return null;
 
-    if (message.isRead) {
+    if (message.isRead)
       return (
         <i
           className="bi bi-circle-fill status-read ms-1"
@@ -262,8 +279,7 @@ function MessageBubble({
           aria-label="Message read"
         ></i>
       );
-    }
-    if (message.isDelivered) {
+    if (message.isDelivered)
       return (
         <i
           className="bi bi-check2-all status-delivered ms-1"
@@ -271,7 +287,6 @@ function MessageBubble({
           aria-label="Message delivered"
         ></i>
       );
-    }
     return (
       <i
         className="bi bi-check2 status-sent ms-1"
@@ -302,7 +317,14 @@ function MessageBubble({
         minute: "2-digit",
       })}`}
     >
-      <div className={`message-bubble-wrap ${menu ? "menu-open" : ""}`}>
+      {/* ✅ FIXED: menuRef now wraps actions AND dropdown menus */}
+      <div
+        className={`message-bubble-wrap ${menu ? "menu-open" : ""}`}
+        ref={menuRef}
+        onTouchStart={startLongPress}
+        onTouchEnd={cancelLongPress}
+        onTouchMove={cancelLongPress}
+      >
         <div
           className={`message-bubble ${isMine ? "mine" : ""} ${
             noPad ? "no-pad" : ""
@@ -332,9 +354,7 @@ function MessageBubble({
               <span
                 key={emoji}
                 className="reaction-chip"
-                aria-label={`${emoji} reaction, ${count} ${
-                  count === 1 ? "person" : "people"
-                }`}
+                aria-label={`${emoji} reaction, ${count}`}
               >
                 {emoji}
                 {count > 1 ? count : ""}
@@ -346,7 +366,6 @@ function MessageBubble({
         <div
           className="message-actions"
           onClick={(e) => e.stopPropagation()}
-          ref={menuRef}
           role="toolbar"
           aria-label="Message actions"
         >
@@ -406,6 +425,7 @@ function MessageBubble({
             <button
               type="button"
               role="menuitem"
+              className="danger"
               onClick={() => {
                 onDelete("me");
                 setMenu(null);

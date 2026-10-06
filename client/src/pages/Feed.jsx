@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Component } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { postService } from "../services/postService";
 import CreatePost from "../components/CreatePost";
@@ -8,6 +8,72 @@ import { useSocket } from "../hooks/useSocket.js";
 import Loader from "../components/Loader.jsx";
 import { useAlert } from "../context/AlertContext";
 import { Virtuoso } from "react-virtuoso";
+
+/* 🔒 Guarantee a safe shape so PostCard can never null-deref a post field.
+   Spreads the original first, so unknown keys PostCard relies on are preserved. */
+function normalizePost(p) {
+  if (!p || typeof p !== "object") return null;
+  return {
+    ...p,
+    _id: p._id ?? `tmp-${Math.random().toString(36).slice(2, 10)}`,
+    author:
+      p.author && typeof p.author === "object"
+        ? p.author
+        : { _id: null, name: "Unknown", photos: [] },
+    images: Array.isArray(p.images) ? p.images : [],
+    likes: Array.isArray(p.likes) ? p.likes : [],
+    comments: Array.isArray(p.comments) ? p.comments : [],
+    shares: Array.isArray(p.shares) ? p.shares : [],
+    reactions: Array.isArray(p.reactions) ? p.reactions : [],
+    content: typeof p.content === "string" ? p.content : p.content ?? "",
+    createdAt: p.createdAt ?? new Date().toISOString(),
+    isLiked: !!p.isLiked,
+    isSaved: !!p.isSaved,
+    isEdited: !!p.isEdited,
+    deletedForEveryone: !!p.deletedForEveryone,
+  };
+}
+
+/* 🔒 Inner boundary: one bad post can no longer take down the whole shell/navbar. */
+class ListErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error, info) {
+    // This is the line that names the EXACT file+line of the real bug.
+    console.error("Feed list render error:", error, info?.componentStack);
+  }
+  componentDidUpdate(prev) {
+    if (prev.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false });
+    }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="empty-state" role="alert">
+          <i
+            className="bi bi-exclamation-triangle-fill fs-1 text-warning mb-3"
+            aria-hidden="true"
+          ></i>
+          <h4>Couldn't display part of the feed</h4>
+          <p className="text-muted">
+            A post failed to render. Your navigation is safe.
+          </p>
+          <button className="btn btn-primary mt-2" onClick={this.props.onRetry}>
+            <i className="bi bi-arrow-clockwise me-2" aria-hidden="true"></i>Try
+            Again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 /* ─── Feed Footer ─── */
 function FeedFooter({ loadingMore, hasMore, postsCount }) {
@@ -41,9 +107,9 @@ function Feed() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [listResetKey, setListResetKey] = useState(0); // 🔒
 
   const virtuosoRef = useRef(null);
-  // ✅ Refs for socket handlers — avoid stale closures without re-subscribing
   const userRef = useRef(user);
   const pageRef = useRef(page);
   const hasMoreRef = useRef(hasMore);
@@ -62,11 +128,10 @@ function Feed() {
     loadingMoreRef.current = loadingMore;
   }, [loadingMore]);
 
-  // ✅ Stable load function
   const loadFeed = useCallback(
     async (pageNum = 1, append = false) => {
       if (append) {
-        if (loadingMoreRef.current) return; // Prevent double-fetch
+        if (loadingMoreRef.current) return;
         setLoadingMore(true);
       } else {
         setLoading(true);
@@ -78,15 +143,17 @@ function Feed() {
 
         if (append) {
           setPosts((prev) => {
-            // Deduplicate by _id
             const existingIds = new Set(prev.map((p) => p._id));
-            const newPosts = (res.posts || []).filter(
-              (p) => !existingIds.has(p._id)
-            );
+            // 🔒 normalize + drop nulls before they reach PostCard
+            const newPosts = (res.posts || [])
+              .map(normalizePost)
+              .filter(Boolean)
+              .filter((p) => !existingIds.has(p._id));
             return [...prev, ...newPosts];
           });
         } else {
-          setPosts(res.posts || []);
+          // 🔒 normalize + drop nulls
+          setPosts((res.posts || []).map(normalizePost).filter(Boolean));
         }
 
         setHasMore(res.pagination?.hasNextPage ?? false);
@@ -94,9 +161,12 @@ function Feed() {
       } catch (err) {
         console.error("Load feed error:", err);
         if (!append) {
-          setError(err.response?.data?.message || "Failed to load feed");
+          setError(
+            err.response?.status === 429
+              ? "Too many requests. Please wait a moment and retry."
+              : err.response?.data?.message || "Failed to load feed"
+          );
         }
-        toast.error("Failed to load feed", "Error", 4000);
       } finally {
         setLoading(false);
         setLoadingMore(false);
@@ -105,68 +175,51 @@ function Feed() {
     [toast]
   );
 
-  // ✅ Initial load
   useEffect(() => {
     loadFeed(1);
-  }, [loadFeed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ✅ REAL-TIME SYNC — uses refs, never stale
   useEffect(() => {
     if (!socket) return;
 
-    let placeholderCounter = 0; // ✅ Unique counter instead of Date.now()
-
     const handleSharesUpdated = ({ postId, sharesCount }) => {
+      const count = Number(sharesCount);
+      if (!Number.isFinite(count) || count < 0) return;
+
       setPosts((prev) =>
-        prev.map((p) => (p._id === postId ? { ...p, sharesCount } : p))
+        prev.map((p) => (p._id === postId ? { ...p, sharesCount: count } : p))
       );
     };
 
     const handleLikesUpdated = ({ postId, likesCount }) => {
+      const count = Number(likesCount);
+      if (!Number.isFinite(count) || count < 0) return;
+
       setPosts((prev) =>
-        prev.map((p) => {
-          if (p._id !== postId) return p;
-
-          const arr = Array.isArray(p.likes) ? [...p.likes] : [];
-          if (arr.length === likesCount) return { ...p, likesCount };
-
-          const me = userRef.current?._id ? String(userRef.current._id) : null;
-
-          if (arr.length < likesCount) {
-            while (arr.length < likesCount) {
-              placeholderCounter++;
-              arr.push(`sync_${placeholderCounter}`);
-            }
-          } else {
-            while (arr.length > likesCount) {
-              let idx = arr.length - 1;
-              while (idx >= 0 && me && String(arr[idx]) === me) idx--;
-              if (idx < 0) break;
-              arr.splice(idx, 1);
-            }
-          }
-
-          return { ...p, likes: arr, likesCount };
-        })
+        prev.map((p) => (p._id === postId ? { ...p, likesCount: count } : p))
       );
     };
 
     const handleCommentsUpdated = ({ postId, commentsCount }) => {
+      const count = Number(commentsCount);
+      if (!Number.isFinite(count) || count < 0) return;
+
       setPosts((prev) =>
-        prev.map((p) => (p._id === postId ? { ...p, commentsCount } : p))
+        prev.map((p) => (p._id === postId ? { ...p, commentsCount: count } : p))
       );
     };
 
-    // ✅ Handle new posts from followed users in real-time
     const handleNewPost = ({ post }) => {
-      if (!post) return;
+      const np = normalizePost(post);
+      if (!np) return;
+
       setPosts((prev) => {
-        if (prev.some((p) => p._id === post._id)) return prev;
-        return [post, ...prev];
+        if (prev.some((p) => p._id === np._id)) return prev;
+        return [np, ...prev];
       });
     };
 
-    // ✅ Handle deleted posts
     const handlePostDeleted = ({ postId }) => {
       setPosts((prev) => prev.filter((p) => p._id !== postId));
     };
@@ -184,26 +237,35 @@ function Feed() {
       socket.off("new_post", handleNewPost);
       socket.off("post_deleted", handlePostDeleted);
     };
-  }, [socket]); // ✅ Only depends on socket — reads user/page/etc from refs
+  }, [socket]);
 
-  // ✅ Use post._id for updates instead of array index
   const handlePostUpdate = useCallback((postId, updated) => {
     if (updated === null) {
       setPosts((prev) => prev.filter((p) => p._id !== postId));
-    } else {
-      setPosts((prev) => prev.map((p) => (p._id === postId ? updated : p)));
+      return;
     }
+
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p._id !== postId) return p;
+
+        const next = typeof updated === "function" ? updated(p) : updated;
+
+        return normalizePost(next) || p;
+      })
+    );
   }, []);
 
   const handlePostCreated = useCallback(
     (newPost) => {
+      // 🔒 normalize newly created post
+      const np = normalizePost(newPost);
+      if (!np) return;
       setPosts((prev) => {
-        if (prev.some((p) => p._id === newPost._id)) return prev;
-        return [newPost, ...prev];
+        if (prev.some((p) => p._id === np._id)) return prev;
+        return [np, ...prev];
       });
       toast.success("Post shared with your community! 🎉", "Posted", 3000);
-
-      // ✅ Scroll Virtuoso to top instead of window.scrollTo
       virtuosoRef.current?.scrollToIndex({ index: 0, behavior: "smooth" });
     },
     [toast]
@@ -216,6 +278,7 @@ function Feed() {
   }, [loadFeed]);
 
   const handleRetry = useCallback(() => {
+    setListResetKey((k) => k + 1); // 🔒 reset the inner boundary
     loadFeed(1);
   }, [loadFeed]);
 
@@ -234,7 +297,6 @@ function Feed() {
         <div className="feed-container">
           <CreatePost user={user} onPostCreated={handlePostCreated} />
 
-          {/* Initial Loading */}
           {isInitialLoad && (
             <Loader
               full
@@ -244,7 +306,6 @@ function Feed() {
             />
           )}
 
-          {/* Error State */}
           {error && posts.length === 0 && !loading && (
             <div className="empty-state" role="alert">
               <i
@@ -263,7 +324,6 @@ function Feed() {
             </div>
           )}
 
-          {/* Empty State */}
           {posts.length === 0 && !loading && !error && (
             <div className="empty-state" role="status">
               <i
@@ -275,37 +335,39 @@ function Feed() {
             </div>
           )}
 
-          {/* Virtualized Feed */}
+          {/* 🔒 Inner boundary wraps ONLY the list → navbar/shell survive a bad post */}
           {posts.length > 0 && (
-            <div role="feed" aria-label="Community feed">
-              <Virtuoso
-                ref={virtuosoRef}
-                useWindowScroll
-                data={posts}
-                endReached={loadMore}
-                overscan={400}
-                computeItemKey={(_, post) => post._id}
-                itemContent={(index, post) => (
-                  <div className="feed-item-wrapper">
-                    <PostCard
-                      post={post}
-                      onUpdate={(updated) =>
-                        handlePostUpdate(post._id, updated)
-                      }
-                    />
-                  </div>
-                )}
-                components={{
-                  Footer: () => (
-                    <FeedFooter
-                      loadingMore={loadingMore}
-                      hasMore={hasMore}
-                      postsCount={posts.length}
-                    />
-                  ),
-                }}
-              />
-            </div>
+            <ListErrorBoundary resetKey={listResetKey} onRetry={handleRetry}>
+              <div role="feed" aria-label="Community feed">
+                <Virtuoso
+                  ref={virtuosoRef}
+                  useWindowScroll
+                  data={posts}
+                  endReached={loadMore}
+                  overscan={400}
+                  computeItemKey={(_, post) => post._id}
+                  itemContent={(index, post) => (
+                    <div className="feed-item-wrapper">
+                      <PostCard
+                        post={post}
+                        onUpdate={(updated) =>
+                          handlePostUpdate(post._id, updated)
+                        }
+                      />
+                    </div>
+                  )}
+                  components={{
+                    Footer: () => (
+                      <FeedFooter
+                        loadingMore={loadingMore}
+                        hasMore={hasMore}
+                        postsCount={posts.length}
+                      />
+                    ),
+                  }}
+                />
+              </div>
+            </ListErrorBoundary>
           )}
         </div>
       </main>

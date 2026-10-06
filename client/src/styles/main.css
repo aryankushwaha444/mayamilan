@@ -1,0 +1,37 @@
+/* ============================================================
+   MAIN ENTRY POINT — imports all style modules in cascade order
+   ============================================================ */
+
+/* ── Base ── */
+@import "./base/variables.css";
+@import "./base/reset.css";
+@import "./base/animations.css";
+
+/* ── Layout ── */
+@import "./layout/navbar.css";
+@import "./layout/footer.css";
+@import "./layout/admin-layout.css";
+
+/* ── Components ─ */
+@import "./components/loader.css";
+@import "./components/alerts.css";
+@import "./components/confirm-dialog.css";
+@import "./components/lightbox.css";
+@import "./components/share-modal.css";
+
+/* ── Pages ─ */
+@import "./pages/home.css";
+@import "./pages/auth.css";
+@import "./pages/profile.css";
+@import "./pages/discovery.css";
+@import "./pages/matches.css";
+@import "./pages/feed.css";
+@import "./pages/messages.css";
+@import "./pages/admin.css";
+@import "./pages/blog.css";
+@import "./pages/settings.css";
+@import "./pages/suggestion.css";
+
+/* ── Utilities & Overrides ── */
+@import "./utils/datepicker.css";
+@import "./utils/utilities.css";

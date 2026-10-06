@@ -1,0 +1,109 @@
+/* ============================================================
+   TOAST ALERTS — stacked notifications with progress bar
+   ============================================================ */
+
+.alert-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none; /* clicks pass through empty space */
+}
+
+.alert-toast {
+  pointer-events: auto; /* re-enable clicks on the toast itself */
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 300px;
+  max-width: 400px;
+  position: relative;
+  overflow: hidden;
+  animation: slideIn 0.3s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
+}
+
+.alert-toast.closing {
+  animation: slideOut 0.3s ease-in forwards;
+}
+
+/* ── Progress bar ── */
+.alert-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.1);
+  width: 100%;
+  transform-origin: left;
+  animation: progressShrink linear forwards;
+}
+
+/* ── Type-specific colors ── */
+.alert-success {
+  border-left: 4px solid #22c55e;
+}
+
+.alert-success .alert-icon {
+  color: #22c55e;
+}
+
+.alert-success .alert-progress {
+  background: #22c55e;
+}
+
+.alert-error {
+  border-left: 4px solid #ef4444;
+}
+
+.alert-error .alert-icon {
+  color: #ef4444;
+}
+
+.alert-error .alert-progress {
+  background: #ef4444;
+}
+
+.alert-warning {
+  border-left: 4px solid #f59e0b;
+}
+
+.alert-warning .alert-icon {
+  color: #f59e0b;
+}
+
+.alert-warning .alert-progress {
+  background: #f59e0b;
+}
+
+.alert-info {
+  border-left: 4px solid #3b82f6;
+}
+
+.alert-info .alert-icon {
+  color: #3b82f6;
+}
+
+.alert-info .alert-progress {
+  background: #3b82f6;
+}
+
+/* ── Close button ── */
+.alert-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #6b7280;
+  padding: 4px;
+  margin-left: auto;
+}
+
+.alert-close:hover {
+  color: #111827;
+}

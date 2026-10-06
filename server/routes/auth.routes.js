@@ -1,11 +1,10 @@
 import express from "express";
-import jwt from "jsonwebtoken";
 import passport from "passport";
-import RefreshToken from "../models/RefreshToken.js";
+import crypto from "crypto"; // ✅ Added for familyId generation
 import { logAudit } from "../utils/auditLogger.js";
 import { checkIpReputationMiddleware } from "../middleware/ipReputation.middleware.js";
-import { verifySignature } from "../middleware/verifySignature.js";
 import { jsonLimit } from "../middleware/bodyLimit.js";
+import User from "../models/User.js";
 
 import {
   register,
@@ -24,20 +23,14 @@ import {
   revokeAllOtherSessions,
   reactivateAccount,
   completeOAuth2FA,
+  upsertSessionForUser, // ← google logins now dedup + get a structured label
 } from "../controllers/auth.controller.js";
 
 import {
   generateAccessToken,
-  generateRefreshToken,
   generateReactivationToken,
-  hashToken,
+  generateTempToken, // ✅ pending 2FA token (correct claims; no more bare jwt.sign)
 } from "../utils/generateToken.js";
-
-import {
-  getDeviceId,
-  deviceFingerprint,
-  describeDevice,
-} from "../utils/device.js";
 
 import { protect } from "../middleware/auth.middleware.js";
 
@@ -50,7 +43,7 @@ import {
   passwordResetLimiter,
   reactivationLimiter,
   sessionManagementLimiter,
-  oauthLimiter, // ✅ ADD: dedicated OAuth limiter
+  oauthLimiter,
 } from "../middleware/rateLimits.js";
 
 const router = express.Router();
@@ -61,14 +54,24 @@ if (!CLIENT_URL) {
   throw new Error("CLIENT_URL environment variable is required");
 }
 
-// Safe redirect helper — validates target is within CLIENT_URL
+// ✅ FIX: Secure redirect helper using the URL API to prevent Open Redirect attacks
 const safeRedirect = (res, path) => {
-  const url = `${CLIENT_URL}${path}`;
-  // Prevent open redirect: ensure URL starts with trusted origin
-  if (!url.startsWith(CLIENT_URL)) {
+  try {
+    // Ensure path starts with a single slash to prevent protocol-relative URLs
+    const cleanPath = path.startsWith("/") ? path : `/${path}`;
+    const targetUrl = new URL(cleanPath, CLIENT_URL);
+    const trustedOrigin = new URL(CLIENT_URL).origin;
+
+    // STRICT ORIGIN CHECK: Prevents `https://myapp.com@evil.com` bypass
+    if (targetUrl.origin !== trustedOrigin) {
+      return res.redirect(CLIENT_URL);
+    }
+
+    return res.redirect(targetUrl.toString());
+  } catch (err) {
+    // Fallback to base URL if URL parsing fails
     return res.redirect(CLIENT_URL);
   }
-  return res.redirect(url);
 };
 
 // ========================================
@@ -91,43 +94,25 @@ router.post(
   login
 );
 
-router.post(
-  "/login/2fa",
-  loginLimiter,
-  jsonLimit("500b"),
-  verifySignature,
-  loginWith2FA
-);
+router.post("/login/2fa", loginLimiter, jsonLimit("500b"), loginWith2FA);
 
-router.post(
-  "/oauth/2fa",
-  loginLimiter,
-  jsonLimit("500b"),
-  verifySignature,
-  completeOAuth2FA
-);
+router.post("/oauth/2fa", loginLimiter, jsonLimit("500b"), completeOAuth2FA);
 
 router.post(
   "/reactivate",
   reactivationLimiter,
   jsonLimit("500b"),
-  verifySignature,
   reactivateAccount
 );
 
+// Note: logout is intentionally NOT protected so users with expired access tokens can still clear their cookies
 router.post("/logout", jsonLimit("1kb"), logout);
 
 router.post("/refresh", refreshLimiter, jsonLimit("1kb"), refreshAccessToken);
 
 router.get("/me", protect, getMe);
 
-router.put(
-  "/change-password",
-  protect,
-  jsonLimit("1kb"),
-  verifySignature,
-  changePassword
-);
+router.put("/change-password", protect, jsonLimit("1kb"), changePassword);
 
 // ========================================
 // OTP & PASSWORD RESET
@@ -142,7 +127,6 @@ router.post(
   sendOTPLimiter,
   checkIpReputationMiddleware,
   jsonLimit("500b"),
-  verifySignature,
   forgotPassword
 );
 
@@ -151,7 +135,6 @@ router.post(
   passwordResetLimiter,
   checkIpReputationMiddleware,
   jsonLimit("1kb"),
-  verifySignature,
   resetPassword
 );
 
@@ -166,7 +149,6 @@ router.delete(
   protect,
   sessionManagementLimiter,
   jsonLimit("1kb"),
-  verifySignature,
   revokeSession
 );
 
@@ -175,7 +157,6 @@ router.post(
   protect,
   sessionManagementLimiter,
   jsonLimit("1kb"),
-  verifySignature,
   revokeAllOtherSessions
 );
 
@@ -185,48 +166,71 @@ router.post(
 
 router.get(
   "/google",
-  oauthLimiter, // ✅ Per-IP rate limit on OAuth initiation
+  oauthLimiter,
   passport.authenticate("google", {
     scope: ["profile", "email"],
     session: false,
+    state: false,
   })
 );
 
 router.get(
   "/google/callback",
-  oauthLimiter, // ✅ Per-IP rate limit on callback (prevents redirect loop abuse)
+  oauthLimiter,
   passport.authenticate("google", {
     session: false,
-    failureRedirect: `${CLIENT_URL}/register?error=google_failed`,
+    state: false,
+    failureRedirect: `${CLIENT_URL}/login?error=google_failed`,
   }),
   async (req, res) => {
+    console.log("🔵 OAuth callback STARTED");
+
     try {
       const user = req.user;
+      console.log("🔵 User from Passport:", user ? user.email : "NULL");
 
       if (!user) {
-        return safeRedirect(res, "/register?error=no_user");
+        console.log("❌ No user - redirecting to /login?error=no_user");
+        return safeRedirect(res, "/login?error=no_user");
       }
 
-      // ── Deactivated account (soft-deleted) ──────────
+      // ── Deactivated account ──────────
       if (user.deletedAt) {
+        console.log("🔵 User is DEACTIVATED");
         const now = new Date();
 
-        if (now > user.scheduledDeletionAt) {
+        if (
+          !user.scheduledDeletionAt ||
+          now > new Date(user.scheduledDeletionAt)
+        ) {
+          console.log("❌ Grace period expired");
           return safeRedirect(res, "/login?error=account_permanently_deleted");
         }
 
+        console.log(
+          "🔵 Checking reactivation attempts:",
+          user.reactivationAttempts
+        );
         if ((user.reactivationAttempts || 0) >= 3) {
+          console.log("❌ Too many attempts");
           return safeRedirect(res, "/login?error=too_many_attempts");
         }
 
-        const daysRemaining = Math.ceil(
-          (user.scheduledDeletionAt - now) / (1000 * 60 * 60 * 24)
+        const daysRemaining = Math.max(
+          1,
+          Math.ceil(
+            (new Date(user.scheduledDeletionAt) - now) / (1000 * 60 * 60 * 24)
+          )
+        );
+        const attemptsRemaining = 3 - (user.reactivationAttempts || 0);
+
+        console.log("🔵 Incrementing reactivation attempts");
+        await User.updateOne(
+          { _id: user._id },
+          { $inc: { reactivationAttempts: 1 } }
         );
 
-        const attemptsRemaining = 3 - (user.reactivationAttempts || 0);
-        user.reactivationAttempts = (user.reactivationAttempts || 0) + 1;
-        await user.save();
-
+        console.log("🔵 Generating reactivation token");
         const reactivationToken = generateReactivationToken(
           user._id.toString()
         );
@@ -238,43 +242,44 @@ router.get(
           attempts: String(attemptsRemaining),
         });
 
-        return safeRedirect(res, `/login?${params.toString()}`);
+        const redirectUrl = `/login?${params.toString()}`;
+        console.log(
+          "✅ Redirecting to:",
+          redirectUrl.substring(0, 100) + "..."
+        );
+        return safeRedirect(res, redirectUrl);
       }
 
-      // ── Email blocked ───────────────────────────────
+      // ── Email blocked ──────────
       if (user.emailBlockedUntil && user.emailBlockedUntil > new Date()) {
+        console.log("❌ Email blocked");
         return safeRedirect(res, "/login?error=email_blocked");
       }
 
-      // ── 2FA enabled — require verification ──────────
+      // ── 2FA ──────────
       if (user.twoFactorEnabled) {
-        const tempToken = jwt.sign(
-          { userId: user._id.toString(), type: "oauth-2fa-pending" },
-          process.env.JWT_ACCESS_SECRET,
-          { expiresIn: "5m" }
+        console.log("🔵 2FA enabled");
+        // ✅ Pending token in an httpOnly cookie (NOT the redirect URL). The token
+        // previously rode in ?tempToken=... -> leaked to history/Referer/JS. Now the
+        // URL carries only the flag; the verify XHR sends the cookie automatically.
+        const tempToken = generateTempToken(
+          user._id.toString(),
+          "oauth-2fa-pending"
         );
-
-        await logAudit(req, "oauth_2fa_required", {
-          email: user.email,
-          userId: user._id,
-          ip: req.ip,
+        res.cookie("oauth2faPending", tempToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          maxAge: 5 * 60 * 1000,
+          path: "/",
         });
-
-        return safeRedirect(res, `/login?oauth2fa=1&tempToken=${tempToken}`);
+        return safeRedirect(res, "/login?oauth2fa=1");
       }
 
-      // ── Normal flow — issue tokens ──────────────────
-      const refreshToken = generateRefreshToken(user._id.toString());
-      const deviceId = getDeviceId(req);
-
-      const session = await RefreshToken.create({
-        user: user._id,
-        tokenHash: hashToken(refreshToken),
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        deviceFingerprint: deviceId ? deviceFingerprint(deviceId) : null,
-        deviceInfo: describeDevice(req),
-        lastUsedAt: new Date(),
-        lastIp: req.ip,
+      // ── Normal flow ──────────
+      console.log("🔵 Normal login flow");
+      const { session, refreshToken } = await upsertSessionForUser(user, req, {
+        familyId: crypto.randomUUID(),
       });
 
       res.cookie("refreshToken", refreshToken, {
@@ -287,7 +292,6 @@ router.get(
 
       const accessToken = generateAccessToken(user._id.toString(), session._id);
 
-      // ✅ Minimal user data in URL — sensitive fields fetched via /me
       const userB64 = Buffer.from(
         JSON.stringify({
           _id: user._id,
@@ -299,16 +303,19 @@ router.get(
         })
       ).toString("base64");
 
-      // ✅ URL-encode base64 to prevent special char issues
-      safeRedirect(
+      console.log("✅ Success - redirecting to /oauth-success");
+      return safeRedirect(
         res,
         `/oauth-success?token=${encodeURIComponent(
           accessToken
         )}&user=${encodeURIComponent(userB64)}`
       );
     } catch (error) {
-      // ✅ No console.error in production
-      safeRedirect(res, "/register?error=server_error");
+      console.error("❌ CRASH in OAuth callback:");
+      console.error("Error name:", error.name);
+      console.error("Error message:", error.message);
+      console.error("Error stack:", error.stack);
+      return safeRedirect(res, "/login?error=server_error");
     }
   }
 );

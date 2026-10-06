@@ -1,27 +1,225 @@
-import { verifyAccessToken } from "../utils/generateToken.js";
+import {
+  verifyAccessToken,
+  constantTimeCompare,
+} from "../utils/generateToken.js";
 import User from "../models/User.js";
 import RefreshToken from "../models/RefreshToken.js";
 import { logAudit } from "../utils/auditLogger.js";
+import { deviceFingerprint, getDeviceId } from "../utils/device.js";
 import crypto from "crypto";
 
+// ═══════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════
+const ADMIN_ROLES = ["admin", "superadmin"];
+const SUPERADMIN_ROLE = "superadmin";
+
+// NOTE: the old IP-keyed `failedAttempts` brute-force gate was REMOVED.
+// It locked out every user sharing an IP (NAT / localhost) on 5 ordinary
+// expired-token 401s and never self-healed on a successful OAuth login.
+// Credential brute-force is still enforced per-EMAIL by trackLoginAttempt
+// (auth.controller.js) and per-(IP+email) by the rate limiters, neither of
+// which punishes a co-tenant on the same network.
+const SESSION_CACHE_TTL = 60 * 1000; // 1 minute cache
+
+const ERROR_CODES = {
+  NO_TOKEN: "NO_TOKEN",
+  EMPTY_TOKEN: "EMPTY_TOKEN",
+  INVALID_TOKEN: "INVALID_TOKEN",
+  TOKEN_EXPIRED: "TOKEN_EXPIRED",
+  SESSION_REVOKED: "SESSION_REVOKED",
+  SESSION_EXPIRED: "SESSION_EXPIRED",
+  SESSION_MISMATCH: "SESSION_MISMATCH",
+  USER_NOT_FOUND: "USER_NOT_FOUND",
+  ACCOUNT_INACTIVE: "ACCOUNT_INACTIVE",
+  AUTH_FAILED: "AUTH_FAILED",
+  NO_USER: "NO_USER",
+  FORBIDDEN: "FORBIDDEN",
+  EMAIL_NOT_VERIFIED: "EMAIL_NOT_VERIFIED",
+  DEVICE_MISMATCH: "DEVICE_MISMATCH",
+};
+
+// ═══════════════════════════════════════════
+// SECURITY: In-memory session cache (production should use Redis)
+// ═══════════════════════════════════════════
+const sessionCache = new Map(); // sessionId -> { valid, timestamp }
+
+// Cleanup old session-cache entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of sessionCache.entries()) {
+    if (now - value.timestamp > SESSION_CACHE_TTL) {
+      sessionCache.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
+
+const safeLogAudit = async (req, action, metadata) => {
+  try {
+    await logAudit(req, action, metadata);
+  } catch {
+    // Silent failure — never let auditing break auth
+  }
+};
+
+/**
+ * SECURITY: Validate session with caching
+ */
+const validateSession = async (sessionId, userId, req) => {
+  // Check cache first
+  const cached = sessionCache.get(sessionId);
+  if (cached && Date.now() - cached.timestamp < SESSION_CACHE_TTL) {
+    if (!cached.valid) {
+      return { valid: false, reason: cached.reason };
+    }
+    return { valid: true, session: cached.session };
+  }
+
+  // Query database
+  const session = await RefreshToken.findOne({
+    _id: sessionId,
+    user: userId,
+    revokedAt: null,
+    expiresAt: { $gt: new Date() },
+  }).lean();
+
+  if (!session) {
+    const anySession = await RefreshToken.findById(sessionId).lean();
+    let reason = "session_invalid";
+
+    if (!anySession) {
+      reason = "session_not_found";
+    } else if (anySession.user.toString() !== userId.toString()) {
+      reason = "session_mismatch";
+    } else if (anySession.revokedAt) {
+      reason = "session_revoked";
+    } else if (anySession.expiresAt <= new Date()) {
+      reason = "session_expired";
+    }
+
+    sessionCache.set(sessionId, {
+      valid: false,
+      reason,
+      timestamp: Date.now(),
+    });
+    return { valid: false, reason };
+  }
+
+  // SECURITY: Device fingerprint validation.
+  // deviceFingerprint() takes a DEVICE ID string, NOT the request — passing `req`
+  // previously hashed "[object Object]" and mismatched every real session (403 wall).
+  if (session.deviceFingerprint && req) {
+    const currentDeviceId = getDeviceId(req); // header (XHR) -> cookie (OAuth nav)
+    const currentFingerprint = currentDeviceId
+      ? deviceFingerprint(currentDeviceId)
+      : null;
+    if (
+      currentFingerprint &&
+      !constantTimeCompare(currentFingerprint, session.deviceFingerprint)
+    ) {
+      sessionCache.set(sessionId, {
+        valid: false,
+        reason: "device_mismatch",
+        timestamp: Date.now(),
+      });
+      return {
+        valid: false,
+        reason: "device_mismatch",
+        expectedDevice: session.deviceInfo,
+      };
+    }
+  }
+
+  // SECURITY: IP change detection (potential session hijacking) — log, don't block
+  if (session.lastIp && req.ip && session.lastIp !== req.ip) {
+    const sessionIpParts = session.lastIp.split(".");
+    const currentIpParts = req.ip.split(".");
+
+    if (
+      sessionIpParts[0] !== currentIpParts[0] ||
+      sessionIpParts[1] !== currentIpParts[1]
+    ) {
+      console.warn(
+        `⚠️ Potential session hijacking: IP changed from ${session.lastIp} to ${req.ip}`
+      );
+      await safeLogAudit(req, "suspicious_ip_change", {
+        userId,
+        sessionId,
+        oldIp: session.lastIp,
+        newIp: req.ip,
+      });
+    }
+  }
+
+  sessionCache.set(sessionId, { valid: true, session, timestamp: Date.now() });
+  return { valid: true, session };
+};
+
+const handleTokenError = (error, req) => {
+  const message = error.message || "";
+
+  if (message.includes("expired") || error.name === "TokenExpiredError") {
+    return {
+      status: 401,
+      code: ERROR_CODES.TOKEN_EXPIRED,
+      message: "Token expired. Please refresh your token.",
+      shouldRefresh: true,
+    };
+  }
+
+  if (message.includes("invalid") || error.name === "JsonWebTokenError") {
+    return {
+      status: 401,
+      code: ERROR_CODES.INVALID_TOKEN,
+      message: "Invalid token",
+      shouldRefresh: false,
+    };
+  }
+
+  if (message.includes("signature")) {
+    return {
+      status: 401,
+      code: ERROR_CODES.INVALID_TOKEN,
+      message: "Invalid token signature",
+      shouldRefresh: false,
+    };
+  }
+
+  return {
+    status: 401,
+    code: ERROR_CODES.AUTH_FAILED,
+    message: "Authentication failed",
+    shouldRefresh: false,
+  };
+};
+
+// ═══════════════════════════════════════════
+// PROTECT MIDDLEWARE
+// ═══════════════════════════════════════════
+
 export const protect = async (req, res, next) => {
-  // Generate request ID for debugging
   req.requestId = crypto.randomUUID();
+  req.requestStartTime = Date.now();
 
   try {
+    // STEP 1: Extract and validate token
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      await logAudit(req, "auth_failed", {
+      await safeLogAudit(req, "auth_failed", {
         reason: "no_token",
         ip: req.ip,
         requestId: req.requestId,
-      }).catch(() => {});
+      });
 
       return res.status(401).json({
         success: false,
         message: "Authentication required",
-        code: "NO_TOKEN",
+        code: ERROR_CODES.NO_TOKEN,
         requestId: req.requestId,
       });
     }
@@ -29,146 +227,226 @@ export const protect = async (req, res, next) => {
     const token = authHeader.split(" ")[1];
 
     if (!token || token.trim() === "") {
-      await logAudit(req, "auth_failed", {
+      await safeLogAudit(req, "auth_failed", {
         reason: "empty_token",
         ip: req.ip,
         requestId: req.requestId,
-      }).catch(() => {});
+      });
 
       return res.status(401).json({
         success: false,
         message: "Token is required",
-        code: "EMPTY_TOKEN",
+        code: ERROR_CODES.EMPTY_TOKEN,
         requestId: req.requestId,
       });
     }
 
-    const decoded = verifyAccessToken(token);
+    // SECURITY: Token length validation (prevent DoS with huge tokens)
+    if (token.length > 2048) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token",
+        code: ERROR_CODES.INVALID_TOKEN,
+        requestId: req.requestId,
+      });
+    }
 
-    if (decoded.sessionId) {
-      const alive = await RefreshToken.exists({
-        _id: decoded.sessionId,
-        revokedAt: null,
+    // STEP 2: Verify token
+    let decoded;
+    try {
+      decoded = verifyAccessToken(token);
+    } catch (error) {
+      const tokenError = handleTokenError(error, req);
+
+      await safeLogAudit(req, "auth_failed", {
+        reason: tokenError.code,
+        ip: req.ip,
+        userAgent: req.get("user-agent")?.substring(0, 100),
+        requestId: req.requestId,
       });
 
-      if (!alive) {
-        await logAudit(req, "auth_failed", {
-          reason: "session_revoked",
+      return res.status(tokenError.status).json({
+        success: false,
+        message: tokenError.message,
+        code: tokenError.code,
+        shouldRefresh: tokenError.shouldRefresh,
+        requestId: req.requestId,
+      });
+    }
+
+    // STEP 3: Validate session
+    if (decoded.sessionId) {
+      const sessionValidation = await validateSession(
+        decoded.sessionId,
+        decoded.userId,
+        req
+      );
+
+      if (!sessionValidation.valid) {
+        await safeLogAudit(req, "auth_failed", {
+          reason: sessionValidation.reason,
           userId: decoded.userId,
           sessionId: decoded.sessionId,
           ip: req.ip,
           requestId: req.requestId,
-        }).catch(() => {});
+        });
 
-        return res.status(401).json({
+        const statusCode =
+          sessionValidation.reason === "device_mismatch" ? 403 : 401;
+        const errorCode =
+          sessionValidation.reason === "session_expired"
+            ? ERROR_CODES.SESSION_EXPIRED
+            : sessionValidation.reason === "session_revoked"
+            ? ERROR_CODES.SESSION_REVOKED
+            : sessionValidation.reason === "device_mismatch"
+            ? ERROR_CODES.DEVICE_MISMATCH
+            : ERROR_CODES.SESSION_MISMATCH;
+
+        return res.status(statusCode).json({
           success: false,
-          message: "Session has been revoked. Please login again.",
-          code: "SESSION_REVOKED",
-          sessionRevoked: true,
+          message:
+            sessionValidation.reason === "device_mismatch"
+              ? "Unrecognized device. Please login again."
+              : sessionValidation.reason === "session_expired"
+              ? "Session expired. Please login again."
+              : "Session has been revoked. Please login again.",
+          code: errorCode,
+          sessionRevoked: sessionValidation.reason !== "device_mismatch",
           requestId: req.requestId,
         });
       }
+
+      req.session = sessionValidation.session;
     }
 
-    const user = await User.findById(decoded.userId).select("-password");
+    // STEP 4: Fetch user (single optimized query)
+    const user = await User.findById(decoded.userId)
+      .select("-password -refreshToken -twoFactorSecret -twoFactorBackupCodes")
+      .lean();
 
     if (!user) {
-      await logAudit(req, "auth_failed", {
+      await safeLogAudit(req, "auth_failed", {
         reason: "user_not_found",
         userId: decoded.userId,
         ip: req.ip,
         requestId: req.requestId,
-      }).catch(() => {});
+      });
 
       return res.status(401).json({
         success: false,
         message: "User no longer exists",
-        code: "USER_NOT_FOUND",
+        code: ERROR_CODES.USER_NOT_FOUND,
         requestId: req.requestId,
       });
     }
 
     if (!user.isActive || user.deletedAt) {
-      await logAudit(req, "auth_failed", {
+      await safeLogAudit(req, "auth_failed", {
         reason: "account_inactive",
         userId: user._id,
         email: user.email,
-        isActive: user.isActive,
-        deletedAt: user.deletedAt,
         ip: req.ip,
         requestId: req.requestId,
-      }).catch(() => {});
+      });
 
       return res.status(403).json({
         success: false,
         message: "Your account is inactive or has been deleted",
-        code: "ACCOUNT_INACTIVE",
+        code: ERROR_CODES.ACCOUNT_INACTIVE,
         requestId: req.requestId,
       });
     }
 
+    // STEP 5: Attach user and context
     req.user = user;
+    req.isAuthenticated = true;
+    req.authContext = {
+      userId: user._id,
+      email: user.email,
+      role: user.role,
+      isVerified: user.isVerified,
+      twoFactorEnabled: user.twoFactorEnabled,
+      sessionId: decoded.sessionId,
+      requestId: req.requestId,
+    };
+
     next();
   } catch (error) {
-    console.error(`Auth middleware error [${req.requestId}]:`, error.message);
+    if (process.env.NODE_ENV === "development") {
+      console.error(`Auth middleware error [${req.requestId}]:`, error.message);
+    }
 
-    await logAudit(req, "auth_failed", {
-      reason: error.message,
+    await safeLogAudit(req, "auth_middleware_error", {
+      error: error.name,
       ip: req.ip,
-      userAgent: req.get("user-agent"),
       requestId: req.requestId,
-    }).catch(() => {});
-
-    if (error.message === "Access token expired") {
-      return res.status(401).json({
-        success: false,
-        message: "Token expired",
-        code: "TOKEN_EXPIRED",
-        requestId: req.requestId,
-      });
-    }
-
-    if (error.message === "Invalid access token") {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid token",
-        code: "INVALID_TOKEN",
-        requestId: req.requestId,
-      });
-    }
+    });
 
     return res.status(401).json({
       success: false,
       message: "Authentication failed",
-      code: "AUTH_FAILED",
+      code: ERROR_CODES.AUTH_FAILED,
       requestId: req.requestId,
     });
   }
 };
+
+// ═══════════════════════════════════════════
+// ADMIN MIDDLEWARE
+// ═══════════════════════════════════════════
 
 export const adminOnly = async (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
       message: "Authentication required",
-      code: "NO_USER",
+      code: ERROR_CODES.NO_USER,
     });
   }
 
-  if (req.user.role !== "admin") {
-    await logAudit(req, "admin_access_denied", {
+  if (!ADMIN_ROLES.includes(req.user.role)) {
+    await safeLogAudit(req, "admin_access_denied", {
       userId: req.user._id,
       email: req.user.email,
       role: req.user.role,
       path: req.path,
       method: req.method,
       ip: req.ip,
-    }).catch(() => {});
+    });
 
     return res.status(403).json({
       success: false,
       message: "Admin access required",
-      code: "FORBIDDEN",
+      code: ERROR_CODES.FORBIDDEN,
+    });
+  }
+
+  next();
+};
+
+export const superadminOnly = async (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required",
+      code: ERROR_CODES.NO_USER,
+    });
+  }
+
+  if (req.user.role !== SUPERADMIN_ROLE) {
+    await safeLogAudit(req, "superadmin_access_denied", {
+      userId: req.user._id,
+      email: req.user.email,
+      role: req.user.role,
+      path: req.path,
+      method: req.method,
+      ip: req.ip,
+    });
+
+    return res.status(403).json({
+      success: false,
+      message: "Superadmin access required",
+      code: ERROR_CODES.FORBIDDEN,
     });
   }
 
@@ -180,25 +458,78 @@ export const requireVerified = async (req, res, next) => {
     return res.status(401).json({
       success: false,
       message: "Authentication required",
-      code: "NO_USER",
+      code: ERROR_CODES.NO_USER,
     });
   }
 
   if (!req.user.isVerified) {
-    await logAudit(req, "unverified_access_attempt", {
+    await safeLogAudit(req, "unverified_access_attempt", {
       userId: req.user._id,
       email: req.user.email,
       path: req.path,
       method: req.method,
       ip: req.ip,
-    }).catch(() => {});
+    });
 
     return res.status(403).json({
       success: false,
       message: "Email verification required",
-      code: "EMAIL_NOT_VERIFIED",
+      code: ERROR_CODES.EMAIL_NOT_VERIFIED,
+      requiresVerification: true,
     });
   }
 
   next();
 };
+
+export const optionalAuth = async (req, res, next) => {
+  req.requestId = crypto.randomUUID();
+
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    req.isAuthenticated = false;
+    return next();
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  if (!token || token.trim() === "" || token.length > 2048) {
+    req.isAuthenticated = false;
+    return next();
+  }
+
+  try {
+    const decoded = verifyAccessToken(token);
+
+    if (decoded.sessionId) {
+      const sessionValidation = await validateSession(
+        decoded.sessionId,
+        decoded.userId,
+        req
+      );
+
+      if (!sessionValidation.valid) {
+        req.isAuthenticated = false;
+        return next();
+      }
+    }
+
+    const user = await User.findById(decoded.userId)
+      .select("-password -refreshToken -twoFactorSecret -twoFactorBackupCodes")
+      .lean();
+
+    if (user && user.isActive && !user.deletedAt) {
+      req.user = user;
+      req.isAuthenticated = true;
+    } else {
+      req.isAuthenticated = false;
+    }
+  } catch {
+    req.isAuthenticated = false;
+  }
+
+  next();
+};
+
+export default protect;

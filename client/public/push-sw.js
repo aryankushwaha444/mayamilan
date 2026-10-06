@@ -14,7 +14,7 @@ self.addEventListener("push", (event) => {
   const body = data.body || "💕 New activity";
   const url = data.url || "/notifications";
   const tag = data.tag || "mayamilan";
-  const image = data.image || null; // Optional rich image
+  const image = data.image || null;
   const requireInteraction = data.requireInteraction || false;
 
   const options = {
@@ -23,16 +23,15 @@ self.addEventListener("push", (event) => {
     badge: "/logo.png",
     tag,
     data: { url },
-    requireInteraction, // Keep notification until user interacts
-    silent: false, // OS plays system notification sound 🔊
-    vibrate: [200, 100, 200], // Haptic feedback on mobile
+    requireInteraction,
+    silent: false,
+    vibrate: [200, 100, 200],
     actions: [
       { action: "open", title: "Open" },
       { action: "dismiss", title: "Dismiss" },
     ],
   };
 
-  // ✅ Add image if provided (rich notifications)
   if (image) {
     options.image = image;
   }
@@ -53,9 +52,7 @@ self.addEventListener("notificationclick", (event) => {
   const url = event.notification.data?.url || "/";
   const absoluteUrl = new URL(url, self.location.origin).href;
 
-  // ✅ Handle different actions
   if (event.action === "dismiss") {
-    // User dismissed — optionally send analytics
     console.log("[SW] Notification dismissed");
     return;
   }
@@ -64,17 +61,13 @@ self.addEventListener("notificationclick", (event) => {
     clients
       .matchAll({ type: "window", includeUncontrolled: true })
       .then((clientList) => {
-        // ✅ Try to focus existing window
         for (const client of clientList) {
           if (client.url.includes(self.location.origin) && "focus" in client) {
             return client.focus().then((focusedClient) => {
-              // Navigate to the notification URL
               return focusedClient.navigate(absoluteUrl);
             });
           }
         }
-
-        // ✅ Open new window if none exists
         return clients.openWindow(absoluteUrl);
       })
       .catch((error) => {
@@ -86,15 +79,9 @@ self.addEventListener("notificationclick", (event) => {
 /* ============ CLOSE EVENT — analytics ============ */
 self.addEventListener("notificationclose", (event) => {
   console.log("[SW] Notification closed without interaction");
-
-  // ✅ Send analytics (optional)
   const notificationData = event.notification.data;
   if (notificationData?.url) {
-    // You could send this to your analytics endpoint
-    // fetch("/api/analytics/notification-closed", {
-    //   method: "POST",
-    //   body: JSON.stringify({ url: notificationData.url }),
-    // });
+    // Optional analytics hook
   }
 });
 
@@ -107,12 +94,11 @@ self.addEventListener("install", (event) => {
       return cache.addAll([
         "/",
         "/logo.png",
-        "/offline.html", // Optional offline fallback
+        // "/offline.html", // Uncomment if you have this file
       ]);
     })
   );
 
-  // ✅ Activate immediately (skip waiting)
   self.skipWaiting();
 });
 
@@ -130,12 +116,22 @@ self.addEventListener("activate", (event) => {
     })
   );
 
-  // ✅ Claim all clients immediately
   self.clients.claim();
 });
 
-/* ============ FETCH EVENT — offline fallback ============ */
+/* ============ FETCH EVENT — offline fallback & caching ============ */
 self.addEventListener("fetch", (event) => {
+  // ✅ FIX 1: Ignore non-HTTP requests (chrome-extension://, moz-extension://, data:, blob:)
+  // The Cache API only supports http and https schemes.
+  if (!event.request.url.startsWith("http")) {
+    return;
+  }
+
+  // ✅ FIX 2: Only handle requests from your own domain (ignore external CDNs/APIs)
+  if (!event.request.url.startsWith(self.location.origin)) {
+    return;
+  }
+
   // Only handle GET requests
   if (event.request.method !== "GET") return;
 

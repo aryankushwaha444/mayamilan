@@ -24,12 +24,16 @@ export const uploadProfilePhoto = async (file) => {
 };
 
 export const deleteProfilePhoto = async (photoId) => {
-  const response = await api.delete(`/users/me/photos/${photoId}`);
+  const response = await api.delete(
+    `/users/me/photos/${encodeURIComponent(photoId)}`
+  );
   return response.data;
 };
 
 export const setPrimaryPhoto = async (photoId) => {
-  const response = await api.put(`/users/me/photos/${photoId}/primary`);
+  const response = await api.put(
+    `/users/me/photos/${encodeURIComponent(photoId)}/primary`
+  );
   return response.data;
 };
 

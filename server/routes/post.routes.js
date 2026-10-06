@@ -1,13 +1,16 @@
 import express from "express";
+import { param } from "express-validator";
 import { protect } from "../middleware/auth.middleware.js";
+import { validateRequest } from "../middleware/validateRequest.js";
+import { jsonLimit } from "../middleware/bodyLimit.js";
 import upload from "../middleware/upload.middleware.js";
-import { cached } from "../utils/cache.js";
+
 import {
   postLimiter,
   commentLimiter,
   reactionLimiter,
   uploadLimiter,
-} from "../middleware/rateLimits.js"; // ✅
+} from "../middleware/rateLimits.js";
 
 import {
   createPost,
@@ -31,39 +34,125 @@ import {
 
 const router = express.Router();
 
+const validateObjectId = (paramName) =>
+  param(paramName)
+    .isMongoId()
+    .withMessage(`Invalid ${paramName} format`)
+    .trim();
+
 router.use(protect);
 
-// Posts — limit only on creation
+// POSTS CRUD
 router.post(
   "/",
   uploadLimiter,
   upload.array("images", 5),
   postLimiter,
   createPost
-); // ✅ both
-router.get("/", cached("feed", 120), getFeed);
-router.get("/my", cached("my-posts", 30), getMyPosts);
-router.get("/saved", cached("saved-posts", 30), getSavedPosts);
+);
+
+router.get("/", getFeed);
+router.get("/my", getMyPosts);
+router.get("/saved", getSavedPosts);
 router.get("/share-targets", getShareTargets);
-router.get("/:id", cached("post", 60), getPostById);
-router.put("/:id", editPost);
-router.delete("/:id", deletePost);
 
-// Interactions — limit reactions
-router.post("/:id/like", reactionLimiter, toggleLike); // ✅
-router.post("/:id/save", toggleSave); // saves are unlimited
-router.post("/:id/share", sharePost);
+router.get("/:id", [validateObjectId("id")], validateRequest, getPostById);
 
-// Comments — limit creation
-router.get("/:id/comments", cached("comments", 15), getComments);
-router.post("/:id/comments", commentLimiter, addComment); // ✅
-router.delete("/:id/comments/:commentId", deleteComment);
+router.put(
+  "/:id",
+  postLimiter, // ✅ ADDED: Rate limit edits
+  jsonLimit("5kb"),
+  [validateObjectId("id")],
+  validateRequest,
+  editPost
+);
+
+router.delete(
+  "/:id",
+  postLimiter, // ✅ ADDED: Rate limit deletes
+  jsonLimit("100b"),
+  [validateObjectId("id")],
+  validateRequest,
+  deletePost
+);
+
+// INTERACTIONS
+router.post(
+  "/:id/like",
+  reactionLimiter,
+  jsonLimit("100b"),
+  [validateObjectId("id")],
+  validateRequest,
+  toggleLike
+);
+
+router.post(
+  "/:id/save",
+  reactionLimiter,
+  jsonLimit("100b"),
+  [validateObjectId("id")],
+  validateRequest,
+  toggleSave
+);
+
+router.post(
+  "/:id/share",
+  postLimiter,
+  jsonLimit("2kb"),
+  [validateObjectId("id")],
+  validateRequest,
+  sharePost
+);
+
+// COMMENTS & REPLIES
+router.get(
+  "/:id/comments",
+  [validateObjectId("id")],
+  validateRequest,
+  getComments
+);
+
+router.post(
+  "/:id/comments",
+  commentLimiter,
+  jsonLimit("2kb"),
+  [validateObjectId("id")],
+  validateRequest,
+  addComment
+);
+
+router.delete(
+  "/:id/comments/:commentId",
+  commentLimiter, // ✅ ADDED: Rate limit comment deletes
+  jsonLimit("100b"),
+  [validateObjectId("id"), validateObjectId("commentId")],
+  validateRequest,
+  deleteComment
+);
+
 router.get(
   "/:id/comments/:commentId/replies",
-  cached("replies", 15),
+  [validateObjectId("id"), validateObjectId("commentId")],
+  validateRequest,
   getReplies
 );
-router.post("/:id/comments/:commentId/replies", commentLimiter, addReply); // ✅
-router.post("/comments/:commentId/reactions", reactionLimiter, toggleReaction); // ✅
+
+router.post(
+  "/:id/comments/:commentId/replies",
+  commentLimiter,
+  jsonLimit("2kb"),
+  [validateObjectId("id"), validateObjectId("commentId")],
+  validateRequest,
+  addReply
+);
+
+router.post(
+  "/comments/:commentId/reactions",
+  reactionLimiter,
+  jsonLimit("500b"),
+  [validateObjectId("commentId")],
+  validateRequest,
+  toggleReaction
+);
 
 export default router;

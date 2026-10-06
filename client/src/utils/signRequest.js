@@ -66,7 +66,6 @@ const stableStringify = (obj) => {
 const SIGNED_ENDPOINTS = [
   "/auth/login/2fa",
   "/auth/oauth/2fa",
-  "/auth/reactivate",
   "/auth/change-password",
   "/auth/reset-password",
   "/auth/forgot-password",
@@ -79,6 +78,8 @@ const SIGNED_ENDPOINTS = [
 
 const SKIP_SIGNING_ENDPOINTS = [
   "/messages/",
+  "/auth/reactivate",
+
 ];
 
 const shouldSign = (url, method, data) => {

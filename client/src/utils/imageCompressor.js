@@ -1,6 +1,32 @@
 import imageCompression from "browser-image-compression";
 
+// ✅ SECURITY: Prevent DoS via massive files
+const MAX_FILE_SIZE_MB = 50;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+// ✅ SECURITY: Whitelist allowed MIME types
+const ALLOWED_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+]);
+
 export async function compressImage(file, options = {}) {
+  // ✅ SECURITY: Validate file size
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    throw new Error(`File too large. Maximum size is ${MAX_FILE_SIZE_MB}MB.`);
+  }
+
+  // ✅ SECURITY: Validate MIME type
+  if (!ALLOWED_MIME_TYPES.has(file.type)) {
+    throw new Error(
+      `Invalid file type: ${file.type}. Only JPEG, PNG, WebP, HEIC, HEIF allowed.`
+    );
+  }
+
   const defaults = {
     maxSizeMB: 1,
     maxWidthOrHeight: 1600,
@@ -42,8 +68,9 @@ export async function compressImage(file, options = {}) {
     });
 
     return correctedFile;
-  } catch {
+  } catch (err) {
     // Fallback to original on any compression error
+    console.warn("Image compression failed:", err.message);
     return file;
   }
 }

@@ -4,6 +4,8 @@ import PhotoLightbox from "../../components/PhotoLightbox.jsx";
 import ConfirmDialog from "../../components/ConfirmDialog.jsx";
 import { useAlert } from "../../context/AlertContext";
 import { cardImg } from "../../utils/cloudinary";
+import { sanitizeText, sanitizeBio } from "../../utils/sanitize";
+
 import {
   getUserReports,
   updateReportStatus,
@@ -266,7 +268,9 @@ function UserDetails() {
                       }
                     />
                   ) : (
-                    <p className="mb-0 fw-semibold">{user.name}</p>
+                    <p className="mb-0 fw-semibold">
+                      {sanitizeText(user.name)}
+                    </p>
                   )}
                 </div>
 
@@ -352,13 +356,18 @@ function UserDetails() {
                       }
                     />
                   ) : (
-                    <p className="mb-0">{user.bio || "No bio"}</p>
+                    <p className="mb-0">
+                      {" "}
+                      <p className="mb-0">
+                        {user.bio ? sanitizeBio(user.bio) : "No bio"}
+                      </p>{" "}
+                    </p>
                   )}
                 </div>
 
                 <div className="col-md-6">
                   <label className="form-label">Occupation</label>
-                  <p className="mb-0">{user.occupation || "—"}</p>
+                  <p className="mb-0">{sanitizeText(user.occupation) || "—"}</p>
                 </div>
 
                 <div className="col-md-6">

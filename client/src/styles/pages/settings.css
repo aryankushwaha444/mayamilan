@@ -1,0 +1,187 @@
+/* ============================================================
+   SETTINGS — account settings, 2FA modals, delete-account page
+   ============================================================ */
+
+.settings-page {
+  max-width: 900px;
+}
+
+.settings-oauth-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #4285f4, #34a853);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+}
+
+.settings-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #f1f5f9;
+  flex-shrink: 0;
+}
+
+.settings-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.settings-avatar-initial {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: #64748b;
+}
+
+/* ── 2FA / settings modals ── */
+.settings-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.settings-modal {
+  max-width: 420px;
+  width: 100%;
+  background: white;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.settings-modal-padded {
+  padding: 24px;
+}
+
+.settings-qr-img {
+  width: 240px;
+  height: 240px;
+  margin: 0 auto;
+  display: block;
+}
+
+.settings-secret-code {
+  letter-spacing: 2px;
+}
+
+.settings-backup-codes-list {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  font-family: monospace;
+  font-size: 15px;
+}
+
+/* ── Delete Account page (dac-*) ── */
+.dac-container {
+  max-width: 600px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+
+.dac-title {
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+}
+
+.dac-warning-box {
+  background: var(--bs-warning-bg-subtle, #fef3c7);
+  border: 2px solid var(--bs-warning-border-subtle, #f59e0b);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  color: var(--bs-warning-text-emphasis, #78350f);
+}
+
+.dac-warning-title {
+  color: var(--bs-warning-text-emphasis, #92400e);
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.dac-warning-box ul {
+  margin-bottom: 0;
+  padding-left: 1.25rem;
+}
+
+.dac-warning-box li {
+  margin-bottom: 0.25rem;
+}
+
+.dac-step h3 {
+  margin-bottom: 0.5rem;
+}
+
+.dac-step h3:focus {
+  outline: 2px solid var(--bs-primary);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.dac-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.dac-btn {
+  padding: 0.75rem 1.5rem;
+  min-width: 180px;
+}
+
+/* ── Dark mode ── */
+@media (prefers-color-scheme: dark) {
+  .settings-modal {
+    background: #1f2937;
+    color: #e5e7eb;
+  }
+
+  .settings-avatar {
+    background: #374151;
+  }
+
+  .settings-avatar-initial {
+    color: #9ca3af;
+  }
+
+  .settings-backup-codes-list {
+    background: #374151;
+  }
+
+  .dac-warning-box {
+    background: rgba(245, 158, 11, 0.15);
+    border-color: rgba(245, 158, 11, 0.4);
+    color: #fbbf24;
+  }
+
+  .dac-warning-title {
+    color: #fcd34d;
+  }
+}
+
+/* ── Responsive ── */
+@media (max-width: 576px) {
+  .dac-actions {
+    flex-direction: column;
+  }
+
+  .dac-btn {
+    width: 100%;
+  }
+}

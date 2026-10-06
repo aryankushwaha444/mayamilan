@@ -8,6 +8,7 @@ import {
 import { avatarImg } from "../../utils/cloudinary";
 import { useAlert } from "../../context/AlertContext";
 import ConfirmDialog from "../../components/ConfirmDialog.jsx";
+import { sanitizeText } from "../../utils/sanitize";
 
 const SEARCH_DEBOUNCE_MS = 400;
 
@@ -342,7 +343,7 @@ function Users() {
                             )}
                           </div>
                           <div>
-                            <strong>{user.name}</strong>
+                            <strong>{sanitizeText(user.name)}</strong>
                             {user.isVerified && (
                               <i
                                 className="bi bi-patch-check-fill text-primary ms-1"

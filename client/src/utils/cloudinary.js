@@ -2,13 +2,34 @@ export function optimize(
   url,
   { w, h, c = "limit", q = "auto", f = "auto", g = null } = {}
 ) {
-  // Guard against invalid input
+  // ✅ SECURITY: Validate input
   if (!url || typeof url !== "string") return url;
+
+  // ✅ SECURITY: Only allow Cloudinary URLs (prevent SSRF)
   if (!url.includes("res.cloudinary.com")) return url;
+
+  // ✅ SECURITY: Validate URL structure
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") {
+      console.warn("⚠️ Blocked non-HTTPS Cloudinary URL:", url);
+      return url;
+    }
+    if (!parsed.hostname.endsWith(".cloudinary.com")) {
+      console.warn("⚠️ Blocked non-Cloudinary domain:", parsed.hostname);
+      return url;
+    }
+  } catch {
+    return url;
+  }
 
   // ✅ Comprehensive check for already-transformed URLs
   // Matches: /upload/w_*, /upload/c_*, /upload/v1234/w_*, /upload/f_auto,q_auto,*
   if (/\/upload\/(?:v\d+\/)?(?:[^/]*,)?[whcfg]_/.test(url)) return url;
+
+  // ✅ SECURITY: Validate dimensions are reasonable
+  if (typeof w === "number" && (w <= 0 || w > 5000)) return url;
+  if (typeof h === "number" && (h <= 0 || h > 5000)) return url;
 
   // ✅ Only include defined numeric dimensions
   const transforms = [];

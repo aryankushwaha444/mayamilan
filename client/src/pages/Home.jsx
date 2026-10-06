@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import SEO from "../components/SEO";
-import "../styles/home.css";
+import "../styles/pages/home.css";
 
 const HEARTS = ["💗", "💕", "💖", "💘", "💝", "❤️", "💓", "💞"];
 

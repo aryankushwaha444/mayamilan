@@ -6,6 +6,7 @@ import {
 } from "../../services/adminService.js";
 import { useAlert } from "../../context/AlertContext";
 import ConfirmDialog from "../../components/ConfirmDialog.jsx";
+import { sanitizeText } from "../../utils/sanitize";
 
 const CATEGORY_ICONS = {
   general: "💬",
@@ -335,14 +336,16 @@ function AdminSuggestions() {
                           {new Date(s.createdAt).toLocaleString()}
                         </time>
                       </div>
-                      <h5 className="fw-bold mb-1">{s.subject}</h5>
+                      <h5 className="fw-bold mb-1">
+                        {sanitizeText(s.subject)}
+                      </h5>
                       <small className="text-muted d-block mb-2">
-                        From: <strong>{s.name}</strong>{" "}
+                        From: <strong>{sanitizeText(s.name)}</strong>{" "}
                         <a
-                          href={`mailto:${s.email}`}
+                          href={`mailto:${encodeURI(s.email)}`}
                           className="text-decoration-none"
                         >
-                          &lt;{s.email}&gt;
+                          &lt;{sanitizeText(s.email)}&gt;
                         </a>
                         {s.user && (
                           <span className="ms-2 badge bg-info">
@@ -354,7 +357,7 @@ function AdminSuggestions() {
                         className="mb-2 text-secondary"
                         style={{ whiteSpace: "pre-wrap" }}
                       >
-                        {s.message}
+                        {sanitizeText(s.message)}
                       </p>
                     </div>
                   </div>

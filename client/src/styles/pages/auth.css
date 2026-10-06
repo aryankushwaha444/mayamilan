@@ -1,0 +1,468 @@
+/* ============================================================
+   AUTH PAGES — login, register, OTP, 2FA, reactivation modal
+   ============================================================ */
+
+.auth-page {
+  min-height: 100vh;
+  background: radial-gradient(
+      circle at top left,
+      rgba(236, 72, 153, 0.12),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at bottom right,
+      rgba(139, 92, 246, 0.12),
+      transparent 35%
+    ),
+    #fafafa;
+  display: flex;
+  align-items: center;
+}
+
+.auth-card {
+  border-radius: 24px;
+  overflow: hidden;
+}
+
+.auth-logo {
+  width: 58px;
+  height: 58px;
+  margin: 0 auto;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  color: white;
+  font-size: 1.5rem;
+  box-shadow: 0 10px 25px rgba(139, 92, 246, 0.2);
+}
+
+.auth-card .form-label {
+  font-weight: 600;
+  margin-bottom: 7px;
+}
+
+.auth-card .form-control,
+.auth-card .form-select,
+.auth-card .input-group-text {
+  min-height: 48px;
+  border-color: #e5e7eb;
+}
+
+.auth-card .form-control:focus,
+.auth-card .form-select:focus {
+  border-color: #a855f7;
+  box-shadow: 0 0 0 0.2rem rgba(168, 85, 247, 0.12);
+}
+
+.auth-card .input-group-text {
+  background: #f8f7fb;
+  color: #8b5cf6;
+}
+
+.auth-card .btn-primary {
+  min-height: 48px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  font-weight: 600;
+}
+
+.auth-card .btn-primary:hover {
+  opacity: 0.92;
+}
+
+/* ── Register progress steps ── */
+.register-progress {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+}
+
+.register-progress::before {
+  content: "";
+  position: absolute;
+  top: 18px;
+  left: 12%;
+  right: 12%;
+  height: 2px;
+  background: #e5e7eb;
+  z-index: 0;
+}
+
+.progress-step {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: #9ca3af;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.progress-step.active {
+  color: #8b5cf6;
+}
+
+.step-circle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #f1f1f5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  border: 2px solid #e5e7eb;
+}
+
+.progress-step.active .step-circle {
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  color: white;
+  border-color: transparent;
+}
+
+/* ── Relationship goal options ── */
+.relationship-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.relationship-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: white;
+}
+
+.relationship-option:hover {
+  border-color: #c084fc;
+  transform: translateY(-1px);
+}
+
+.relationship-option.selected {
+  border-color: #a855f7;
+  background: #faf5ff;
+  box-shadow: 0 5px 15px rgba(139, 92, 246, 0.08);
+}
+
+.relationship-option input {
+  accent-color: #8b5cf6;
+}
+
+.relationship-option i {
+  display: block;
+  color: #a855f7;
+  font-size: 1.2rem;
+  margin-bottom: 3px;
+}
+
+.relationship-option strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.relationship-option small {
+  display: block;
+  color: #6b7280;
+  margin-top: 3px;
+}
+
+/* ── Google OAuth button ── */
+.google-signup-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 16px;
+}
+
+.google-signup-btn:hover {
+  border-color: #4285f4;
+  background: #f8faff;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(66, 133, 244, 0.15);
+}
+
+.oauth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.oauth-divider::before,
+.oauth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #e2e8f0;
+}
+
+/* ── Password toggle ── */
+.password-toggle {
+  cursor: pointer;
+  background: #f8f7fb;
+  border: 1px solid #e5e7eb;
+  border-left: none;
+  color: #8b5cf6;
+  transition: color 0.2s ease;
+}
+
+.password-toggle:hover {
+  color: #6d28d9;
+}
+
+.password-toggle i {
+  font-size: 16px;
+}
+
+/* ── Progress bar animation ── */
+.progress-bar {
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+
+/* ── Success slide-in ── */
+@keyframes slideInDownLocal {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================================
+     REACTIVATION MODAL (grace period countdown)
+     ============================================================ */
+
+.reactivation-overlay,
+.reactivation-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 15, 15, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  animation: overlayFadeIn 0.25s ease-out;
+}
+
+.reactivation-modal {
+  max-width: 480px;
+  width: 100%;
+  border-radius: 1.25rem;
+  overflow: hidden;
+  background: white;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.25);
+  animation: modalPopIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.reactivation-header {
+  background: linear-gradient(135deg, #f59e0b 0%, #ea580c 50%, #dc2626 100%);
+  padding: 2rem 1.5rem 1.5rem;
+  color: white;
+  text-align: center;
+}
+
+.reactivation-icon-circle {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  margin: 0 auto 1rem;
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  font-size: 2rem;
+}
+
+.reactivation-body {
+  padding: 1.5rem;
+}
+
+.reactivation-countdown-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  margin-bottom: 0.75rem;
+  background: linear-gradient(135deg, #fef3c7 0%, #fef9c3 100%);
+  border: 1px solid #fbbf24;
+}
+
+.reactivation-countdown-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 1.5rem;
+  color: #d97706;
+  box-shadow: 0 2px 8px rgba(251, 191, 36, 0.2);
+}
+
+.reactivation-days {
+  font-weight: 700;
+  font-size: 1.5rem;
+  color: #92400e;
+}
+
+.reactivation-attempts {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+  background: #f3f4f6;
+  border: 1px solid transparent;
+}
+
+.reactivation-attempts.critical {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.reactivation-warning-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  font-size: 0.875rem;
+  color: #991b1b;
+}
+
+.reactivation-footer {
+  padding: 1rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.reactivation-activate-btn {
+  border-radius: 0.75rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border: none;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+/* ── Dark mode ── */
+@media (prefers-color-scheme: dark) {
+  .reactivation-modal {
+    background: #1f2937;
+  }
+
+  .reactivation-body,
+  .reactivation-footer {
+    background: #1f2937;
+    color: #e5e7eb;
+  }
+
+  .reactivation-countdown-card {
+    background: linear-gradient(
+      135deg,
+      rgba(254, 243, 199, 0.1),
+      rgba(254, 249, 195, 0.1)
+    );
+    border-color: rgba(251, 191, 36, 0.3);
+  }
+
+  .reactivation-countdown-icon {
+    background: #374151;
+  }
+
+  .reactivation-attempts {
+    background: #374151;
+  }
+
+  .reactivation-attempts.critical {
+    background: rgba(254, 242, 242, 0.1);
+    border-color: rgba(254, 202, 202, 0.3);
+  }
+
+  .reactivation-warning-box {
+    background: rgba(254, 242, 242, 0.1);
+    border-color: rgba(254, 202, 202, 0.3);
+    color: #fca5a5;
+  }
+}
+
+/* ── Responsive ── */
+@media (max-width: 576px) {
+  .auth-page {
+    align-items: flex-start;
+  }
+
+  .auth-card {
+    border-radius: 18px;
+  }
+
+  .auth-card .card-body {
+    padding: 24px !important;
+  }
+
+  .register-progress {
+    margin-left: -5px;
+    margin-right: -5px;
+  }
+
+  .progress-step {
+    font-size: 0.7rem;
+  }
+
+  .step-circle {
+    width: 32px;
+    height: 32px;
+    font-size: 0.85rem;
+  }
+
+  .register-progress::before {
+    top: 16px;
+    left: 13%;
+    right: 13%;
+  }
+
+  .relationship-option {
+    padding: 13px;
+  }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import MatchCard from "../components/MatchCard.jsx";
 import { getMatches, deleteMatch } from "../services/matchService.js";
 import { useAlert } from "../context/AlertContext";
@@ -10,44 +10,61 @@ function Matches() {
   const toast = useAlert();
   const { socket } = useSocket();
 
+  // ✅ toast mirrored to a ref → loaders/socket handlers can have [] / [socket]
+  // deps and never re-create on an unstable toast (the original loop trigger).
+  const toastRef = useRef(toast);
+  useEffect(() => {
+    toastRef.current = toast;
+  }, [toast]);
+
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // ✅ Stable load function with useCallback
+  // request-id guard: only the newest fetch may commit state (kills stale races)
+  const reqIdRef = useRef(0);
+
+  // ✅ Stable loader: [] deps, reads toast via ref, applies only latest response
   const loadMatches = useCallback(async () => {
+    const id = ++reqIdRef.current;
     try {
-      setLoading(true);
+      if (id === reqIdRef.current) setLoading(true);
       setError("");
       const data = await getMatches();
-      setMatches(data.matches || []);
+      if (id !== reqIdRef.current) return; // a newer request superseded this one
+      setMatches(Array.isArray(data?.matches) ? data.matches : []);
     } catch (err) {
+      if (id !== reqIdRef.current) return;
       setError(err.response?.data?.message || "Unable to load your matches.");
-      toast.error("Failed to load matches", "Error", 4000);
+      toastRef.current?.error?.("Failed to load matches", "Error", 4000);
     } finally {
-      setLoading(false);
+      if (id === reqIdRef.current) setLoading(false);
     }
-  }, [toast]);
+  }, []);
 
-  // ✅ Correct dependency array
+  // loadMatches is stable ([]), so this runs exactly once on mount.
   useEffect(() => {
     loadMatches();
   }, [loadMatches]);
 
-  // ✅ Real-time socket sync for matches
+  // ✅ Real-time socket sync — depends on [socket] ONLY; toast via ref (was [socket, toast] → churn)
   useEffect(() => {
     if (!socket) return;
 
     const handleNewMatch = ({ match }) => {
-      if (!match) return;
-      setMatches((prev) => {
-        if (prev.some((m) => m._id === match._id)) return prev;
-        return [match, ...prev];
-      });
-      toast.success("You have a new match! 💕", "New Match", 4000);
+      if (!match?._id) return;
+      setMatches((prev) =>
+        prev.some((m) => m._id === match._id) ? prev : [match, ...prev]
+      );
+      toastRef.current?.success?.(
+        "You have a new match! 💕",
+        "New Match",
+        4000
+      );
     };
 
     const handleMatchRemoved = ({ matchId }) => {
+      if (!matchId) return;
       setMatches((prev) => prev.filter((m) => m._id !== matchId));
     };
 
@@ -58,26 +75,48 @@ function Matches() {
       socket.off("new_match", handleNewMatch);
       socket.off("match_removed", handleMatchRemoved);
     };
-  }, [socket, toast]);
+  }, [socket]);
 
-  const handleUnmatch = async (matchId) => {
-    // ✅ Optimistic removal
-    const previousMatches = [...matches];
-    setMatches((prev) => prev.filter((m) => m._id !== matchId));
+  // ✅ Double-submit guard: a rapid second click can't fire a second DELETE
+  const unmatchingRef = useRef(new Set());
+  const handleUnmatch = useCallback(async (matchId) => {
+    if (!matchId || unmatchingRef.current.has(matchId)) return;
+    unmatchingRef.current.add(matchId);
+
+    setMatches((prev) => {
+      const previous = prev;
+      // stash for revert without closing over a stale `matches`
+      prev._previousSnapshot = previous;
+      return previous.filter((m) => m._id !== matchId);
+    });
+    const snapshot = (() => {
+      // capture current list synchronously before await
+      let cap = null;
+      setMatches((p) => {
+        cap = p;
+        return p;
+      });
+      return cap;
+    })();
 
     try {
       await deleteMatch(matchId);
-      toast.success("Match removed successfully 💔", "Unmatched", 3000);
+      toastRef.current?.success?.(
+        "Match removed successfully 💔",
+        "Unmatched",
+        3000
+      );
     } catch (err) {
-      // Revert on failure
-      setMatches(previousMatches);
-      toast.error(
+      if (snapshot) setMatches(snapshot); // revert on failure
+      toastRef.current?.error?.(
         err.response?.data?.message || "Failed to remove match.",
         "Error",
         4000
       );
+    } finally {
+      unmatchingRef.current.delete(matchId);
     }
-  };
+  }, []);
 
   // ═══════════════════════════════════════
   // LOADING STATE

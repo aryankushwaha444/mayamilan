@@ -1,6 +1,6 @@
 import axios from "axios";
-import { getDeviceId } from "./deviceId";
 import { signRequest } from "./signRequest.js";
+import { getDeviceId, getDeviceInfo } from "./deviceId";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
@@ -20,6 +20,26 @@ const refreshClient = axios.create({
   timeout: 10000, // Refresh should respond quickly
 });
 
+// ✅ Device headers on refresh too: the refresh handler enforces device-mismatch, but
+// refreshClient bypasses the main interceptor, so without this the stored fingerprint
+// was never compared (device binding recorded-at-login but never-checked-on-refresh).
+refreshClient.interceptors.request.use((config) => {
+  config.headers["X-Device-Id"] = getDeviceId();
+  const info = getDeviceInfo();
+  if (info) {
+    config.headers["X-Device-Info"] = encodeURIComponent(
+      JSON.stringify({
+        b: info.browser,
+        bv: info.browserVersion,
+        o: info.os,
+        ov: info.osVersion,
+        dt: info.deviceType,
+      })
+    ).slice(0, 800);
+  }
+  return config;
+});
+
 // ═══════════════════════════════════════════
 // REFRESH CONTROL
 // ═══════════════════════════════════════════
@@ -33,6 +53,8 @@ const MAX_RETRIES = 2; // ✅ Prevent infinite retry loops
 const SKIP_REFRESH_URLS = [
   "/auth/login",
   "/auth/login/2fa",
+  "/auth/oauth/2fa", // ✅ was missing -> the OAuth-2FA 401 leaked into the interceptor
+  //                         and surfaced a misleading "Refresh token missing"
   "/auth/register",
   "/auth/refresh",
   "/auth/logout",
@@ -126,12 +148,27 @@ const performRefresh = async () => {
 // ═══════════════════════════════════════════
 api.interceptors.request.use(
   async (config) => {
+    // ✅ Device headers ALWAYS (were gated on accessToken, so the FIRST login and the
+    // 2FA-verify requests — which have no token yet — created device-less sessions,
+    // defeating device binding on exactly the requests that establish the session).
+    config.headers["X-Device-Id"] = getDeviceId();
+    const info = getDeviceInfo();
+    if (info) {
+      config.headers["X-Device-Info"] = encodeURIComponent(
+        JSON.stringify({
+          b: info.browser,
+          bv: info.browserVersion,
+          o: info.os,
+          ov: info.osVersion,
+          dt: info.deviceType,
+        })
+      ).slice(0, 800);
+    }
+
     const accessToken = localStorage.getItem("accessToken");
 
     if (accessToken) {
       config.headers.Authorization = `Bearer ${accessToken}`;
-      config.headers["X-Device-Id"] = getDeviceId();
-
       // Proactive refresh: refresh 60s before expiry
       if (
         isTokenExpiringSoon(accessToken, 60) &&
@@ -213,8 +250,8 @@ api.interceptors.response.use(
     }
 
     // ── 2. SESSION REVOKED ───────────────────────────────
-    if (data.sessionRevoked) {
-      forceLogout("session_revoked");
+    if (data.code === "DEVICE_MISMATCH" || data.code === "SESSION_MISMATCH") {
+      forceLogout("device_changed");
       return Promise.reject(error);
     }
 

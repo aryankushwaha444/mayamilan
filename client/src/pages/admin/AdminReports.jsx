@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { getAllReports } from "../../services/adminService";
 import { avatarImg } from "../../utils/cloudinary";
 import { useAlert } from "../../context/AlertContext";
+import { sanitizeText } from "../../utils/sanitize";
 
 function AdminReports() {
   const navigate = useNavigate();
@@ -282,7 +283,9 @@ function AdminReports() {
 
                         {/* MESSAGE */}
                         <td>
-                          <span className="fst-italic">"{r.message}"</span>
+                          <span className="fst-italic">
+                            "{sanitizeText(r.message)}"
+                          </span>
                         </td>
                       </tr>
                     );

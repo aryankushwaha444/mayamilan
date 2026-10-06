@@ -1,4 +1,3 @@
-// server/utils/ipReputation.js
 import { logAudit } from "./auditLogger.js";
 
 // ========================================
@@ -25,10 +24,11 @@ try {
 // ========================================
 // CONSTANTS
 // ========================================
-const CACHE_TTL_SECONDS = 86400;
+const CACHE_TTL_SECONDS = 86400; // 24 hours
 const memoryCache = new Map();
 const MEMORY_CACHE_MAX = 10000;
 
+// AbuseIPDB High-Risk Categories (Brute Force, SSH, IoT Target, etc.)
 const HIGH_RISK_CATEGORIES = [1, 2, 3, 9, 10, 11, 14, 18, 19, 20, 21, 22, 23];
 
 const SKIP_IP_PATTERNS = [
@@ -61,7 +61,6 @@ const getCacheKey = (ip) => `ip_reputation:${ip}`;
 const getCachedResult = async (ip) => {
   const key = getCacheKey(ip);
 
-  // Try existing Redis client
   if (redisClient) {
     try {
       const cached = await redisClient.get(key);
@@ -71,7 +70,6 @@ const getCachedResult = async (ip) => {
     }
   }
 
-  // Fallback to memory
   const cached = memoryCache.get(key);
   return cached ? { ...cached, fromCache: "memory" } : null;
 };
@@ -81,7 +79,6 @@ const cacheResult = async (ip, data) => {
 
   if (redisClient) {
     try {
-      // ioredis uses setex for TTL
       if (typeof redisClient.setex === "function") {
         await redisClient.setex(key, CACHE_TTL_SECONDS, JSON.stringify(data));
       } else if (typeof redisClient.set === "function") {
@@ -97,7 +94,7 @@ const cacheResult = async (ip, data) => {
     }
   }
 
-  // Also store in memory as fallback
+  // Memory fallback with simple FIFO eviction
   if (memoryCache.size >= MEMORY_CACHE_MAX) {
     const oldestKey = memoryCache.keys().next().value;
     memoryCache.delete(oldestKey);
@@ -160,9 +157,7 @@ export const checkIpReputation = async (rawIp) => {
           signal: controller.signal,
         }
       );
-      clearTimeout(timeoutId);
     } catch (fetchErr) {
-      clearTimeout(timeoutId);
       return {
         isMalicious: false,
         confidenceScore: 0,
@@ -173,6 +168,9 @@ export const checkIpReputation = async (rawIp) => {
         categories: [],
         error: `fetch_failed: ${fetchErr.message}`,
       };
+    } finally {
+      // ✅ FIX: Always clear the timeout to prevent event loop timer leaks
+      clearTimeout(timeoutId);
     }
 
     if (!response.ok) {
@@ -209,11 +207,23 @@ export const checkIpReputation = async (rawIp) => {
       10
     );
     const score = data.abuseConfidenceScore || 0;
-    const categories = data.reports?.map((r) => r.categories).flat() || [];
+    const usageType = (data.usageType || "").toLowerCase();
 
-    const isTor = categories.includes(18) && score >= 50;
-    const isProxy = categories.includes(9) || categories.includes(14);
-    const isVpn = isProxy && score >= 50;
+    // ✅ FIX: Use flatMap and rely on usageType, since the /check endpoint
+    // doesn't always return the full reports array to save bandwidth.
+    const categories = data.reports?.flatMap((r) => r.categories) || [];
+
+    // ✅ FIX: Check usageType first, as it's always returned by the API
+    const isTor = usageType.includes("tor") || categories.includes(18);
+    const isProxy =
+      usageType.includes("proxy") ||
+      categories.includes(9) ||
+      categories.includes(14);
+    const isVpn =
+      usageType.includes("vpn") ||
+      categories.includes(17) ||
+      (isProxy && score >= 50);
+
     const hasHighRiskCategory = categories.some((c) =>
       HIGH_RISK_CATEGORIES.includes(c)
     );

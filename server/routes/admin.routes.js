@@ -1,7 +1,7 @@
 import express from "express";
 import { param, body, query } from "express-validator";
 import { protect } from "../middleware/auth.middleware.js";
-import { isAdmin } from "../middleware/admin.middleware.js";
+import { isAdmin, verify2FAForAdmin } from "../middleware/admin.middleware.js"; // ✅ Added verify2FAForAdmin
 import { validateRequest } from "../middleware/validateRequest.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { logAudit } from "../utils/auditLogger.js";
@@ -60,9 +60,27 @@ const validateObjectId = (paramName) =>
     .trim();
 
 // ========================================
+// 2FA VERIFICATION (For sensitive admin actions)
+// ========================================
+// ✅ NEW: Route to verify 2FA before performing destructive actions
+router.post(
+  "/verify-2fa",
+  adminSensitiveLimiter,
+  [
+    body("totpCode")
+      .isString()
+      .trim()
+      .notEmpty()
+      .withMessage("2FA code required"),
+  ],
+  validateRequest,
+  asyncHandler(verify2FAForAdmin)
+);
+
+// ========================================
 // DASHBOARD
 // ========================================
-router.get("/stats",adminLimiter, asyncHandler(getDashboardStats));
+router.get("/stats", adminLimiter, asyncHandler(getDashboardStats));
 
 router.get(
   "/stats/honeypot",
@@ -80,7 +98,7 @@ router.get(
 // ========================================
 router.get(
   "/users",
-  adminUserActionLimiter, // ✅ Apply user action rate limit
+  adminUserActionLimiter,
   [
     query("page")
       .optional()
@@ -94,7 +112,8 @@ router.get(
     query("status")
       .optional()
       .isIn(["active", "inactive", "banned", "deleted"]),
-    query("role").optional().isIn(["user", "moderator", "admin"]),
+    // ✅ FIX: Aligned with User schema enum
+    query("role").optional().isIn(["user", "admin", "superadmin"]),
   ],
   validateRequest,
   asyncHandler(getAllUsers)
@@ -116,16 +135,17 @@ router.get(
 
 router.put(
   "/users/:id",
-  adminSensitiveLimiter, // ✅ Stricter limit for updates
+  adminSensitiveLimiter,
   [
     validateObjectId("id"),
     body("name").optional().trim().isLength({ min: 2, max: 50 }),
     body("email").optional().isEmail().normalizeEmail(),
-    body("role").optional().isIn(["user", "moderator", "admin"]),
+    // ✅ FIX: Aligned with User schema enum
+    body("role").optional().isIn(["user", "admin", "superadmin"]),
     body("isActive").optional().isBoolean(),
     body("isVerified").optional().isBoolean(),
-    body("emailBlockedUntil").optional().isISO8601(), // ✅ Add this
-    body("relationshipGoal").optional().trim().isLength({ max: 100 }), 
+    body("emailBlockedUntil").optional().isISO8601(),
+    body("relationshipGoal").optional().trim().isLength({ max: 100 }),
   ],
   validateRequest,
   asyncHandler(updateUser)
@@ -133,7 +153,7 @@ router.put(
 
 router.patch(
   "/users/:id/toggle-status",
-  adminSensitiveLimiter, // ✅ Stricter limit for status changes
+  adminSensitiveLimiter,
   [validateObjectId("id")],
   validateRequest,
   asyncHandler(toggleUserStatus)
@@ -141,16 +161,25 @@ router.patch(
 
 router.delete(
   "/users/:id",
-  adminSensitiveLimiter, // ✅ Stricter limit for deletions
+  adminSensitiveLimiter,
   [validateObjectId("id")],
   validateRequest,
   asyncHandler(deleteUser)
 );
 
 router.delete(
-  "/users/:id/photos/:photoId",
-  adminSensitiveLimiter, // ✅ Stricter limit for photo deletions
-  [validateObjectId("id"), validateObjectId("photoId")],
+  // ✅ FIX: Changed param from :photoId to :publicId
+  "/users/:id/photos/:publicId",
+  adminSensitiveLimiter,
+  [
+    validateObjectId("id"),
+    // ✅ FIX: Cloudinary publicIds are strings, NOT Mongo ObjectIds
+    param("publicId")
+      .isString()
+      .trim()
+      .notEmpty()
+      .withMessage("Invalid photo publicId"),
+  ],
   validateRequest,
   asyncHandler(deleteUserPhoto)
 );
@@ -160,14 +189,15 @@ router.delete(
 // ========================================
 router.get(
   "/reports",
-  adminReportLimiter, // ✅ Apply report-specific rate limit
+  adminReportLimiter,
   [
     query("page").optional().isInt({ min: 1 }),
     query("limit").optional().isInt({ min: 1, max: 100 }),
+    // ✅ FIX: Aligned with Report schema enum ("reviewing" instead of "reviewed")
     query("status")
       .optional()
-      .isIn(["pending", "reviewed", "resolved", "dismissed"]),
-    query("type").optional().trim(),
+      .isIn(["pending", "reviewing", "resolved", "dismissed"]),
+    query("reason").optional().trim(), // Changed from 'type' to 'reason' to match schema
     query("userId").optional().isMongoId(),
   ],
   validateRequest,
@@ -176,13 +206,19 @@ router.get(
 
 router.patch(
   "/reports/:reportId",
-  adminReportLimiter, // ✅ Apply report-specific rate limit
+  adminReportLimiter,
   [
     validateObjectId("reportId"),
+    // ✅ FIX: Aligned with Report schema enum
     body("status")
-      .isIn(["reviewed", "resolved", "dismissed"])
+      .isIn(["reviewing", "resolved", "dismissed"])
       .withMessage("Invalid status"),
     body("adminNotes").optional().trim().isLength({ max: 500 }),
+    // ✅ NEW: Validate actionTaken against schema enum
+    body("actionTaken")
+      .optional()
+      .isIn(["none", "warning_sent", "content_deleted", "suspend", "ban"])
+      .withMessage("Invalid action taken"),
   ],
   validateRequest,
   asyncHandler(updateReportStatus)

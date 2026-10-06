@@ -7,12 +7,10 @@ const EMOJIS = [
   "😂",
   "😍",
   "🥰",
-  "",
   "🤔",
   "😢",
   "😡",
   "👍",
-  "",
   "🌹",
   "🔥",
   "🐱",
@@ -32,7 +30,6 @@ const STICKERS = [
   "👍",
   "✨",
   "👀",
-  "",
   "🌹",
   "🎂",
   "🐱",
@@ -63,6 +60,7 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
   const [seconds, setSeconds] = useState(0);
   const [compressing, setCompressing] = useState(false);
   const [sendingMedia, setSendingMedia] = useState(false);
+  const [sending, setSending] = useState(false);
   const [gifLoading, setGifLoading] = useState({});
 
   const recorderRef = useRef(null);
@@ -73,6 +71,9 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
   const composerRef = useRef(null);
   const inputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+
+  // ✅ CRITICAL FIX: Synchronous lock to prevent double-sends
+  const sendingRef = useRef(false);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -106,17 +107,22 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
       "0"
     )}`;
 
-  // ✅ FIXED: Use ref to track current text for error recovery
   const textRef = useRef(text);
   useEffect(() => {
     textRef.current = text;
   }, [text]);
 
   const submitText = async () => {
-    if (!text.trim()) return;
+    // ✅ Check synchronous ref FIRST
+    if (!text.trim() || sendingRef.current) return;
 
-    const messageText = text; // Capture current value
+    // ✅ Lock immediately (synchronous)
+    sendingRef.current = true;
+    setSending(true);
+
+    const messageText = text;
     const payload = { type: "text", text: messageText };
+
     setText("");
     setPanel(null);
 
@@ -124,7 +130,11 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
       await onSend(payload);
     } catch (error) {
       toast.error("Failed to send message");
-      setText(messageText); // ✅ Restore correct text
+      setText(messageText);
+    } finally {
+      // ✅ Unlock (synchronous)
+      sendingRef.current = false;
+      setSending(false);
     }
 
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -135,7 +145,6 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
     if (value.length <= MAX_TEXT_LENGTH) {
       setText(value);
 
-      // ✅ Emit typing indicator
       if (onTyping) {
         if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
         onTyping();
@@ -152,7 +161,6 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
     }, 250);
   };
 
-  // ✅ NEW: Handle paste images
   const handlePaste = async (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -175,6 +183,7 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
       const recorder = new MediaRecorder(stream);
       chunksRef.current = [];
       cancelRef.current = false;
+      const startTime = Date.now(); // ✅ Track start time
 
       recorder.ondataavailable = (e) => chunksRef.current.push(e.data);
 
@@ -182,6 +191,11 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
         stream.getTracks().forEach((t) => t.stop());
         if (timerRef.current) clearInterval(timerRef.current);
         setRecording(false);
+
+        // ✅ Calculate actual duration in seconds
+        const durationMs = Date.now() - startTime;
+        const durationSeconds = Math.floor(durationMs / 1000);
+
         setSeconds(0);
 
         if (!cancelRef.current && chunksRef.current.length > 0) {
@@ -191,12 +205,24 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
           });
 
           try {
+            if (sendingRef.current) return;
+
+            sendingRef.current = true;
+            setSending(true);
             setSendingMedia(true);
-            await onSend({ type: "voice", file });
+
+            // ✅ Pass duration to onSend
+            await onSend({
+              type: "voice",
+              file,
+              duration: durationSeconds, // ✅ Add duration
+            });
           } catch (error) {
             toast.error("Failed to send voice message");
           } finally {
+            setSending(false);
             setSendingMedia(false);
+            sendingRef.current = false;
           }
         }
       };
@@ -206,7 +232,6 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
       setRecording(true);
       setSeconds(0);
 
-      // ✅ Auto-stop at max duration
       timerRef.current = setInterval(() => {
         setSeconds((s) => {
           if (s + 1 >= MAX_RECORDING_SECONDS) {
@@ -235,25 +260,32 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
     recorderRef.current?.stop();
   };
 
-  // ✅ Shared image handling logic
   const handleImageFile = async (file) => {
     if (file.size > MAX_FILE_SIZE) {
       toast.warning(`Image must be less than ${MAX_FILE_SIZE_MB}MB`);
       return;
     }
+    // ✅ Check synchronous ref FIRST
+    if (sendingRef.current || compressing) return;
+
+    // ✅ Lock immediately
+    sendingRef.current = true;
+    setSending(true);
+    setCompressing(true);
+
+    toast.info("Optimizing image...", "Compressing", 2000);
 
     try {
-      setCompressing(true);
-      toast.info("Optimizing image...", "Compressing", 2000);
-
       const compressedFile = await compressChatImage(file);
-
       setSendingMedia(true);
       await onSend({ type: "image", file: compressedFile });
     } catch (error) {
       console.error("Image upload error:", error);
       toast.error(error.response?.data?.message || "Failed to send image");
     } finally {
+      // ✅ Unlock
+      sendingRef.current = false;
+      setSending(false);
       setCompressing(false);
       setSendingMedia(false);
     }
@@ -267,18 +299,27 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
   };
 
   const safeSend = async (payload) => {
+    // ✅ Check synchronous ref FIRST
+    if (sendingRef.current) return;
+
+    // ✅ Lock immediately
+    sendingRef.current = true;
+    setSending(true);
+    setSendingMedia(true);
+    setPanel(null);
+
     try {
-      setSendingMedia(true);
-      setPanel(null);
       await onSend(payload);
     } catch (error) {
       toast.error("Failed to send");
     } finally {
+      // ✅ Unlock
+      sendingRef.current = false;
+      setSending(false);
       setSendingMedia(false);
     }
   };
 
-  // ✅ Handle GIF loading
   const handleGifLoad = (url) => {
     setGifLoading((prev) => ({ ...prev, [url]: false }));
   };
@@ -288,7 +329,7 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
     toast.error("Failed to load GIF");
   };
 
-  const isDisabled = disabled || compressing || sendingMedia;
+  const isDisabled = disabled || compressing || sendingMedia || sending;
   const charCount = text.length;
   const charLimitReached = charCount >= MAX_TEXT_LENGTH;
 
@@ -417,7 +458,6 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
               aria-label="Message input"
             />
 
-            {/* ✅ Character counter */}
             {charCount > MAX_TEXT_LENGTH * 0.8 && (
               <span
                 className={`char-counter ${charLimitReached ? "limit" : ""}`}
@@ -515,7 +555,7 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
               type="button"
               onClick={() => {
                 setText((t) => (t + e).slice(0, MAX_TEXT_LENGTH));
-                setPanel(null); // ✅ Close after selection
+                setPanel(null);
                 inputRef.current?.focus();
               }}
               aria-label={`Add ${e} emoji`}

@@ -1,7 +1,51 @@
-// server/templates/suspiciousLoginEmail.js
-
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+const BASE_URL = (process.env.CLIENT_URL || "http://localhost:5173").replace(
+  /\/$/,
+  ""
+);
 const BRAND_NAME = "Maya~Milan";
+
+/**
+ * ✅ FIX: Proper HTML entity encoding to prevent XSS and layout breaking
+ */
+const escapeHTML = (str) => {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
+/**
+ * ✅ FIX: Accurate User-Agent parsing (checks specific identifiers first)
+ */
+const getBrowser = (ua) => {
+  if (!ua) return "Unknown browser";
+  if (/Edg\//i.test(ua)) return "Edge";
+  if (/OPR\//i.test(ua) || /Opera/i.test(ua)) return "Opera";
+  if (/Firefox\//i.test(ua)) return "Firefox";
+  if (/Chrome\//i.test(ua)) return "Chrome";
+  if (/Safari\//i.test(ua)) return "Safari";
+  return "Unknown browser";
+};
+
+const getOS = (ua) => {
+  if (!ua) return "Unknown OS";
+  if (/Windows/i.test(ua)) return "Windows";
+  if (/Mac OS X/i.test(ua)) return "macOS";
+  if (/Android/i.test(ua)) return "Android";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+  if (/Linux/i.test(ua)) return "Linux";
+  return "Unknown OS";
+};
+
+const getDeviceType = (ua) => {
+  if (!ua) return "💻 Desktop";
+  if (/mobile|android|iphone/i.test(ua)) return "📱 Mobile device";
+  if (/tablet|ipad/i.test(ua)) return "📱 Tablet";
+  return "💻 Desktop";
+};
 
 export const suspiciousLoginTemplate = ({
   name,
@@ -11,28 +55,27 @@ export const suspiciousLoginTemplate = ({
   userAgent,
   time,
 }) => {
-  // ✅ Defensive checks — userAgent might be null/undefined
   const ua = userAgent || "";
 
-  const deviceType = /mobile|android|iphone/i.test(ua)
-    ? "📱 Mobile device"
-    : /tablet|ipad/i.test(ua)
-    ? "📱 Tablet"
-    : "💻 Desktop";
+  // ✅ Apply proper escaping to all dynamic variables
+  const safeName = escapeHTML(name || "there");
+  const safeCity = escapeHTML(city || "Unknown");
+  const safeCountry = escapeHTML(country || "Unknown");
+  const safeIp = escapeHTML(ip || "Unknown");
 
-  const browserMatch = ua.match(/(Chrome|Firefox|Safari|Edge|Opera)\/[\d.]+/);
-  const browser = browserMatch ? browserMatch[0] : "Unknown browser";
-
-  const osMatch = ua.match(
-    /(Windows|Mac OS X|Linux|Android|iPhone OS) [\d._]+/
+  // ✅ FIX: Safely format and escape the time variable
+  const safeTime = escapeHTML(
+    time
+      ? typeof time === "string"
+        ? time
+        : new Date(time).toLocaleString()
+      : "Unknown time"
   );
-  const os = osMatch ? osMatch[0] : "Unknown OS";
 
+  const deviceType = getDeviceType(ua);
+  const browser = getBrowser(ua);
+  const os = getOS(ua);
   const year = new Date().getFullYear();
-  const safeName = (name || "there").replace(/[<>]/g, ""); // Basic XSS protection
-  const safeCity = (city || "Unknown").replace(/[<>]/g, "");
-  const safeCountry = (country || "Unknown").replace(/[<>]/g, "");
-  const safeIp = (ip || "Unknown").replace(/[<>]/g, "");
 
   return `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
@@ -42,6 +85,11 @@ export const suspiciousLoginTemplate = ({
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="x-apple-disable-message-reformatting">
   <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no">
+  
+  <!-- ✅ FIX: Dark mode support meta tags -->
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  
   <title>New Login Detected - ${BRAND_NAME}</title>
 
   <!--[if mso]>
@@ -130,7 +178,7 @@ export const suspiciousLoginTemplate = ({
                       </tr>
                       <tr>
                         <td style="padding:8px 0;color:#6b7280;vertical-align:top;">🕐 Time</td>
-                        <td style="padding:8px 0;color:#111827;">${time}</td>
+                        <td style="padding:8px 0;color:#111827;">${safeTime}</td>
                       </tr>
                       <tr>
                         <td style="padding:8px 0;color:#6b7280;vertical-align:top;">🖥️ Device</td>
@@ -169,13 +217,13 @@ export const suspiciousLoginTemplate = ({
                 <tr>
                   <td align="center" style="border-radius:10px;background-color:#dc2626;">
                     <!--[if mso]>
-                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${CLIENT_URL}/settings/security" style="height:48px;v-text-anchor:middle;width:240px;" arcsize="21%" strokecolor="#dc2626" fillcolor="#dc2626">
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${BASE_URL}/settings/security" style="height:48px;v-text-anchor:middle;width:240px;" arcsize="21%" strokecolor="#dc2626" fillcolor="#dc2626">
                     <w:anchorlock/>
                     <center style="color:#ffffff;font-family:sans-serif;font-size:15px;font-weight:bold;">Review Active Sessions →</center>
                     </v:roundrect>
                     <![endif]-->
                     <!--[if !mso]><!-->
-                    <a href="${CLIENT_URL}/settings/security"
+                    <a href="${BASE_URL}/settings/security"
                        class="button-mobile"
                        target="_blank"
                        style="display:inline-block;padding:14px 32px;background-color:#dc2626;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;border-radius:10px;mso-padding-alt:0;text-align:center;">
@@ -196,10 +244,10 @@ export const suspiciousLoginTemplate = ({
                 This is an automated security alert from ${BRAND_NAME}.
               </p>
               <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.5;">
-                © ${year} ${BRAND_NAME} · Your safety is our priority
+                &copy; ${year} ${BRAND_NAME} · Your safety is our priority
               </p>
               <p style="margin:12px 0 0;font-size:12px;">
-                <a href="${CLIENT_URL}/settings/notifications" style="color:#9ca3af;text-decoration:underline;">
+                <a href="${BASE_URL}/settings/notifications" style="color:#9ca3af;text-decoration:underline;">
                   Manage notification preferences
                 </a>
               </p>

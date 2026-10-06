@@ -5,40 +5,72 @@ import SEO from "../components/SEO";
 import Loader from "../components/Loader.jsx";
 import { useAlert } from "../context/AlertContext";
 
+/* 🔒 Same defensive normalizer Feed uses, so PostCard can never null-deref a
+   saved post and the memo/counter comparisons stay consistent. */
+function normalizePost(p) {
+  if (!p || typeof p !== "object") return null;
+  return {
+    ...p,
+    _id: p._id ?? `tmp-${Math.random().toString(36).slice(2, 10)}`,
+    author:
+      p.author && typeof p.author === "object"
+        ? p.author
+        : { _id: null, name: "Unknown", photos: [] },
+    images: Array.isArray(p.images) ? p.images : [],
+    likes: Array.isArray(p.likes) ? p.likes : [],
+    comments: Array.isArray(p.comments) ? p.comments : [],
+    shares: Array.isArray(p.shares) ? p.shares : [],
+    reactions: Array.isArray(p.reactions) ? p.reactions : [],
+    content: typeof p.content === "string" ? p.content : p.content ?? "",
+    createdAt: p.createdAt ?? new Date().toISOString(),
+    isLiked: !!p.isLiked,
+    isSaved: !!p.isSaved,
+    isEdited: !!p.isEdited,
+    deletedForEveryone: !!p.deletedForEveryone,
+  };
+}
+
 function SavedPosts() {
   const toast = useAlert();
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // ✅ Stable load function with proper error handling
   const loadSavedPosts = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
       const res = await postService.getSavedPosts();
-      setPosts(res.posts || []);
+      setPosts((res.posts || []).map(normalizePost).filter(Boolean));
     } catch (err) {
       setError(err.response?.data?.message || "Failed to load saved posts.");
       toast.error("Failed to load saved posts", "Error", 4000);
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     loadSavedPosts();
   }, [loadSavedPosts]);
 
-  // ✅ Use post._id instead of array index — always targets correct post
+  /* ✅ FIX: PostCard passes an UPDATER FUNCTION (or null). The old code stored
+     the function as the post, corrupting the card after the first like/comment.
+     This now mirrors Feed.handlePostUpdate exactly: invoke, normalize, replace;
+     remove only on null (delete, or a confirmed un-save — see PostCard edit #4). */
   const handleUpdate = useCallback((postId, updated) => {
-    if (updated === null || !updated.isSaved) {
-      // Post deleted or unsaved → remove by ID
+    if (updated === null) {
       setPosts((prev) => prev.filter((p) => p._id !== postId));
-    } else {
-      // Post updated → replace by ID
-      setPosts((prev) => prev.map((p) => (p._id === postId ? updated : p)));
+      return;
     }
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p._id !== postId) return p;
+        const next = typeof updated === "function" ? updated(p) : updated;
+        return normalizePost(next) || p;
+      })
+    );
   }, []);
 
   // ═══════════════════════════════════════

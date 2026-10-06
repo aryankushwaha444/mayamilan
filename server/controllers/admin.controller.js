@@ -1,22 +1,57 @@
 import mongoose from "mongoose";
 import User from "../models/User.js";
+import Post from "../models/Post.js";
 import Match from "../models/Match.js";
 import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import Notification from "../models/Notification.js";
 import Report from "../models/Report.js";
-import AuditLog from "../models/AuditLog.js"; // ✅ ADD THIS
+import RefreshToken from "../models/RefreshToken.js";
+import AuditLog from "../models/AuditLog.js";
 import cloudinary from "../config/cloudinary.js";
-import { logAudit } from "../utils/auditLogger.js"; // ✅ ADD for audit logging
+import { logAudit } from "../utils/auditLogger.js";
+import { getIO } from "../sockets/socket.js";
 
-/*
-DASHBOARD STATS
-GET /api/admin/stats
-*/
+const NODE_ENV = process.env.NODE_ENV || "development";
+
+// ═══════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MAX_PAGE_LIMIT = 100;
+
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
+
+const notifyUser = (userId, event, data) => {
+  try {
+    const io = getIO();
+    if (io) {
+      io.to(`user:${userId.toString()}`).emit(event, data);
+    }
+  } catch {
+    // Socket notification failure is non-critical
+  }
+};
+
+const revokeAllSessions = async (userId) => {
+  await RefreshToken.updateMany(
+    { user: userId, revokedAt: null },
+    { revokedAt: new Date() }
+  );
+};
+
+// ═══════════════════════════════════════════
+// DASHBOARD STATS
+// ═══════════════════════════════════════════
+
 export const getDashboardStats = async (req, res, next) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const last7Days = new Date(Date.now() - 7 * MS_PER_DAY);
 
     const [
       totalUsers,
@@ -34,20 +69,14 @@ export const getDashboardStats = async (req, res, next) => {
       Conversation.countDocuments(),
       User.countDocuments({ isOnline: true }),
       User.countDocuments({ createdAt: { $gte: today } }),
-      User.countDocuments({
-        createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-      }),
+      User.countDocuments({ createdAt: { $gte: last7Days } }),
       User.countDocuments({ isVerified: true }),
-      Report.countDocuments(), // ✅ ADD
-      Report.countDocuments({ status: "pending" }), // ✅ ADD
+      Report.countDocuments(),
+      Report.countDocuments({ status: "pending" }),
     ]);
 
     const signupsByDay = await User.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-        },
-      },
+      { $match: { createdAt: { $gte: last7Days } } },
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
@@ -67,25 +96,24 @@ export const getDashboardStats = async (req, res, next) => {
         newUsersToday,
         newUsersThisWeek,
         verifiedUsers,
-        totalReports, // ✅ ADD
-        pendingReports, // ✅ ADD
+        totalReports,
+        pendingReports,
         signupsByDay,
       },
     });
   } catch (error) {
-    console.error("Dashboard stats error:", error);
     next(error);
   }
 };
 
-/*
-GET ALL USERS
-GET /api/admin/users
-*/
+// ═══════════════════════════════════════════
+// USER MANAGEMENT
+// ═══════════════════════════════════════════
+
 export const getAllUsers = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || 10, 100); // ✅ Cap at 100
+    const limit = Math.min(parseInt(req.query.limit) || 10, MAX_PAGE_LIMIT);
     const skip = (page - 1) * limit;
 
     const search = req.query.search || "";
@@ -112,7 +140,7 @@ export const getAllUsers = async (req, res, next) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .lean(), // ✅ Use lean() for better performance
+        .lean(),
       User.countDocuments(filter),
     ]);
 
@@ -127,15 +155,10 @@ export const getAllUsers = async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("Get all users error:", error);
     next(error);
   }
 };
 
-/*
-GET SINGLE USER
-GET /api/admin/users/:id
-*/
 export const getUserById = async (req, res, next) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -144,7 +167,7 @@ export const getUserById = async (req, res, next) => {
         .json({ success: false, message: "Invalid user ID" });
     }
 
-    const user = await User.findById(req.params.id).select("-password").lean(); // ✅ Add lean()
+    const user = await User.findById(req.params.id).select("-password").lean();
 
     if (!user) {
       return res
@@ -163,7 +186,7 @@ export const getUserById = async (req, res, next) => {
       Conversation.countDocuments({ participants: user._id }),
       Message.countDocuments({ sender: user._id }),
       Message.countDocuments({ receiver: user._id }),
-      Report.countDocuments({ reportedUser: user._id }), // ✅ ADD
+      Report.countDocuments({ reportedUser: user._id }),
     ]);
 
     res.status(200).json({
@@ -174,19 +197,14 @@ export const getUserById = async (req, res, next) => {
         conversationsCount,
         messagesSent,
         messagesReceived,
-        reportsCount, // ✅ ADD
+        reportsCount,
       },
     });
   } catch (error) {
-    console.error("Get user by id error:", error);
     next(error);
   }
 };
 
-/*
-UPDATE USER
-PUT /api/admin/users/:id
-*/
 export const updateUser = async (req, res, next) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -202,7 +220,7 @@ export const updateUser = async (req, res, next) => {
         .json({ success: false, message: "User not found" });
     }
 
-    // ✅ Prevent admin from changing their own role
+    // Prevent admin from changing their own role
     if (user._id.toString() === req.user._id.toString() && req.body.role) {
       return res.status(400).json({
         success: false,
@@ -210,9 +228,25 @@ export const updateUser = async (req, res, next) => {
       });
     }
 
+    // ✅ FIXED: Prevent privilege escalation (regular admin can't make superadmin)
+    if (req.body.role === "superadmin" && req.user.role !== "superadmin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only superadmins can assign superadmin role",
+      });
+    }
+
+    // Prevent changing email
+    if (req.body.email && req.body.email !== user.email) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Cannot change user email. Email changes require re-verification.",
+      });
+    }
+
     const allowedFields = [
       "name",
-      "email",
       "bio",
       "occupation",
       "education",
@@ -236,12 +270,11 @@ export const updateUser = async (req, res, next) => {
 
     await user.save();
 
-    // ✅ Log admin action
     await logAudit(req, "admin_user_updated", {
       targetUserId: user._id,
       targetEmail: user.email,
       updates,
-    }).catch(() => {});
+    });
 
     res.status(200).json({
       success: true,
@@ -249,15 +282,10 @@ export const updateUser = async (req, res, next) => {
       user,
     });
   } catch (error) {
-    console.error("Update user error:", error);
     next(error);
   }
 };
 
-/*
-TOGGLE USER STATUS (Ban/Unban)
-PATCH /api/admin/users/:id/toggle-status
-*/
 export const toggleUserStatus = async (req, res, next) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -280,18 +308,36 @@ export const toggleUserStatus = async (req, res, next) => {
       });
     }
 
-    // ✅ Prevent banning other admins
-    if (user.role === "admin") {
+    // ✅ FIXED: Prevent banning superadmins and other admins
+    if (user.role === "superadmin") {
       return res.status(403).json({
         success: false,
-        message: "Cannot ban admin users",
+        message: "Cannot ban superadmin users",
+      });
+    }
+
+    if (user.role === "admin" && req.user.role !== "superadmin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only superadmins can ban admin users",
       });
     }
 
     user.isActive = !user.isActive;
     await user.save();
 
-    // ✅ Log admin action
+    if (!user.isActive) {
+      await revokeAllSessions(user._id);
+      notifyUser(user._id, "account_banned", {
+        message:
+          "Your account has been suspended. Contact support for assistance.",
+      });
+    } else {
+      notifyUser(user._id, "account_unbanned", {
+        message: "Your account has been reactivated. Welcome back!",
+      });
+    }
+
     await logAudit(
       req,
       user.isActive ? "admin_user_unbanned" : "admin_user_banned",
@@ -299,7 +345,7 @@ export const toggleUserStatus = async (req, res, next) => {
         targetUserId: user._id,
         targetEmail: user.email,
       }
-    ).catch(() => {});
+    );
 
     res.status(200).json({
       success: true,
@@ -307,16 +353,17 @@ export const toggleUserStatus = async (req, res, next) => {
       user,
     });
   } catch (error) {
-    console.error("Toggle status error:", error);
     next(error);
   }
 };
 
-/*
-DELETE USER (hard delete + photos from Cloudinary)
-DELETE /api/admin/users/:id
-*/
+// ═══════════════════════════════════════════
+// DELETE USER (✅ FIXED: Added transaction)
+// ═══════════════════════════════════════════
+
 export const deleteUser = async (req, res, next) => {
+  const session = await mongoose.startSession();
+
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res
@@ -338,77 +385,95 @@ export const deleteUser = async (req, res, next) => {
       });
     }
 
-    // ✅ Prevent deleting other admins
-    if (user.role === "admin") {
+    // ✅ FIXED: Prevent deleting superadmins and other admins
+    if (user.role === "superadmin") {
       return res.status(403).json({
         success: false,
-        message: "Cannot delete admin users",
+        message: "Cannot delete superadmin users",
       });
     }
 
-    // Delete all photos from Cloudinary
+    if (user.role === "admin" && req.user.role !== "superadmin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only superadmins can delete admin users",
+      });
+    }
+
+    // Delete photos from Cloudinary (outside transaction)
     if (user.photos && user.photos.length > 0) {
       await Promise.all(
         user.photos.map((photo) =>
-          cloudinary.uploader.destroy(photo.publicId).catch((err) => {
-            console.warn(
-              `Failed to delete photo ${photo.publicId}:`,
-              err.message
-            );
-          })
+          photo.publicId
+            ? cloudinary.uploader.destroy(photo.publicId).catch(() => {})
+            : Promise.resolve()
         )
       );
     }
 
-    // ✅ Clean up related data first, then delete user
-    await Promise.all([
-      Match.deleteMany({ users: user._id }),
-      Conversation.deleteMany({ participants: user._id }),
-      Message.deleteMany({
-        $or: [{ sender: user._id }, { receiver: user._id }],
-      }),
-      Notification.deleteMany({
-        $or: [{ recipient: user._id }, { sender: user._id }],
-      }),
-      Report.deleteMany({
-        // ✅ ADD: Delete reports by/about this user
-        $or: [{ reporter: user._id }, { reportedUser: user._id }],
-      }),
-    ]);
+    const posts = await Post.find({ author: user._id }).lean();
+    for (const post of posts) {
+      if (post.images && post.images.length > 0) {
+        await Promise.all(
+          post.images.map((img) =>
+            img.publicId
+              ? cloudinary.uploader.destroy(img.publicId).catch(() => {})
+              : Promise.resolve()
+          )
+        );
+      }
+    }
 
-    // Delete user after cleanup
-    await User.deleteOne({ _id: user._id });
+    // Use transaction for database cleanup
+    await session.withTransaction(async () => {
+      await Promise.all([
+        Post.deleteMany({ author: user._id }).session(session),
+        Match.deleteMany({ users: user._id }).session(session),
+        Conversation.deleteMany({ participants: user._id }).session(session),
+        Message.deleteMany({
+          $or: [{ sender: user._id }, { receiver: user._id }],
+        }).session(session),
+        Notification.deleteMany({
+          $or: [{ recipient: user._id }, { sender: user._id }],
+        }).session(session),
+        Report.deleteMany({
+          $or: [{ reporter: user._id }, { reportedUser: user._id }],
+        }).session(session),
+        RefreshToken.deleteMany({ user: user._id }).session(session),
+        User.deleteOne({ _id: user._id }).session(session),
+      ]);
+    });
 
-    // ✅ Log admin action
     await logAudit(req, "admin_user_deleted", {
       targetUserId: user._id,
       targetEmail: user.email,
       photosDeleted: user.photos?.length || 0,
-    }).catch(() => {});
+      postsDeleted: posts.length,
+    });
 
     res.status(200).json({
       success: true,
       message: "User and all related data deleted successfully",
     });
   } catch (error) {
-    console.error("Delete user error:", error);
     next(error);
+  } finally {
+    await session.endSession();
   }
 };
 
-/*
-DELETE SPECIFIC PHOTO
-DELETE /api/admin/users/:id/photos/:photoId
-*/
+// ═══════════════════════════════════════════
+// DELETE USER PHOTO (✅ FIXED: Use publicId instead of photoId)
+// ═══════════════════════════════════════════
+
 export const deleteUserPhoto = async (req, res, next) => {
   try {
-    const { id, photoId } = req.params;
+    const { id, publicId } = req.params;
 
-    if (
-      !mongoose.Types.ObjectId.isValid(id) ||
-      !mongoose.Types.ObjectId.isValid(photoId)
-    ) {
-      return res.status(400).json({ success: false, message: "Invalid ID" });
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid user ID" });
     }
 
     const user = await User.findById(id);
@@ -418,7 +483,8 @@ export const deleteUserPhoto = async (req, res, next) => {
         .json({ success: false, message: "User not found" });
     }
 
-    const photo = user.photos.id(photoId);
+    // ✅ FIXED: Find photo by publicId instead of MongoDB _id
+    const photo = user.photos.find((p) => p.publicId === publicId);
     if (!photo) {
       return res
         .status(404)
@@ -426,13 +492,12 @@ export const deleteUserPhoto = async (req, res, next) => {
     }
 
     // Delete from Cloudinary
-    await cloudinary.uploader.destroy(photo.publicId).catch((err) => {
-      console.warn(`Failed to delete photo from Cloudinary:`, err.message);
-    });
+    if (photo.publicId) {
+      await cloudinary.uploader.destroy(photo.publicId).catch(() => {});
+    }
 
     const wasPrimary = photo.isPrimary;
-    const publicId = photo.publicId; // ✅ Save for audit log
-    user.photos.pull(photoId);
+    user.photos = user.photos.filter((p) => p.publicId !== publicId);
 
     // If primary was deleted, make first remaining photo primary
     if (wasPrimary && user.photos.length > 0) {
@@ -441,14 +506,12 @@ export const deleteUserPhoto = async (req, res, next) => {
 
     await user.save();
 
-    // ✅ Log admin action
     await logAudit(req, "admin_photo_deleted", {
       targetUserId: user._id,
       targetEmail: user.email,
-      photoId,
       publicId,
       wasPrimary,
-    }).catch(() => {});
+    });
 
     res.status(200).json({
       success: true,
@@ -456,15 +519,14 @@ export const deleteUserPhoto = async (req, res, next) => {
       photos: user.photos,
     });
   } catch (error) {
-    console.error("Delete photo error:", error);
     next(error);
   }
 };
 
-/*
-GET USER REPORTS
-GET /api/admin/users/:id/reports
-*/
+// ═══════════════════════════════════════════
+// REPORTS MANAGEMENT
+// ═══════════════════════════════════════════
+
 export const getUserReports = async (req, res, next) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -476,7 +538,7 @@ export const getUserReports = async (req, res, next) => {
     const reports = await Report.find({ reportedUser: req.params.id })
       .populate("reporter", "name email photos")
       .sort({ createdAt: -1 })
-      .lean(); // ✅ Add lean()
+      .lean();
 
     res.status(200).json({
       success: true,
@@ -489,10 +551,6 @@ export const getUserReports = async (req, res, next) => {
   }
 };
 
-/*
-UPDATE REPORT STATUS
-PATCH /api/admin/reports/:reportId
-*/
 export const updateReportStatus = async (req, res, next) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.reportId)) {
@@ -503,8 +561,7 @@ export const updateReportStatus = async (req, res, next) => {
 
     const { status } = req.body;
 
-    // ✅ Validate status
-    const validStatuses = ["pending", "reviewed", "resolved", "dismissed"];
+    const validStatuses = ["pending", "reviewing", "resolved", "dismissed"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -524,12 +581,11 @@ export const updateReportStatus = async (req, res, next) => {
         .json({ success: false, message: "Report not found" });
     }
 
-    // ✅ Log admin action
     await logAudit(req, "admin_report_updated", {
       reportId: report._id,
       status,
       reportedUserId: report.reportedUser?._id,
-    }).catch(() => {});
+    });
 
     res.status(200).json({
       success: true,
@@ -541,10 +597,6 @@ export const updateReportStatus = async (req, res, next) => {
   }
 };
 
-/*
-GET ALL REPORTS
-GET /api/admin/reports
-*/
 export const getAllReports = async (req, res, next) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -562,45 +614,58 @@ export const getAllReports = async (req, res, next) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .lean(), // ✅ Add lean()
+        .lean(),
       Report.countDocuments(filter),
       Report.countDocuments({ status: "pending" }),
     ]);
 
-    // Count reports by reporter and reported user
-    const reporterIds = [
-      ...new Set(
-        reports.map((r) => r.reporter?._id?.toString()).filter(Boolean)
-      ),
-    ];
-    const reportedIds = [
-      ...new Set(
-        reports.map((r) => r.reportedUser?._id?.toString()).filter(Boolean)
-      ),
-    ];
+    const userIds = new Set();
+    reports.forEach((r) => {
+      if (r.reporter?._id) userIds.add(r.reporter._id.toString());
+      if (r.reportedUser?._id) userIds.add(r.reportedUser._id.toString());
+    });
 
-    const toObjIds = (ids) => ids.map((id) => new mongoose.Types.ObjectId(id));
-
-    const [byReporter, byReported] = await Promise.all([
-      reporterIds.length > 0
-        ? Report.aggregate([
-            { $match: { reporter: { $in: toObjIds(reporterIds) } } },
-            { $group: { _id: "$reporter", count: { $sum: 1 } } },
+    const counts =
+      userIds.size > 0
+        ? await Report.aggregate([
+            {
+              $match: {
+                $or: [
+                  {
+                    reporter: {
+                      $in: Array.from(userIds).map(
+                        (id) => new mongoose.Types.ObjectId(id)
+                      ),
+                    },
+                  },
+                  {
+                    reportedUser: {
+                      $in: Array.from(userIds).map(
+                        (id) => new mongoose.Types.ObjectId(id)
+                      ),
+                    },
+                  },
+                ],
+              },
+            },
+            {
+              $facet: {
+                byReporter: [
+                  { $group: { _id: "$reporter", count: { $sum: 1 } } },
+                ],
+                byReported: [
+                  { $group: { _id: "$reportedUser", count: { $sum: 1 } } },
+                ],
+              },
+            },
           ])
-        : [],
-      reportedIds.length > 0
-        ? Report.aggregate([
-            { $match: { reportedUser: { $in: toObjIds(reportedIds) } } },
-            { $group: { _id: "$reportedUser", count: { $sum: 1 } } },
-          ])
-        : [],
-    ]);
+        : [{ byReporter: [], byReported: [] }];
 
     const reporterCount = Object.fromEntries(
-      byReporter.map((x) => [x._id.toString(), x.count])
+      (counts[0]?.byReporter || []).map((x) => [x._id.toString(), x.count])
     );
     const reportedCount = Object.fromEntries(
-      byReported.map((x) => [x._id.toString(), x.count])
+      (counts[0]?.byReported || []).map((x) => [x._id.toString(), x.count])
     );
 
     const formatted = reports.map((r) => ({
@@ -626,54 +691,59 @@ export const getAllReports = async (req, res, next) => {
   }
 };
 
-/*
-GET HONEYPOT STATS
-GET /api/admin/stats/honeypot
-*/
-export const getHoneypotStats = async (req, res) => {
+// ═══════════════════════════════════════════
+// HONEYPOT STATS
+// ═══════════════════════════════════════════
+
+export const getHoneypotStats = async (req, res, next) => {
   try {
-    const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const last7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const last30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const last24h = new Date(Date.now() - MS_PER_DAY);
+    const last7d = new Date(Date.now() - 7 * MS_PER_DAY);
+    const last30d = new Date(Date.now() - 30 * MS_PER_DAY);
 
-    const [last24hCount, last7dCount, last30dCount, total] = await Promise.all([
-      AuditLog.countDocuments({
-        action: "honeypot_triggered",
-        createdAt: { $gte: last24h },
-      }),
-      AuditLog.countDocuments({
-        action: "honeypot_triggered",
-        createdAt: { $gte: last7d },
-      }),
-      AuditLog.countDocuments({
-        action: "honeypot_triggered",
-        createdAt: { $gte: last30d },
-      }),
-      AuditLog.countDocuments({ action: "honeypot_triggered" }),
-    ]);
+    const [last24hCount, last7dCount, last30dCount, total, topIPs, breakdowns] =
+      await Promise.all([
+        AuditLog.countDocuments({
+          action: "honeypot_triggered",
+          createdAt: { $gte: last24h },
+        }),
+        AuditLog.countDocuments({
+          action: "honeypot_triggered",
+          createdAt: { $gte: last7d },
+        }),
+        AuditLog.countDocuments({
+          action: "honeypot_triggered",
+          createdAt: { $gte: last30d },
+        }),
+        AuditLog.countDocuments({ action: "honeypot_triggered" }),
+        AuditLog.aggregate([
+          { $match: { action: "honeypot_triggered" } },
+          {
+            $group: {
+              _id: "$metadata.ip",
+              count: { $sum: 1 },
+              lastTriggered: { $max: "$createdAt" },
+            },
+          },
+          { $sort: { count: -1 } },
+          { $limit: 10 },
+        ]),
+        AuditLog.aggregate([
+          { $match: { action: "honeypot_triggered" } },
+          {
+            $facet: {
+              byReason: [
+                { $group: { _id: "$metadata.reason", count: { $sum: 1 } } },
+              ],
+              byAction: [
+                { $group: { _id: "$metadata.action", count: { $sum: 1 } } },
+              ],
+            },
+          },
+        ]),
+      ]);
 
-    const topIPs = await AuditLog.aggregate([
-      { $match: { action: "honeypot_triggered" } },
-      {
-        $group: {
-          _id: "$metadata.ip",
-          count: { $sum: 1 },
-          lastTriggered: { $max: "$createdAt" },
-        },
-      },
-      { $sort: { count: -1 } },
-      { $limit: 10 },
-    ]);
-
-    const byReason = await AuditLog.aggregate([
-      { $match: { action: "honeypot_triggered" } },
-      { $group: { _id: "$metadata.reason", count: { $sum: 1 } } },
-    ]);
-
-    const byAction = await AuditLog.aggregate([
-      { $match: { action: "honeypot_triggered" } },
-      { $group: { _id: "$metadata.action", count: { $sum: 1 } } },
-    ]);
+    const breakdown = breakdowns[0] || { byReason: [], byAction: [] };
 
     res.status(200).json({
       success: true,
@@ -683,21 +753,17 @@ export const getHoneypotStats = async (req, res) => {
         last30d: last30dCount,
         total,
         topIPs,
-        byReason: byReason.reduce((acc, item) => {
+        byReason: breakdown.byReason.reduce((acc, item) => {
           acc[item._id || "unknown"] = item.count;
           return acc;
         }, {}),
-        byAction: byAction.reduce((acc, item) => {
+        byAction: breakdown.byAction.reduce((acc, item) => {
           acc[item._id || "unknown"] = item.count;
           return acc;
         }, {}),
       },
     });
   } catch (error) {
-    console.error("Get honeypot stats error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get honeypot stats",
-    });
+    next(error);
   }
 };

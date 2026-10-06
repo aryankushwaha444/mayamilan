@@ -1,16 +1,16 @@
-import dotenv from "dotenv";
-dotenv.config();
-
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import compression from "compression";
-import { sanitizeInput } from "./middleware/sanitizeInput.js";
-import timeout from "connect-timeout"; // ✅ ADD: npm install connect-timeout
-import morgan from "morgan"; // ✅ ADD: npm install morgan
-import { v4 as uuidv4 } from "uuid"; // ✅ ADD: npm install uuid
+import timeout from "connect-timeout";
+import morgan from "morgan";
+import { v4 as uuidv4 } from "uuid";
 import * as Sentry from "@sentry/node";
+import mongoose from "mongoose";
+
+import { sanitizeInput } from "./middleware/sanitizeInput.js";
+import { generalApiLimiter } from "./middleware/rateLimits.js";
 
 // Import all routes
 import userRoutes from "./routes/user.routes.js";
@@ -29,34 +29,99 @@ import accountRoutes from "./routes/account.routes.js";
 import passport from "./config/passport.js";
 import twoFactorRoutes from "./routes/twoFactor.routes.js";
 
-import { generalApiLimiter } from "./middleware/rateLimits.js";
-
 const app = express();
 
-// ========================================
-// ENVIRONMENT VARIABLES (centralized)
-// ========================================
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
-const SITE_URL = process.env.SITE_URL || "https://mayamilan.vercel.app";
+// ═══════════════════════════════════════════
+// ENVIRONMENT VARIABLES
+// ═══════════════════════════════════════════
 const NODE_ENV = process.env.NODE_ENV || "development";
-const COOKIE_SECRET = process.env.COOKIE_SECRET || "your-cookie-secret-here"; // ✅ ADD
+const SITE_URL = process.env.SITE_URL || "https://mayamilan.vercel.app";
+const COOKIE_SECRET = process.env.COOKIE_SECRET || "your-cookie-secret-here";
 
-// ========================================
-// REQUEST TIMEOUT (prevents hanging requests)
-// ========================================
-app.use(timeout("30s")); // ✅ ADD: 30 second timeout for all requests
+// Parse allowed origins
+const allowedOrigins = process.env.CLIENT_URL
+  ? process.env.CLIENT_URL.split(",").map((url) => url.trim())
+  : ["http://localhost:5173"];
 
-// ========================================
-// REQUEST ID (for log correlation)
-// ========================================
+// ═══════════════════════════════════════════
+// SECURITY: Sentry Initialization
+// ═══════════════════════════════════════════
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: NODE_ENV,
+    tracesSampleRate: NODE_ENV === "production" ? 0.1 : 1.0,
+    integrations: [
+      new Sentry.Integrations.Http({ tracing: true }),
+      new Sentry.Integrations.Express({ app }),
+    ],
+  });
+  app.use(Sentry.Handlers.requestHandler());
+  app.use(Sentry.Handlers.tracingHandler());
+}
+
+// ═══════════════════════════════════════════
+// SECURITY: Request ID (MUST BE FIRST)
+// ═══════════════════════════════════════════
 app.use((req, res, next) => {
   req.id = req.headers["x-request-id"] || uuidv4();
   res.setHeader("X-Request-ID", req.id);
+  req.startTime = Date.now(); // Track request duration
   next();
 });
 
-morgan.token("id", (req) => req.id || "-");
+// ═══════════════════════════════════════════
+// SECURITY: Request Payload Size Validation (BEFORE body parsing)
+// ═══════════════════════════════════════════
+app.use((req, res, next) => {
+  const contentLength = parseInt(req.headers["content-length"] || "0", 10);
+  const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024; // 10MB
 
+  if (contentLength > MAX_PAYLOAD_SIZE) {
+    return res.status(413).json({
+      success: false,
+      message: "Request payload too large",
+      code: "PAYLOAD_TOO_LARGE",
+      requestId: req.id,
+    });
+  }
+  next();
+});
+
+// ═══════════════════════════════════════════
+// SECURITY: Slow Request Detection
+// ═══════════════════════════════════════════
+app.use((req, res, next) => {
+  const SLOW_REQUEST_THRESHOLD = 10000; // 10 seconds
+
+  const timeoutId = setTimeout(() => {
+    const duration = Date.now() - req.startTime;
+    console.warn(
+      `⚠️ Slow request detected: ${req.method} ${req.path} took ${duration}ms [${req.id}]`
+    );
+  }, SLOW_REQUEST_THRESHOLD);
+
+  res.on("finish", () => {
+    clearTimeout(timeoutId);
+  });
+
+  next();
+});
+
+// ═══════════════════════════════════════════
+// REQUEST TIMEOUT & HALT MIDDLEWARE
+// ═══════════════════════════════════════════
+app.use(timeout("30s"));
+
+function haltOnTimedout(req, res, next) {
+  if (!req.timedout) next();
+}
+app.use(haltOnTimedout);
+
+// ═══════════════════════════════════════════
+// LOGGING (Development only)
+// ═══════════════════════════════════════════
+morgan.token("id", (req) => req.id || "-");
 morgan.token("status-color", (req, res) => {
   const status = res.statusCode;
   const color =
@@ -72,9 +137,9 @@ if (NODE_ENV === "development") {
   );
 }
 
-// ========================================
-// SECURITY.TXT (RFC 9116)
-// ========================================
+// ═══════════════════════════════════════════
+// SECURITY: Helmet Configuration (Enhanced)
+// ═══════════════════════════════════════════
 const SECURITY_TXT = `Contact: mailto:${
   process.env.SECURITY_EMAIL || "rupnarayan444@gmail.com"
 }
@@ -83,60 +148,10 @@ Expires: 2027-12-31T23:59:59.000Z
 Preferred-Languages: en, hi, np
 Canonical: ${SITE_URL}/.well-known/security.txt
 Policy: ${SITE_URL}/security-policy
-Acknowledgments: ${SITE_URL}/hall-of-fame
-`;
-
-// Sentry setup
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: NODE_ENV,
-    tracesSampleRate: NODE_ENV === "production" ? 0.1 : 1.0,
-    integrations: [
-      new Sentry.Integrations.Http({ tracing: true }),
-      new Sentry.Integrations.Express({ app }),
-    ],
-  });
-}
+Acknowledgments: ${SITE_URL}/hall-of-fame`;
 
 app.use(compression({ level: 6 }));
 
-if (process.env.SENTRY_DSN) {
-  app.use(Sentry.Handlers.requestHandler());
-  app.use(Sentry.Handlers.tracingHandler());
-}
-
-// ✅ FIXED CORS
-app.use(
-  cors({
-    origin: [CLIENT_URL].filter(Boolean),
-    credentials: true,
-    maxAge: 86400,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-Device-Id",
-      "X-Signature",
-      "X-Timestamp",
-      "X-Form-Load-Time",
-      "X-Requested-With",
-      "X-Request-ID", // ✅ ADD: Allow custom request IDs
-    ],
-    exposedHeaders: [
-      "X-Cache",
-      "X-RateLimit-Limit",
-      "X-RateLimit-Remaining",
-      "X-RateLimit-Reset",
-      "X-Request-ID", // ✅ ADD: Expose request ID to client
-    ],
-  })
-);
-
-// ✅ Trust proxy
-app.set("trust proxy", NODE_ENV === "production" ? true : 1);
-
-// ✅ IMPROVED Security headers
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -146,7 +161,7 @@ app.use(
           "'self'",
           "https://cdn.jsdelivr.net",
           "https://challenges.cloudflare.com",
-          ...(NODE_ENV === "production" ? [] : ["'unsafe-eval'"]), // ✅ Allow eval in dev
+          ...(NODE_ENV === "production" ? [] : ["'unsafe-eval'"]),
         ],
         styleSrc: [
           "'self'",
@@ -154,11 +169,17 @@ app.use(
           "https://cdn.jsdelivr.net",
           "https://fonts.googleapis.com",
         ],
-        imgSrc: ["'self'", "data:", "https:", "blob:"],
+        imgSrc: [
+          "'self'",
+          "data:",
+          "https:",
+          "blob:",
+          "https://res.cloudinary.com",
+        ],
         mediaSrc: ["'self'", "https:", "blob:"],
         connectSrc: [
           "'self'",
-          CLIENT_URL,
+          ...allowedOrigins,
           "https://*.cloudinary.com",
           "https://res.cloudinary.com",
           "wss:",
@@ -177,7 +198,7 @@ app.use(
         frameAncestors: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
-        upgradeInsecureRequests: NODE_ENV === "production" ? [] : null, // ✅ ADD: Force HTTPS in production
+        upgradeInsecureRequests: NODE_ENV === "production" ? [] : null,
       },
     },
     hsts:
@@ -187,96 +208,113 @@ app.use(
     referrerPolicy: { policy: "strict-origin-when-cross-origin" },
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: { policy: "same-origin" }, // NEW: Prevents window.opener attacks
+    dnsPrefetchControl: { allow: false }, // NEW: Prevents DNS prefetching leaks
+    permittedCrossDomainPolicies: { permittedPolicies: "none" }, // NEW: Blocks Flash/Acrobat
+    hidePoweredBy: true, // Remove X-Powered-By header
+    xssFilter: true, // Enable XSS filter (legacy browsers)
+    noSniff: true, // Prevent MIME type sniffing
+    ieNoOpen: true, // Prevent IE from executing downloads
     frameguard: { action: "deny" },
-
-    permissionsPolicy: {
-      policy: {
-        camera: ["self"],
-        microphone: ["self"],
-        geolocation: ["self"],
-        payment: [],
-        "interest-cohort": [],
-        accelerometer: [],
-        gyroscope: [],
-        magnetometer: [],
-        fullscreen: ["self"],
-        autoplay: ["self"],
-        "display-capture": [],
-        "document-domain": [],
-        "encrypted-media": ["self"],
-        "execution-while-not-rendered": [],
-        "execution-while-out-of-viewport": [],
-        "publickey-credentials-get": ["self"],
-        usb: [],
-        "xr-spatial-tracking": [],
-        "clipboard-read": ["self"],
-        "clipboard-write": ["self"],
-      },
-    },
   })
 );
 
-// ✅ FIXED: Body parsers with NoSQL injection protection
+// ═══════════════════════════════════════════
+// SECURITY: CORS Configuration (Enhanced)
+// ═══════════════════════════════════════════
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    console.warn(`⚠️ Blocked CORS request from: ${origin}`);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  maxAge: 86400,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Device-Id",
+    "X-Device-Info", // ✅ ADDED — was the single missing header causing the app-wide preflight block
+    "X-Signature",
+    "X-Timestamp",
+    "X-Form-Load-Time",
+    "X-Requested-With",
+    "X-Request-ID",
+  ],
+  exposedHeaders: [
+    "X-Cache",
+    "X-RateLimit-Limit",
+    "X-RateLimit-Remaining",
+    "X-RateLimit-Reset",
+    "X-Request-ID",
+    "Retry-After",
+  ],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+
+// Trust proxy (1 hop for Nginx/Cloudflare)
+app.set("trust proxy", process.env.TRUST_PROXY || 1);
+
+// ═══════════════════════════════════════════
+// BODY PARSERS & GLOBAL MIDDLEWARE
+// ═══════════════════════════════════════════
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
-app.use(sanitizeInput); // ✅ ADD: Remove $ operators from user input
+app.use(sanitizeInput); // Strips $ operators to prevent NoSQL injection
 app.use(passport.initialize());
-app.use(cookieParser(COOKIE_SECRET)); // ✅ FIXED: Add secret for signed cookies
+app.use(cookieParser(COOKIE_SECRET));
 
-// Security.txt routes
+// ═══════════════════════════════════════════
+// STATIC & HEALTH ROUTES
+// ═══════════════════════════════════════════
 app.get("/.well-known/security.txt", (req, res) => {
   res.type("text/plain; charset=utf-8");
   res.set("Cache-Control", "public, max-age=86400");
   res.send(SECURITY_TXT);
 });
 
-app.get("/security.txt", (req, res) => {
-  res.redirect(301, "/.well-known/security.txt");
+app.get("/security.txt", (req, res) =>
+  res.redirect(301, "/.well-known/security.txt")
+);
+
+app.get("/api/health", (req, res) => {
+  const dbState = mongoose.connection.readyState;
+  const dbStates = {
+    0: "disconnected",
+    1: "connected",
+    2: "connecting",
+    3: "disconnecting",
+  };
+
+  res.json({
+    success: true,
+    message: "Dating Portal API is running",
+    timestamp: new Date().toISOString(),
+    environment: NODE_ENV,
+    uptime: process.uptime(),
+    database: {
+      status: dbStates[dbState] || "unknown",
+      host: mongoose.connection.host,
+    },
+    memory: {
+      rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
+      heapUsed: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
+    },
+  });
 });
 
-// ✅ IMPROVED: Health check with diagnostics
-app.get("/api/health", async (req, res) => {
-  try {
-    // Check MongoDB connection
-    const mongoose = (await import("mongoose")).default;
-    const dbState = mongoose.connection.readyState;
-    const dbStates = {
-      0: "disconnected",
-      1: "connected",
-      2: "connecting",
-      3: "disconnecting",
-    };
-
-    res.json({
-      success: true,
-      message: "Dating Portal API is running",
-      timestamp: new Date().toISOString(),
-      environment: NODE_ENV,
-      uptime: process.uptime(),
-      database: {
-        status: dbStates[dbState] || "unknown",
-        host: mongoose.connection.host,
-      },
-      memory: {
-        rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
-        heapUsed: `${Math.round(
-          process.memoryUsage().heapUsed / 1024 / 1024
-        )}MB`,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Health check failed",
-      error: NODE_ENV === "development" ? error.message : undefined,
-    });
-  }
-});
-
-// Apply per-user rate limiter to all /api routes
+// ═══════════════════════════════════════════
+// SECURITY: Rate Limiting (Applied to all API routes)
+// ═══════════════════════════════════════════
 app.use("/api", generalApiLimiter);
 
-// Routes
+// ═══════════════════════════════════════════
+// API ROUTES
+// ═══════════════════════════════════════════
 app.use("/api/2fa", twoFactorRoutes);
 app.use("/api/suggestions", suggestionRoutes);
 app.use("/api/auth", authRoutes);
@@ -292,20 +330,25 @@ app.use("/api/push", pushRoutes);
 app.use("/api/account", accountRoutes);
 app.use("/api/admin", adminRoutes);
 
-// 404 handler
-app.use((req, res, next) => {
+// ═══════════════════════════════════════════
+// 404 HANDLER
+// ═══════════════════════════════════════════
+app.use((req, res) => {
   res.status(404).json({
     success: false,
     message: `Route ${req.originalUrl} not found`,
-    requestId: req.id, // ✅ ADD: Include request ID for debugging
+    requestId: req.id,
   });
 });
 
-// ✅ IMPROVED: Error handlers with request context
-// 1. Timeout handler (must be first)
+// ═══════════════════════════════════════════
+// ERROR HANDLERS (Enhanced)
+// ═══════════════════════════════════════════
+
+// 1. Timeout handler
 app.use((err, req, res, next) => {
   if (err.timeout) {
-    console.error(`⏱️  Request timeout: ${req.method} ${req.path} [${req.id}]`);
+    console.error(`⏱️ Request timeout: ${req.method} ${req.path} [${req.id}]`);
     return res.status(503).json({
       success: false,
       message: "Request timeout. Please try again.",
@@ -316,10 +359,9 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// 2. Specific error handlers (body size, multer)
+// 2. Payload/Multer error handlers
 app.use((err, req, res, next) => {
   if (err.type === "entity.too.large") {
-    console.warn(`📦 Body too large: ${req.method} ${req.path} [${req.id}]`);
     return res.status(413).json({
       success: false,
       message: "Request body too large",
@@ -327,9 +369,7 @@ app.use((err, req, res, next) => {
       requestId: req.id,
     });
   }
-
   if (err.type === "entity.parse.failed") {
-    console.warn(`🔍 Invalid JSON: ${req.method} ${req.path} [${req.id}]`);
     return res.status(400).json({
       success: false,
       message: "Invalid JSON in request body",
@@ -337,9 +377,7 @@ app.use((err, req, res, next) => {
       requestId: req.id,
     });
   }
-
   if (err.code === "LIMIT_FILE_SIZE") {
-    console.warn(`📁 File too large: ${req.method} ${req.path} [${req.id}]`);
     return res.status(413).json({
       success: false,
       message: "File too large. Maximum size is 10MB.",
@@ -347,36 +385,42 @@ app.use((err, req, res, next) => {
       requestId: req.id,
     });
   }
-
   next(err);
 });
 
-// 3. Sentry error handler (logs errors before response)
+// 3. Sentry error handler
 if (process.env.SENTRY_DSN) {
   app.use(Sentry.Handlers.errorHandler());
 }
 
-// 4. General error handler (sends response to client)
+// 4. General catch-all error handler (Enhanced)
 app.use((err, req, res, next) => {
+  // Sanitize error message to prevent information leakage
+  const errorMessage = err.message || "Unknown error";
+
+  // Log error details (sanitize sensitive data)
   console.error("❌ Unhandled error:", {
-    requestId: req.id, // ✅ ADD: Request ID for log correlation
-    message: err.message,
-    stack: NODE_ENV === "development" ? err.stack : undefined,
+    requestId: req.id,
+    message: errorMessage,
+    stack: NODE_ENV === "development" ? err.stack : "[REDACTED]",
     path: req.path,
     method: req.method,
-    userId: req.user?._id,
+    userId: req.user?._id || "anonymous",
     ip: req.ip,
-    userAgent: req.get("user-agent"),
+    userAgent: req.get("user-agent")?.substring(0, 100), // Truncate user agent
   });
 
   const statusCode = err.statusCode || err.status || 500;
+
+  // In production, don't expose internal error messages
   const message =
-    NODE_ENV === "production" ? "Internal server error" : err.message;
+    NODE_ENV === "production" ? "Internal server error" : errorMessage;
 
   res.status(statusCode).json({
     success: false,
     message,
-    requestId: req.id, // ✅ ADD: Include request ID in response
+    requestId: req.id,
+    code: err.code || "INTERNAL_ERROR",
     ...(NODE_ENV === "development" && { stack: err.stack }),
   });
 });

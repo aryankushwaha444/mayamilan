@@ -18,7 +18,6 @@ function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // ✅ Capture form load time for timing-based honeypot
   const [formLoadTime] = useState(Date.now());
 
   const [reactivateData, setReactivateData] = useState(null);
@@ -26,12 +25,14 @@ function Login() {
   const [pendingCredentials, setPendingCredentials] = useState(null);
   const [reactivateError, setReactivateError] = useState("");
   const [twoFaStep, setTwoFaStep] = useState(false);
-  const [tempToken, setTempToken] = useState("");
+  // ✅ pending 2FA token now lives ONLY in an httpOnly cookie (set by the server on
+  // the login 401 / oauth callback). The page never holds it in state and never reads
+  // it from the URL -> no history/Referer/JS exposure. We only need to know WHICH
+  // verify endpoint to hit.
+  const [isOAuth2FA, setIsOAuth2FA] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [twoFaLoading, setTwoFaLoading] = useState(false);
-  const [oauth2faToken, setOauth2faToken] = useState("");
 
-  // ✅ Refs for reactivation modal focus management
   const modalRef = useRef(null);
   const activateBtnRef = useRef(null);
   const totpInputRef = useRef(null);
@@ -43,54 +44,86 @@ function Login() {
     isEnabled: turnstileEnabled,
   } = useTurnstile();
 
-  // ✅ Parse URL params on mount
+  // ✅ FIXED: Parse URL params ONCE on mount (empty dependency array prevents infinite loop)
   useEffect(() => {
+    // Read params directly from window.location (not useSearchParams)
     const params = new URLSearchParams(window.location.search);
+
     const reactivateFlag = params.get("reactivate");
     const reactivateToken = params.get("token");
     const days = params.get("days");
     const attempts = params.get("attempts");
-
     const oauth2faFlag = params.get("oauth2fa");
-    const oauthTempToken = params.get("tempToken");
+    const errorParam = params.get("error");
 
-    if (oauth2faFlag === "1" && oauthTempToken) {
-      setOauth2faToken(oauthTempToken);
-      setTwoFaStep(true);
+    console.log("🔍 Login page loaded with params:", {
+      reactivate: reactivateFlag,
+      oauth2fa: oauth2faFlag,
+      error: errorParam,
+      hasToken: !!reactivateToken,
+    });
+
+    // Clean URL using window.history (doesn't trigger React Router re-render)
+    const cleanUrl = () => {
       window.history.replaceState({}, document.title, "/login");
+    };
+
+    // Handle OAuth 2FA (token is in the httpOnly cookie; URL carries only the flag)
+    if (oauth2faFlag === "1") {
+      console.log("🔐 OAuth 2FA flow detected");
+      setIsOAuth2FA(true);
+      setTwoFaStep(true);
+      cleanUrl();
+      return;
     }
 
+    // Handle Reactivation
     if (reactivateFlag === "1" && reactivateToken) {
+      console.log("✅ Reactivation params detected!");
+      console.log("📊 Reactivation data:", {
+        days,
+        attempts,
+        token: reactivateToken.substring(0, 30) + "...",
+      });
+
       setReactivateData({
         daysRemaining: parseInt(days, 10) || 15,
         attemptsRemaining:
           attempts !== null ? parseInt(attempts, 10) : undefined,
         reactivationToken: reactivateToken,
       });
-      window.history.replaceState({}, document.title, "/login");
+
+      cleanUrl();
+      return;
     }
 
-    const errorParam = params.get("error");
+    // Handle error params
     if (errorParam === "account_permanently_deleted") {
       setError(
         "Your account has been permanently deleted. Please create a new account."
       );
       toast.error("Account permanently deleted", "Error", 5000);
-      window.history.replaceState({}, document.title, "/login");
     } else if (errorParam === "too_many_attempts") {
       setError("Too many reactivation attempts. This email is now blocked.");
       toast.error("Too many reactivation attempts", "Blocked", 5000);
-      window.history.replaceState({}, document.title, "/login");
     } else if (errorParam === "email_blocked") {
       setError("This email is temporarily blocked. Please try again later.");
       toast.error("Email temporarily blocked", "Error", 5000);
-      window.history.replaceState({}, document.title, "/login");
+    } else if (errorParam === "google_failed") {
+      setError("Google sign-in failed. Please try again.");
+      toast.error("Google sign-in failed", "Error", 5000);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ✅ Focus trap + Escape key for reactivation modal
+    if (errorParam) {
+      cleanUrl();
+    }
+  }, []); // ✅ EMPTY dependency array - runs only once on mount
+
+  // ✅ Focus trap for reactivation modal
   useEffect(() => {
     if (!reactivateData) return;
+
+    console.log("🔔 Showing reactivation modal:", reactivateData);
 
     const previousFocus = document.activeElement;
     setTimeout(() => activateBtnRef.current?.focus(), 100);
@@ -130,15 +163,13 @@ function Login() {
     };
   }, [reactivateData]);
 
-  // ✅ Auto-focus TOTP input when 2FA step appears
   useEffect(() => {
     if (twoFaStep) {
       setTimeout(() => totpInputRef.current?.focus(), 100);
     }
   }, [twoFaStep]);
 
-  // Redirect if already authenticated
-  if (!authLoading && isAuthenticated) {
+  if (!authLoading && isAuthenticated && !reactivateData) {
     return <Navigate to="/discover" replace />;
   }
 
@@ -217,7 +248,6 @@ function Login() {
     setLoading(true);
 
     try {
-      // ✅ Read honeypot directly from DOM (HoneypotField manages its own internal state)
       const honeypotValue =
         document.querySelector('input[name="website"]')?.value || "";
 
@@ -246,7 +276,6 @@ function Login() {
       const errorData = err.response?.data || err.data || null;
       const statusCode = err.response?.status || err.status;
 
-      // Signature errors (tampering detection)
       if (errorData?.signatureExpired || errorData?.signatureInvalid) {
         toast.warning(
           "Request expired or invalid. Please refresh and try again.",
@@ -258,7 +287,6 @@ function Login() {
         return;
       }
 
-      // IP block
       if (errorData?.ipBlocked) {
         setError(errorData.message);
         toast.error(errorData.message, "🚫 Access Denied", 8000);
@@ -267,15 +295,15 @@ function Login() {
         return;
       }
 
-      // 2FA required
-      if (errorData?.requires2FA && errorData?.tempToken) {
-        setTempToken(errorData.tempToken);
+      if (errorData?.requires2FA) {
+        // ✅ pending token is in the httpOnly cookie the server just set; we only
+        // flip to the 2FA step. No tempToken read from the body.
+        setIsOAuth2FA(false);
         setTwoFaStep(true);
         setLoading(false);
         return;
       }
 
-      // Bot detected
       if (errorData?.botDetected) {
         setError("Security verification failed. Please refresh and try again.");
         toast.error("Bot detection triggered", "Security", 5000);
@@ -284,7 +312,6 @@ function Login() {
         return;
       }
 
-      // Deactivated account — show reactivation modal
       if (
         (statusCode === 403 || errorData?.deactivated === true) &&
         errorData?.canReactivate === true
@@ -300,7 +327,6 @@ function Login() {
         return;
       }
 
-      // Permanently deleted
       if (statusCode === 410 || errorData?.deleted === true) {
         setError(
           "Your account has been permanently deleted. Please create a new account."
@@ -314,7 +340,6 @@ function Login() {
         return;
       }
 
-      // Blocked email
       if (errorData?.blocked === true) {
         setError(errorData.message);
         toast.error(errorData.message, "Account Blocked", 5000);
@@ -322,7 +347,6 @@ function Login() {
         return;
       }
 
-      // OAuth users
       if (errorData?.useGoogle === true) {
         setError(errorData.message);
         toast.info(errorData.message, "Info", 5000);
@@ -345,12 +369,10 @@ function Login() {
     setError("");
 
     try {
-      const isOAuthFlow = Boolean(oauth2faToken);
-      const endpoint = isOAuthFlow ? "/auth/oauth/2fa" : "/auth/login/2fa";
-      const tokenToSend = isOAuthFlow ? oauth2faToken : tempToken;
-
+      const endpoint = isOAuth2FA ? "/auth/oauth/2fa" : "/auth/login/2fa";
+      // ✅ only the code travels in the body; the pending token rides in the httpOnly
+      // cookie (withCredentials:true), so it is never in the URL, history, or JS state.
       const { data } = await api.post(endpoint, {
-        tempToken: tokenToSend,
         totpCode: totpCode.replace(/[-\s]/g, ""),
       });
 
@@ -379,6 +401,7 @@ function Login() {
         return;
       }
 
+      // 429 = lockout: surface the server message (with retryAfter) and stop.
       setError(data.message || "Invalid code");
       setTotpCode("");
     } finally {
@@ -386,11 +409,8 @@ function Login() {
     }
   };
 
-  // ═══════════════════════════════════════════
-  // 2FA STEP VIEW
-  // ═══════════════════════════════════════════
   if (twoFaStep) {
-    const isOAuthFlow = Boolean(oauth2faToken);
+    const isOAuthFlow = isOAuth2FA;
     return (
       <>
         <SEO
@@ -474,8 +494,7 @@ function Login() {
                       onClick={() => {
                         setTwoFaStep(false);
                         setTotpCode("");
-                        setOauth2faToken("");
-                        setTempToken("");
+                        setIsOAuth2FA(false);
                         setError("");
                       }}
                     >
@@ -491,9 +510,6 @@ function Login() {
     );
   }
 
-  // ═══════════════════════════════════════════
-  // MAIN LOGIN VIEW
-  // ═══════════════════════════════════════════
   return (
     <>
       <SEO
@@ -594,7 +610,6 @@ function Login() {
                         </button>
                       </div>
 
-                      {/* Strength meter with ARIA */}
                       {password && (
                         <div
                           className="mt-2"
@@ -629,7 +644,6 @@ function Login() {
                       )}
                     </div>
 
-                    {/* Turnstile Widget */}
                     {turnstileEnabled && (
                       <div className="mb-3 d-flex justify-content-center">
                         <div ref={turnstileRef}></div>
@@ -725,9 +739,6 @@ function Login() {
         </div>
       </main>
 
-      {/* ═══════════════════════════════════════════
-          REACTIVATION MODAL (Accessible)
-          ═══════════════════════════════════════════ */}
       {reactivateData && (
         <div
           className="reactivation-overlay"
@@ -748,7 +759,6 @@ function Login() {
             aria-describedby="reactivate-desc"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
             <div className="reactivation-header">
               <div className="reactivation-icon-circle">
                 <i className="bi bi-hourglass-split" aria-hidden="true"></i>
@@ -761,7 +771,6 @@ function Login() {
               </p>
             </div>
 
-            {/* Body */}
             <div className="reactivation-body">
               <div className="reactivation-countdown-card">
                 <div className="reactivation-countdown-icon">
@@ -832,7 +841,6 @@ function Login() {
               </div>
             </div>
 
-            {/* Footer */}
             <div className="reactivation-footer">
               <button
                 ref={activateBtnRef}

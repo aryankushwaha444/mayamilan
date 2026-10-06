@@ -1,19 +1,72 @@
-import api from "../utils/api"; // ✅ FIXED: correct import path
+import api from "../utils/api";
 
 /* =================================================================
    PART 1: IN-APP ALERTS (sound + vibration + system notification)
    ================================================================= */
 
 let audioCtx = null;
+let userHasInteracted = false;
+let interactionListenerAttached = false; // ✅ Track listener state
+
+// ✅ Track user interaction to satisfy browser autoplay policies
+if (typeof document !== "undefined" && !interactionListenerAttached) {
+  const handleInteraction = () => {
+    userHasInteracted = true;
+
+    // If an AudioContext was somehow created, resume it
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+
+    // Remove listeners once we know the user has interacted
+    document.removeEventListener("click", handleInteraction);
+    document.removeEventListener("touchstart", handleInteraction);
+    document.removeEventListener("keydown", handleInteraction);
+    interactionListenerAttached = false;
+  };
+
+  document.addEventListener("click", handleInteraction, { once: true });
+  document.addEventListener("touchstart", handleInteraction, { once: true });
+  document.addEventListener("keydown", handleInteraction, { once: true });
+
+  interactionListenerAttached = true;
+}
+
+// ✅ Track user interaction to satisfy browser autoplay policies
+if (typeof document !== "undefined") {
+  const handleInteraction = () => {
+    userHasInteracted = true;
+
+    // If an AudioContext was somehow created, resume it
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+
+    // Remove listeners once we know the user has interacted
+    document.removeEventListener("click", handleInteraction);
+    document.removeEventListener("touchstart", handleInteraction);
+    document.removeEventListener("keydown", handleInteraction);
+  };
+
+  document.addEventListener("click", handleInteraction);
+  document.addEventListener("touchstart", handleInteraction);
+  document.addEventListener("keydown", handleInteraction);
+}
 
 /**
- * Get or create the shared AudioContext (Safari needs webkit prefix)
- * @returns {AudioContext|null}
+ * Get or create the shared AudioContext.
+ * ✅ CRITICAL FIX: Returns null if user hasn't interacted yet.
+ * Instantiating `new AudioContext()` before a user gesture triggers the Chrome warning.
  */
 const getAudioContext = () => {
   if (typeof window === "undefined") return null;
+
+  // 🛑 STOP: Do not create AudioContext until user interacts with the page
+  if (!userHasInteracted) return null;
+
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return null;
+
   if (!audioCtx) {
     try {
       audioCtx = new Ctx();
@@ -25,10 +78,10 @@ const getAudioContext = () => {
 };
 
 /**
- * ⚠️ MUST be called synchronously inside a user gesture (click/tap).
- * Unlocks WebAudio on Safari/Brave which start contexts suspended.
+ * Manual unlock (can be attached to a specific button click if needed)
  */
 export const unlockAudio = () => {
+  userHasInteracted = true;
   const ctx = getAudioContext();
   if (!ctx) return;
 
@@ -36,7 +89,6 @@ export const unlockAudio = () => {
     ctx.resume().catch(() => {});
   }
 
-  // Play silent buffer to fully unlock on Safari
   try {
     const buffer = ctx.createBuffer(1, 1, 22050);
     const source = ctx.createBufferSource();
@@ -48,9 +100,11 @@ export const unlockAudio = () => {
 
 /**
  * Play a pleasant two-tone notification sound via WebAudio API.
- * Falls back to HTML Audio element if WebAudio is unavailable.
  */
 export const playNotificationSound = async () => {
+  // 🛑 STOP: Don't play anything if user hasn't interacted yet.
+  if (!userHasInteracted) return;
+
   const ctx = getAudioContext();
   if (!ctx) {
     playFallbackSound();
@@ -60,7 +114,9 @@ export const playNotificationSound = async () => {
   if (ctx.state === "suspended") {
     try {
       await ctx.resume();
-    } catch {}
+    } catch {
+      return;
+    }
   }
 
   try {
@@ -87,14 +143,14 @@ export const playNotificationSound = async () => {
   }
 };
 
-// ✅ Valid short beep as WAV base64 (440Hz, 100ms, 8-bit mono)
 const FALLBACK_BEEP_BASE64 =
   "data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YRAAAACAgICAgICAgICAgICAgICA";
 
 let fallbackAudio = null;
 
-/** Fallback sound using HTML Audio element (works where WebAudio is blocked) */
 const playFallbackSound = () => {
+  if (!userHasInteracted) return;
+
   try {
     if (!fallbackAudio) {
       fallbackAudio = new Audio(FALLBACK_BEEP_BASE64);
@@ -107,7 +163,6 @@ const playFallbackSound = () => {
 
 /**
  * Trigger device vibration pattern
- * @param {number[]} [pattern=[120, 60, 120]] - Vibration pattern in ms
  */
 export const vibrate = (pattern = [120, 60, 120]) => {
   navigator.vibrate?.(pattern);
@@ -115,7 +170,6 @@ export const vibrate = (pattern = [120, 60, 120]) => {
 
 /**
  * Request browser notification permission
- * @returns {Promise<"granted"|"denied"|"default"|"unsupported">}
  */
 export const requestNotificationPermission = async () => {
   if (!("Notification" in window)) return "unsupported";
@@ -124,12 +178,7 @@ export const requestNotificationPermission = async () => {
 };
 
 /**
- * Show a system notification. Falls back to Service Worker on Android Chrome.
- * @param {Object} options
- * @param {string} options.title
- * @param {string} options.body
- * @param {string} [options.tag] - Deduplication tag
- * @param {string} [options.url="/"] - URL to navigate to on click
+ * Show a system notification.
  */
 export const showSystemNotification = ({ title, body, tag, url = "/" }) => {
   if (!("Notification" in window) || Notification.permission !== "granted") {
@@ -148,7 +197,6 @@ export const showSystemNotification = ({ title, body, tag, url = "/" }) => {
     const n = new Notification(title, options);
     n.onclick = () => {
       window.focus();
-      // ✅ Use history API instead of full page reload to preserve React state
       try {
         window.history.pushState({}, "", url);
         window.dispatchEvent(new PopStateEvent("popstate"));
@@ -158,7 +206,6 @@ export const showSystemNotification = ({ title, body, tag, url = "/" }) => {
       n.close();
     };
   } catch {
-    // Android Chrome prefers SW-based notifications
     navigator.serviceWorker?.ready?.then((reg) =>
       reg.showNotification(title, options)
     );
@@ -169,22 +216,12 @@ export const showSystemNotification = ({ title, body, tag, url = "/" }) => {
    PART 2: WEB PUSH SUBSCRIPTION (works when browser is closed)
    ================================================================= */
 
-/**
- * Convert URL-safe base64 VAPID key to Uint8Array
- * @param {string} base64String
- * @returns {Uint8Array}
- */
 const urlBase64ToUint8Array = (base64String) => {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
   return Uint8Array.from([...atob(base64)].map((c) => c.charCodeAt(0)));
 };
 
-/**
- * Subscribe to Web Push notifications.
- * Requests permission, creates subscription, and registers with backend.
- * @returns {Promise<boolean>} true if successfully subscribed
- */
 export const subscribeToPush = async () => {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     return false;
@@ -217,10 +254,6 @@ export const subscribeToPush = async () => {
   }
 };
 
-/**
- * Unsubscribe from Web Push notifications.
- * Notifies backend first, then removes local subscription.
- */
 export const unsubscribeFromPush = async () => {
   try {
     const reg = await navigator.serviceWorker?.ready;

@@ -389,7 +389,14 @@ function Profile() {
               {photoCount > 0 ? (
                 <div className="row g-3">
                   {profile.photos.map((photo, index) => (
-                    <div className="col-6 col-md-4" key={photo._id}>
+                    // ✅ FIX: photoSchema has {_id:false}, so photo._id is undefined.
+                    // The server contract (delete / set-primary / reorder) is keyed on
+                    // publicId. Use it for the React key too (fallback to index so a
+                    // legacy null-publicId row can never produce duplicate keys).
+                    <div
+                      className="col-6 col-md-4"
+                      key={photo.publicId || `idx-${index}`}
+                    >
                       <div className="profile-photo-card position-relative">
                         <img
                           src={cardImg(photo.url)}
@@ -422,7 +429,9 @@ function Profile() {
                             <button
                               type="button"
                               className="btn btn-light btn-sm me-1"
-                              onClick={() => handleSetPrimary(photo._id)}
+                              // ✅ FIX: pass publicId (the server's key), not the
+                              // non-existent photo._id.
+                              onClick={() => handleSetPrimary(photo.publicId)}
                               aria-label={`Set photo ${index + 1} as primary`}
                               disabled={deletingPhoto}
                             >
@@ -432,7 +441,8 @@ function Profile() {
                           <button
                             type="button"
                             className="btn btn-danger btn-sm"
-                            onClick={() => setPhotoToDelete(photo._id)}
+                            // ✅ FIX: stash publicId for the confirm dialog, not _id.
+                            onClick={() => setPhotoToDelete(photo.publicId)}
                             aria-label={`Delete photo ${index + 1}`}
                             disabled={deletingPhoto}
                           >

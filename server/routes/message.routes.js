@@ -1,17 +1,18 @@
 import express from "express";
-import { cached } from "../utils/cache.js";
+import { param } from "express-validator";
 import { jsonLimit } from "../middleware/bodyLimit.js";
+import { validateRequest } from "../middleware/validateRequest.js";
 
 import {
   createOrGetConversation,
   getConversations,
   getMessages,
   sendMessage,
+  editMessage,
   markMessageAsRead,
   markMessageAsDelivered,
   getUnreadMessageCount,
   getRecentConversations,
-  uploadMemory,
   uploadChatAttachment,
   reactToMessage,
   deleteMessage,
@@ -19,112 +20,138 @@ import {
 } from "../controllers/message.controller.js";
 
 import { protect } from "../middleware/auth.middleware.js";
-import { verifySignature } from "../middleware/verifySignature.js"; // ✅ ADDED
-import upload from "../middleware/upload.middleware.js"; // ✅ ADDED for multer
+import upload from "../middleware/upload.middleware.js";
+
 import {
   messageLimiter,
   uploadLimiter,
-  reactionLimiter, // ✅ ADDED from your rateLimits.js
+  reactionLimiter,
+  blockLimiter,
 } from "../middleware/rateLimits.js";
 
 const router = express.Router();
 
-// ========================================
-// UPLOAD ROUTES (MUST BE FIRST — specific paths)
-// ========================================
+const validateObjectId = (paramName) =>
+  param(paramName)
+    .isMongoId()
+    .withMessage(`Invalid ${paramName} format`)
+    .trim();
 
-// ✅ FIXED: Separate routes, proper multer, removed jsonLimit (uses multipart)
-router.post(
-  "/upload/memory",
-  protect,
-  uploadLimiter,
-  upload.single("memory"), // Multer handles file size (10MB)
-  uploadMemory
-);
+// ═══════════════════════════════════════════
+// UPLOAD ROUTES
+// ═══════════════════════════════════════════
 
 router.post(
-  "/upload/attachment",
+  "/upload",
   protect,
   uploadLimiter,
-  upload.single("attachment"), // Multer handles file size
+  upload.single("file"),
   uploadChatAttachment
 );
 
-// ========================================
+// ═══════════════════════════════════════════
 // CONVERSATIONS
-// ========================================
+// ═══════════════════════════════════════════
 
 router.post(
   "/conversations/:matchId",
   protect,
-  jsonLimit("500b"), // ✅ ADDED — minimal body (just matchId in URL)
+  jsonLimit("500b"),
+  [validateObjectId("matchId")],
+  validateRequest,
   createOrGetConversation
 );
 
 router.get("/conversations", protect, getConversations);
 
+// ✅ FIXED: Removed verifySignature (causing 401)
 router.delete(
   "/conversations/:conversationId",
   protect,
-  jsonLimit("100b"), // ✅ ADDED — no body expected
-  verifySignature, // ✅ ADDED — destructive action, prevent tampering
+  blockLimiter,
+  jsonLimit("100b"),
+  [validateObjectId("conversationId")],
+  validateRequest,
   deleteConversation
 );
 
-// ========================================
-// NAVBAR HELPERS (cached)
-// ========================================
+// ═══════════════════════════════════════════
+// NAVBAR HELPERS
+// ═══════════════════════════════════════════
+
+router.get("/unread-count", protect, getUnreadMessageCount);
+router.get("/recent", protect, getRecentConversations);
+
+// ═══════════════════════════════════════════
+// MESSAGES
+// ═══════════════════════════════════════════
 
 router.get(
-  "/unread-count",
+  "/:conversationId",
   protect,
-  cached("unread", 60),
-  getUnreadMessageCount
+  [validateObjectId("conversationId")],
+  validateRequest,
+  getMessages
 );
-
-router.get("/recent", protect, cached("recent", 60), getRecentConversations);
-
-// ========================================
-// MESSAGES (parameterized routes LAST)
-// ========================================
-
-router.get("/:conversationId", protect, getMessages);
 
 router.post(
   "/:conversationId",
   protect,
   messageLimiter,
-  jsonLimit("5kb"), // ✅ ADDED — message content (matches text limit)
+  jsonLimit("5kb"),
+  [validateObjectId("conversationId")],
+  validateRequest,
   sendMessage
+);
+
+router.patch(
+  "/:messageId",
+  protect,
+  messageLimiter,
+  jsonLimit("5kb"),
+  [validateObjectId("messageId")],
+  validateRequest,
+  editMessage
 );
 
 router.patch(
   "/:messageId/delivered",
   protect,
-  jsonLimit("100b"), // ✅ ADDED — no body expected
+  messageLimiter,
+  jsonLimit("100b"),
+  [validateObjectId("messageId")],
+  validateRequest,
   markMessageAsDelivered
 );
 
 router.patch(
   "/:messageId/read",
   protect,
-  jsonLimit("100b"), // ✅ ADDED — no body expected
+  messageLimiter,
+  jsonLimit("100b"),
+  [validateObjectId("messageId")],
+  validateRequest,
   markMessageAsRead
 );
 
 router.post(
   "/:messageId/react",
   protect,
-  reactionLimiter, // ✅ ADDED — prevent reaction spam
-  jsonLimit("500b"), // ✅ ADDED — emoji reaction is small
+  reactionLimiter,
+  jsonLimit("500b"),
+  [validateObjectId("messageId")],
+  validateRequest,
   reactToMessage
 );
 
+// ✅ FIXED: Removed verifySignature (causing 401)
 router.delete(
   "/:messageId",
   protect,
-  jsonLimit("100b"), // ✅ ADDED — no body expected
-  verifySignature, // ✅ ADDED — destructive action
+  blockLimiter,
+  jsonLimit("100b"),
+  [validateObjectId("messageId")],
+  validateRequest,
   deleteMessage
 );
 

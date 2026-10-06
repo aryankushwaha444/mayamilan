@@ -3,16 +3,8 @@ import { HelmetProvider } from "react-helmet-async";
 
 import "bootstrap/dist/css/bootstrap.min.css";
 import "bootstrap-icons/font/bootstrap-icons.css";
+import './styles/main.css';
 
-import "./styles/global.css";
-import "./styles/navbar.css";
-import "./styles/chat.css";
-import "./styles/footer.css";
-import "./styles/admin.css";
-import "./styles/content.css";
-import "./styles/feed.css";
-import "./styles/alert.css";
-import "./styles/loader.css";
 
 import App from "./App.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";

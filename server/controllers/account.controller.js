@@ -12,41 +12,65 @@ import { logAudit } from "../utils/auditLogger.js";
 import { getIO } from "../sockets/socket.js";
 import argon2 from "argon2";
 import { createWriteStream } from "fs";
+import { unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import * as archiver from "archiver";
-// ========================================
-// HELPERS
-// ========================================
+import { verifyTotp, decryptSecret } from "../utils/totp.js";
+import { createRequire } from "module";
 
-/**
- * Verify user identity (password or 2FA for OAuth users)
- */
+const require = createRequire(import.meta.url);
+const archiver = require("archiver");
+
+const NODE_ENV = process.env.NODE_ENV || "development";
+const GRACE_PERIOD_DAYS = 15;
+const MAX_EXPORT_SIZE_MB = 5;
+const ARCHIVE_TIMEOUT_MS = 60000;
+const MAX_REACTIVATION_ATTEMPTS = 3; // ✅ ADDED
+
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
+
 const verifyIdentity = async (user, req) => {
   const { password, totpCode } = req.body;
 
-  // OAuth users: require 2FA if enabled, otherwise skip
   if (user.oauthProvider && user.oauthProvider !== "local") {
     if (user.twoFactorEnabled) {
-      // TODO: Integrate with your TOTP verification
-      // For now, require password re-entry via Google re-auth
-      // In production: redirect to Google re-auth flow
       if (!totpCode) {
         return {
           valid: false,
-          message: "Two-factor authentication required for account deletion",
+          message: "Two-factor authentication required",
           code: "2FA_REQUIRED",
         };
       }
-      // Verify TOTP code here
-      // const isValid = await verifyTotp(totpCode, decryptSecret(user.twoFactorSecret));
-      // if (!isValid) return { valid: false, message: "Invalid 2FA code" };
+
+      let secret = user.twoFactorSecret;
+      if (!secret) {
+        const userWithSecret = await User.findById(user._id)
+          .select("+twoFactorSecret")
+          .lean();
+        secret = userWithSecret?.twoFactorSecret;
+      }
+
+      if (!secret)
+        return {
+          valid: false,
+          message: "2FA configuration error",
+          code: "2FA_ERROR",
+        };
+
+      const isValid = verifyTotp(totpCode, decryptSecret(secret));
+      if (!isValid)
+        return {
+          valid: false,
+          message: "Invalid 2FA code",
+          code: "INVALID_2FA",
+        };
     }
     return { valid: true };
   }
 
-  // Local users: require password
   if (!password) {
     return {
       valid: false,
@@ -55,31 +79,76 @@ const verifyIdentity = async (user, req) => {
     };
   }
 
-  const isValid = await argon2.verify(user.password, password);
-  if (!isValid) {
-    return { valid: false, message: "Incorrect password" };
+  try {
+    const isValid = await argon2.verify(user.password, password);
+    if (!isValid)
+      return {
+        valid: false,
+        message: "Incorrect password",
+        code: "INVALID_PASSWORD",
+      };
+    return { valid: true };
+  } catch (error) {
+    if (NODE_ENV === "development")
+      console.error("Password verification error:", error.name);
+    return {
+      valid: false,
+      message: "Password verification failed",
+      code: "VERIFICATION_ERROR",
+    };
   }
-
-  return { valid: true };
 };
 
-// ========================================
-// SOFT DELETE ACCOUNT (15-day grace period)
-// ========================================
+const cleanupTempFile = async (filePath) => {
+  try {
+    await unlink(filePath);
+  } catch {}
+};
+
+const createArchive = (data, filePath) => {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Archive creation timed out")),
+      ARCHIVE_TIMEOUT_MS
+    );
+    const output = createWriteStream(filePath);
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    output.on("close", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    archive.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    output.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+
+    archive.pipe(output);
+    archive.append(JSON.stringify(data, null, 2), { name: "my-data.json" });
+    archive.finalize();
+  });
+};
+
+// ═══════════════════════════════════════════
+// SOFT DELETE ACCOUNT
+// ═══════════════════════════════════════════
 
 export const deleteAccount = async (req, res) => {
+  const userId = req.user._id;
+
   try {
-    const userId = req.user._id;
+    const user = await User.findById(userId).select(
+      "+password +twoFactorSecret"
+    );
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
 
-    const user = await User.findById(userId).select("+password");
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    // ✅ PREVENT: Double deletion
     if (user.deletedAt) {
       const daysLeft = Math.ceil(
         (user.scheduledDeletionAt - new Date()) / (1000 * 60 * 60 * 24)
@@ -91,12 +160,11 @@ export const deleteAccount = async (req, res) => {
       });
     }
 
-    // ✅ VERIFY: Identity (password for local, 2FA for OAuth)
     const verification = await verifyIdentity(user, req);
     if (!verification.valid) {
       await logAudit(req, "account_deletion_failed", {
         userId,
-        reason: verification.code || "identity_verification_failed",
+        reason: verification.code,
       });
       return res.status(401).json({
         success: false,
@@ -107,10 +175,9 @@ export const deleteAccount = async (req, res) => {
 
     const now = new Date();
     const scheduledDeletion = new Date(
-      now.getTime() + 15 * 24 * 60 * 60 * 1000
+      now.getTime() + GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000
     );
 
-    // ✅ Update user state
     user.isActive = false;
     user.deletedAt = now;
     user.scheduledDeletionAt = scheduledDeletion;
@@ -118,45 +185,55 @@ export const deleteAccount = async (req, res) => {
     user.lastSeen = now;
     await user.save();
 
-    // ✅ Revoke all sessions
     await RefreshToken.updateMany(
       { user: userId, revokedAt: null },
       { revokedAt: now }
     );
 
+    await Promise.all([
+      Match.updateMany(
+        { users: userId, isActive: true },
+        { $set: { isActive: false, unmatchedAt: now, unmatchedBy: userId } }
+      ),
+      Conversation.updateMany(
+        { participants: userId, isActive: true },
+        { $set: { isActive: false } }
+      ),
+    ]);
+
     res.clearCookie("refreshToken", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      secure: NODE_ENV === "production",
+      sameSite: NODE_ENV === "production" ? "none" : "lax",
       path: "/",
     });
 
-    // ✅ Notify via socket
     try {
       const io = getIO();
-      if (io) {
+      if (io)
         io.to(`user:${userId.toString()}`).emit("account_deactivated", {
           scheduledDeletionAt: scheduledDeletion,
         });
-      }
-    } catch (err) {
-      console.warn("Socket notification failed:", err.message);
-    }
+    } catch {}
 
     await logAudit(req, "account_soft_deleted", {
       userId,
       email: user.email,
       scheduledDeletionAt: scheduledDeletion,
-      oauthProvider: user.oauthProvider,
     });
 
     res.status(200).json({
       success: true,
-      message: `Your account has been deactivated. It will be permanently deleted on ${scheduledDeletion.toLocaleDateString()}. You can reactivate by logging in within 15 days.`,
+      message: `Your account has been deactivated. It will be permanently deleted on ${scheduledDeletion.toLocaleDateString()}. You can reactivate by logging in within ${GRACE_PERIOD_DAYS} days.`,
       scheduledDeletionAt: scheduledDeletion,
     });
   } catch (error) {
-    console.error("Account deletion error:", error);
+    if (NODE_ENV === "development")
+      console.error("Account deletion error:", error.name);
+    await logAudit(req, "account_deletion_error", {
+      userId,
+      error: error.name,
+    });
     res.status(500).json({
       success: false,
       message: "Failed to deactivate account. Please try again.",
@@ -164,28 +241,28 @@ export const deleteAccount = async (req, res) => {
   }
 };
 
-// ========================================
-// EXPORT USER DATA (GDPR Article 20)
-// ========================================
+// ═══════════════════════════════════════════
+// EXPORT USER DATA
+// ═══════════════════════════════════════════
 
 export const exportUserData = async (req, res) => {
-  try {
-    const userId = req.user._id;
+  const userId = req.user._id;
+  let tempFilePath = null;
 
-    // ✅ VERIFY: Identity before exporting sensitive data
-    const user = await User.findById(userId).select("+password");
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
+  try {
+    const user = await User.findById(userId).select(
+      "+password +twoFactorSecret"
+    );
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
 
     const verification = await verifyIdentity(user, req);
     if (!verification.valid) {
       await logAudit(req, "data_export_failed", {
         userId,
-        reason: verification.code || "identity_verification_failed",
+        reason: verification.code,
       });
       return res.status(401).json({
         success: false,
@@ -194,7 +271,6 @@ export const exportUserData = async (req, res) => {
       });
     }
 
-    // ✅ Fetch ALL user data (previously missing: likes, reports, notifications, conversations)
     const [
       userData,
       posts,
@@ -207,16 +283,16 @@ export const exportUserData = async (req, res) => {
       conversations,
       notifications,
     ] = await Promise.all([
-      User.findById(userId).select("-password -refreshToken").lean(),
-      Post.find({ author: userId }).lean(),
-      Comment.find({ author: userId }).lean(),
-      Message.find({ sender: userId })
-        .populate("receiver", "name email")
+      User.findById(userId)
+        .select(
+          "-password -refreshToken -twoFactorSecret -twoFactorBackupCodes"
+        )
         .lean(),
-      Message.find({ receiver: userId })
-        .populate("sender", "name email")
-        .lean(),
-      Match.find({ users: userId }).populate("users", "name email").lean(),
+      Post.find({ author: userId, isDeleted: false }).lean(),
+      Comment.find({ author: userId, isDeleted: false }).lean(),
+      Message.find({ sender: userId }).populate("receiver", "name").lean(),
+      Message.find({ receiver: userId }).populate("sender", "name").lean(),
+      Match.find({ users: userId }).populate("users", "name").lean(),
       Like.find({ from: userId }).populate("to", "name").lean(),
       Report.find({ reporter: userId }).populate("reportedUser", "name").lean(),
       Conversation.find({ participants: userId }).lean(),
@@ -257,7 +333,7 @@ export const exportUserData = async (req, res) => {
         content: p.content,
         images: p.images?.map((img) => img.url) || [],
         createdAt: p.createdAt,
-        likesCount: p.likes?.length || 0,
+        likesCount: p.likesCount || 0,
         commentsCount: p.commentsCount || 0,
       })),
       comments: comments.map((c) => ({
@@ -288,7 +364,7 @@ export const exportUserData = async (req, res) => {
         id: m._id,
         matchedWith: m.users
           .filter((u) => u._id.toString() !== userId.toString())
-          .map((u) => ({ name: u.name, email: u.email })),
+          .map((u) => ({ name: u.name })),
         matchedAt: m.matchedAt,
       })),
       likes: likes.map((l) => ({
@@ -313,7 +389,7 @@ export const exportUserData = async (req, res) => {
         id: n._id,
         type: n.type,
         message: n.message,
-        read: n.read,
+        isRead: n.isRead,
         createdAt: n.createdAt,
       })),
     };
@@ -322,48 +398,112 @@ export const exportUserData = async (req, res) => {
       userId,
       postsCount: posts.length,
       messagesCount: sentMessages.length + receivedMessages.length,
-      matchesCount: matches.length,
-      likesCount: likes.length,
     });
 
-    // ✅ For small datasets: return JSON directly
     const dataSize = JSON.stringify(exportData).length;
-    if (dataSize < 5 * 1024 * 1024) {
-      // Less than 5MB
-      return res.status(200).json({
-        success: true,
-        data: exportData,
+    if (dataSize < MAX_EXPORT_SIZE_MB * 1024 * 1024) {
+      return res.status(200).json({ success: true, data: exportData });
+    }
+
+    const exportId = randomUUID();
+    const fileName = `maya-milan-export-${exportId}.zip`;
+    tempFilePath = join(tmpdir(), fileName);
+
+    await createArchive(exportData, tempFilePath);
+
+    res.download(tempFilePath, fileName, async (err) => {
+      if (err && NODE_ENV === "development")
+        console.error("Download error:", err.name);
+      await cleanupTempFile(tempFilePath);
+    });
+  } catch (error) {
+    if (tempFilePath) await cleanupTempFile(tempFilePath);
+    if (NODE_ENV === "development")
+      console.error("Data export error:", error.name);
+    await logAudit(req, "data_export_error", { userId, error: error.name });
+    res.status(500).json({ success: false, message: "Failed to export data" });
+  }
+};
+
+// ═══════════════════════════════════════════
+// CANCEL PENDING DELETION (✅ FIXED: Added attempt limit check)
+// ═══════════════════════════════════════════
+
+export const cancelDeletion = async (req, res) => {
+  const userId = req.user._id;
+
+  try {
+    const user = await User.findById(userId).select(
+      "+password +twoFactorSecret"
+    );
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+
+    if (!user.deletedAt)
+      return res.status(400).json({
+        success: false,
+        message: "Account is not scheduled for deletion",
+      });
+
+    // ✅ ADDED: Check reactivation attempt limit
+    const currentAttempts = Number(user.reactivationAttempts) || 0;
+    if (currentAttempts >= MAX_REACTIVATION_ATTEMPTS) {
+      await logAudit(req, "account_reactivation_blocked", {
+        userId,
+        email: user.email,
+        reason: "max_attempts_exceeded",
+        attempts: currentAttempts,
+      });
+      return res.status(403).json({
+        success: false,
+        message: `Too many reactivation attempts. Please contact support.`,
+        code: "MAX_ATTEMPTS_EXCEEDED",
       });
     }
 
-    // ✅ For large datasets: generate downloadable ZIP
-    const exportId = randomUUID();
-    const fileName = `maya-milan-export-${exportId}.zip`;
-    const filePath = join(tmpdir(), fileName);
+    const verification = await verifyIdentity(user, req);
+    if (!verification.valid)
+      return res.status(401).json({
+        success: false,
+        message: verification.message,
+        code: verification.code,
+      });
 
-    const output = createWriteStream(filePath);
-    const archive = archiver("zip", { zlib: { level: 9 } });
+    user.isActive = true;
+    user.deletedAt = null;
+    user.scheduledDeletionAt = null;
+    user.reactivationAttempts = currentAttempts + 1;
+    await user.save();
 
-    archive.pipe(output);
-    archive.append(JSON.stringify(exportData, null, 2), {
-      name: "my-data.json",
+    await Promise.all([
+      Match.updateMany(
+        { users: userId, isActive: false, unmatchedBy: userId },
+        { $set: { isActive: true }, $unset: { unmatchedAt: 1, unmatchedBy: 1 } }
+      ),
+      Conversation.updateMany(
+        { participants: userId, isActive: false },
+        { $set: { isActive: true } }
+      ),
+    ]);
+
+    await logAudit(req, "account_deletion_cancelled", {
+      userId,
+      email: user.email,
+      reactivationAttempts: user.reactivationAttempts,
     });
-    await archive.finalize();
 
-    await new Promise((resolve) => output.on("close", resolve));
-
-    res.download(filePath, fileName, (err) => {
-      if (err) console.error("Download error:", err);
-      // Clean up temp file
-      import("fs/promises").then(({ unlink }) =>
-        unlink(filePath).catch(() => {})
-      );
+    res.status(200).json({
+      success: true,
+      message: "Your account has been reactivated. Welcome back!",
     });
   } catch (error) {
-    console.error("Data export error:", error);
+    if (NODE_ENV === "development")
+      console.error("Cancel deletion error:", error.name);
     res.status(500).json({
       success: false,
-      message: "Failed to export data",
+      message: "Failed to cancel deletion. Please try again.",
     });
   }
 };

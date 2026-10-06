@@ -1,13 +1,13 @@
-// server/utils/passwordBreach.js
 import crypto from "crypto";
 
 const HIBP_API_BASE = "https://api.pwnedpasswords.com/range/";
 const REQUEST_TIMEOUT = 5000;
+// Business logic: Allow passwords breached < 10 times (reduces false positives for slight variations)
 const MAX_BREACH_COUNT = 10;
 
 /**
- * Check if password has been breached using HIBP k-Anonymity API
- * Password never leaves server — only first 5 chars of SHA-1 hash sent
+ * Check if password has been breached using HIBP k-Anonymity API.
+ * Password never leaves server — only first 5 chars of SHA-1 hash sent.
  */
 export const checkPasswordBreach = async (password) => {
   try {
@@ -15,6 +15,7 @@ export const checkPasswordBreach = async (password) => {
       return { breached: false, count: 0, error: null };
     }
 
+    // HIBP strictly requires SHA-1
     const hash = crypto
       .createHash("sha1")
       .update(password)
@@ -30,13 +31,13 @@ export const checkPasswordBreach = async (password) => {
     try {
       const response = await fetch(`${HIBP_API_BASE}${prefix}`, {
         headers: {
-          "User-Agent": "MayaMilan-DatingApp",
+          // HIBP requires a descriptive User-Agent
+          "User-Agent": "MayaMilan-DatingApp (Node.js)",
+          // Add-Padding prevents HIBP from guessing the exact password based on response size
           "Add-Padding": "true",
         },
         signal: controller.signal,
       });
-
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         console.warn(`HIBP API error: ${response.status}`);
@@ -49,31 +50,42 @@ export const checkPasswordBreach = async (password) => {
 
       const text = await response.text();
       const lines = text.split("\n");
+
+      // Find the exact suffix match
       const match = lines.find((line) => line.startsWith(suffix));
 
       if (!match) {
         return { breached: false, count: 0, error: null };
       }
 
-      const count = parseInt(match.split(":")[1], 10);
+      // Parse count (parseInt safely handles trailing \r from Windows line endings)
+      const count = parseInt(match.split(":")[1], 10) || 0;
+
       return {
         breached: count > MAX_BREACH_COUNT,
         count,
         error: null,
       };
-    } catch (fetchError) {
+    } finally {
+      // ✅ FIX: Guarantee timer cleanup regardless of success, network error, or parsing error
       clearTimeout(timeoutId);
-      console.warn("HIBP API request failed:", fetchError.message);
-      return { breached: false, count: 0, error: fetchError.message };
     }
   } catch (error) {
-    console.error("Password breach check failed:", error.message);
-    return { breached: false, count: 0, error: error.message };
+    // ✅ FIX: Differentiate timeout from network errors for better logging
+    const isTimeout = error.name === "AbortError";
+    const errorMsg = isTimeout ? "HIBP API request timed out" : error.message;
+
+    console.warn("Password breach check failed:", errorMsg);
+
+    // Fail open: Don't block user registration if HIBP is down
+    return { breached: false, count: 0, error: errorMsg };
   }
 };
 
 export const getBreachMessage = (count) => {
-  if (count === 0 || count < 10) return null;
+  // ✅ FIX: Simplified redundant check
+  if (!count || count < 10) return null;
+
   if (count < 100) {
     return `This password has appeared in ${count} data breaches. Please choose a stronger, unique password.`;
   }

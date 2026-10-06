@@ -1,5 +1,10 @@
-/* CONTENT PAGES (SEO) */
-.content-page { background: #fff; }
+/* ============================================================
+   CONTENT PAGES — blog, articles, stories, SEO pages, CTA
+   ============================================================ */
+
+.content-page {
+  background: #fff;
+}
 
 .content-hero {
   background: linear-gradient(135deg, #fdf2f8 0%, #ede9fe 100%);
@@ -21,8 +26,13 @@
   margin: 0 auto;
 }
 
-.content-section { padding: 56px 0; }
-.content-section-alt { background: #f9fafb; }
+.content-section {
+  padding: 56px 0;
+}
+
+.content-section-alt {
+  background: #f9fafb;
+}
 
 .content-section h2 {
   font-size: 1.6rem;
@@ -75,11 +85,24 @@
   text-align: center;
 }
 
-.content-cta h2 { color: #fff; font-weight: 800; margin-bottom: 12px; }
-.content-cta p { color: rgba(255,255,255,0.9); margin-bottom: 24px; }
-.content-cta .btn-light { background: #fff; color: #db2777; font-weight: 700; }
+.content-cta h2 {
+  color: #fff;
+  font-weight: 800;
+  margin-bottom: 12px;
+}
 
-/* STORIES */
+.content-cta p {
+  color: rgba(255, 255, 255, 0.9);
+  margin-bottom: 24px;
+}
+
+.content-cta .btn-light {
+  background: #fff;
+  color: #db2777;
+  font-weight: 700;
+}
+
+/* ── Success stories ── */
 .stories-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -91,7 +114,7 @@
   border: 1px solid #f1f5f9;
   border-radius: 16px;
   padding: 28px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -104,13 +127,28 @@
   line-height: 1.6;
 }
 
-.story-text { color: #6b7280; line-height: 1.7; flex: 1; }
+.story-text {
+  color: #6b7280;
+  line-height: 1.7;
+  flex: 1;
+}
 
-.story-meta { display: flex; flex-direction: column; gap: 2px; }
-.story-meta strong { color: #1f2937; }
-.story-meta span { color: #9ca3af; font-size: 0.85rem; }
+.story-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 
-/* BLOG */
+.story-meta strong {
+  color: #1f2937;
+}
+
+.story-meta span {
+  color: #9ca3af;
+  font-size: 0.85rem;
+}
+
+/* ── Blog grid & cards ── */
 .blog-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -126,7 +164,7 @@
   text-decoration: none;
   color: inherit;
   transition: all 0.2s;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
 }
 
 .blog-card:hover {
@@ -135,10 +173,25 @@
   border-color: #fbcfe8;
 }
 
-.blog-card h2 { font-size: 1.25rem; font-weight: 700; color: #1f2937; margin: 12px 0 10px; }
-.blog-card p { color: #6b7280; line-height: 1.6; font-size: 0.95rem; }
+.blog-card h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 12px 0 10px;
+}
 
-.blog-card-tags { display: flex; gap: 8px; flex-wrap: wrap; }
+.blog-card p {
+  color: #6b7280;
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.blog-card-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .blog-tag {
   background: #fdf2f8;
   color: #db2777;
@@ -154,10 +207,14 @@
   color: #9ca3af;
   font-size: 0.85rem;
   margin-top: 14px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
-/* ARTICLE */
-.container-narrow { max-width: 760px; }
+/* ── Article page ── */
+.container-narrow {
+  max-width: 760px;
+}
 
 .blog-back {
   color: #db2777;
@@ -167,11 +224,29 @@
   margin-bottom: 20px;
 }
 
-.blog-article h1 { font-size: 2.2rem; font-weight: 800; color: #1f2937; margin-bottom: 12px; }
+.blog-article h1 {
+  font-size: 2.2rem;
+  font-weight: 800;
+  color: #1f2937;
+  margin-bottom: 12px;
+}
 
-.blog-section h2 { font-size: 1.4rem; margin: 32px 0 12px; }
+.blog-section h2 {
+  font-size: 1.4rem;
+  margin: 32px 0 12px;
+}
 
+.blog-toc ol {
+  margin: 0;
+}
+
+/* ── Responsive ── */
 @media (max-width: 768px) {
-  .content-hero { padding: 48px 0 40px; }
-  .content-section { padding: 40px 0; }
+  .content-hero {
+    padding: 48px 0 40px;
+  }
+
+  .content-section {
+    padding: 40px 0;
+  }
 }
