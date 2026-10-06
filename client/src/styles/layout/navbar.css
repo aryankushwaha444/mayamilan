@@ -235,7 +235,7 @@ body {
   animation: dropdownIn 0.18s ease;
 }
 
-.dropdown-header {
+.facebook-style-dropdown .dropdown-header {
   padding: 16px;
   display: flex;
   justify-content: space-between;
@@ -793,6 +793,21 @@ body {
 
   .navbar-auth-buttons {
     gap: 8px;
+  }
+  .facebook-style-dropdown .dropdown-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.2s ease;
+  }
+  .facebook-style-dropdown .dropdown-item:hover {
+    background-color: #fdf2f8;
   }
 
   .navbar-login-button,
