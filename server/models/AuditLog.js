@@ -87,7 +87,7 @@ export const AUDIT_ACTIONS = {
 
   // Messages & Conversations
   MESSAGE_SENT: "message_sent",
-  MESSAGE_EDITED: "message_edited",
+  MESSAGE_EDITED: "message_edged",
   MESSAGE_REACTED: "message_reacted",
   MESSAGE_DELETED: "message_deleted",
   MESSAGE_REJECTED: "message_rejected",
@@ -98,6 +98,18 @@ export const AUDIT_ACTIONS = {
   CONVERSATION_HIDDEN: "conversation_hidden",
   CONVERSATION_BLOCKED_ATTEMPT: "conversation_blocked_attempt",
   ATTACHMENT_UPLOADED: "attachment_uploaded",
+
+  // ✅ Calls (were entirely missing -> every call_* audit insert failed validation)
+  CALL_INVITED: "call_invited",
+  CALL_ACCEPTED: "call_accepted",
+  CALL_REJECTED: "call_rejected",
+  CALL_ENDED: "call_ended",
+  CALL_CONNECTED: "call_connected",
+  CALL_BUSY: "call_busy",
+  CALL_MISSED: "call_missed",
+  CALL_OFFLINE: "call_offline",
+  CALL_BLOCKED_ATTEMPT: "call_blocked_attempt",
+  CALL_ERROR: "call_error",
 
   // Matches
   MATCH_CREATED: "match_created",
@@ -235,6 +247,8 @@ const SEVERITY_BY_ACTION = {
   [AUDIT_ACTIONS.MESSAGE_BLOCKED_ATTEMPT]: "warning",
   [AUDIT_ACTIONS.MESSAGE_UNMATCHED_ATTEMPT]: "warning",
   [AUDIT_ACTIONS.CONVERSATION_BLOCKED_ATTEMPT]: "warning",
+  // ✅ call abuse / denied‑reach signal — parallel to message/conversation blocked
+  [AUDIT_ACTIONS.CALL_BLOCKED_ATTEMPT]: "warning",
   [AUDIT_ACTIONS.ACCOUNT_DELETION_FAILED]: "warning",
   [AUDIT_ACTIONS.OTP_REQUEST_BLOCKED]: "warning",
   [AUDIT_ACTIONS.OTP_RATE_LIMITED]: "warning",

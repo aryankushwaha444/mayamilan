@@ -17,19 +17,62 @@ import SEO from "../components/SEO";
 import { avatarImg } from "../utils/cloudinary";
 import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback";
 
-// ✅ call-preview helpers (defensive: conversation.lastMessage is raw API data)
-const SIDEBAR_CALL_TYPES = new Set([
+// ✅ call detection tolerant of flat + nested shapes (mirrors ChatWindow).
+const SB_CALL_TYPES = new Set([
   "call",
   "audio_call",
   "video_call",
   "voice_call",
 ]);
-const SIDEBAR_CONNECTED = new Set([
-  "ended",
-  "completed",
-  "answered",
-  "connected",
-]);
+const SB_CONNECTED = new Set(["ended", "completed", "answered", "connected"]);
+const sbNested = (lm) =>
+  (lm.call && typeof lm.call === "object" ? lm.call : null) ||
+  (lm.callInfo && typeof lm.callInfo === "object" ? lm.callInfo : null) ||
+  (lm.callMetadata && typeof lm.callMetadata === "object"
+    ? lm.callMetadata
+    : null) ||
+  (lm.metadata && typeof lm.metadata === "object" ? lm.metadata : null) ||
+  (lm.details && typeof lm.details === "object" ? lm.details : null) ||
+  null;
+const readCall = (lm) => {
+  if (!lm || typeof lm !== "object") return null;
+  const n = sbNested(lm);
+  const typeHay = String(
+    lm.type || lm.kind || n?.type || n?.kind || ""
+  ).toLowerCase();
+  const isCall =
+    SB_CALL_TYPES.has(typeHay) ||
+    typeHay.includes("call") ||
+    lm.callStatus != null ||
+    n?.callStatus != null ||
+    lm.callType ||
+    n?.callType ||
+    (lm.durationMs ?? lm.callDuration ?? n?.durationMs) > 0;
+  if (!isCall) return null;
+  const ct = String(
+    lm.callType || lm.mediaType || n?.callType || n?.mediaType || typeHay || ""
+  ).toLowerCase();
+  const st = String(
+    lm.callStatus ||
+      lm.status ||
+      n?.callStatus ||
+      n?.status ||
+      (lm.missed ? "missed" : lm.declined ? "declined" : "ended")
+  ).toLowerCase();
+  const dnum = Number(
+    lm.durationMs ??
+      lm.callDuration ??
+      lm.duration ??
+      n?.durationMs ??
+      n?.duration ??
+      0
+  );
+  return {
+    isVideo: ct.includes("video"),
+    status: st,
+    durationMs: Number.isFinite(dnum) && dnum > 0 ? dnum : 0,
+  };
+};
 const fmtSidebarDur = (ms) => {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return "";
@@ -40,15 +83,8 @@ const fmtSidebarDur = (ms) => {
   const p = (x) => String(x).padStart(2, "0");
   return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
 };
-const isSidebarCall = (lm) =>
-  !!lm &&
-  (SIDEBAR_CALL_TYPES.has(String(lm.type || "").toLowerCase()) ||
-    lm.callStatus != null ||
-    (lm.callType != null && lm.callType !== ""));
+const isSidebarCall = (lm) => !!readCall(lm);
 
-/* ═══════════════════════════════════════════════════════
-   CONVERSATION ITEM (memoized — hover / swipe / hold delete)
-   ═══════════════════════════════════════════════════════ */
 const ConversationItem = memo(function ConversationItem({
   conversation,
   isActive,
@@ -68,7 +104,6 @@ const ConversationItem = memo(function ConversationItem({
     setRevealed(false);
     setOffsetX(0);
   };
-
   const handleTouchStart = (e) => {
     touchStartX.current = e.touches[0].clientX;
     touchNowX.current = e.touches[0].clientX;
@@ -78,7 +113,6 @@ const ConversationItem = memo(function ConversationItem({
       navigator.vibrate?.(40);
     }, 1000);
   };
-
   const handleTouchMove = (e) => {
     touchNowX.current = e.touches[0].clientX;
     const delta = touchNowX.current - touchStartX.current;
@@ -86,18 +120,14 @@ const ConversationItem = memo(function ConversationItem({
     if (delta < 0) setOffsetX(Math.max(delta, -72));
     else if (!revealed) setOffsetX(0);
   };
-
   const handleTouchEnd = () => {
     clearTimeout(longPressTimer.current);
     const delta = touchNowX.current - touchStartX.current;
     if (delta < -40) {
       setRevealed(true);
       setOffsetX(-72);
-    } else {
-      closeReveal();
-    }
+    } else closeReveal();
   };
-
   const handleRowClick = () => {
     if (revealed) {
       closeReveal();
@@ -110,33 +140,11 @@ const ConversationItem = memo(function ConversationItem({
     if (!lastMessage) return "Start a conversation";
     if (lastMessage.deletedForEveryone) return "This message was deleted";
 
-    // ✅ call log preview (audio/video + duration / missed / declined)
-    if (isSidebarCall(lastMessage)) {
-      const t = String(lastMessage.type || "").toLowerCase();
-      const isVideo =
-        (lastMessage.callType || lastMessage.mediaType) === "video" ||
-        t === "video_call";
-      const st = String(
-        lastMessage.callStatus ||
-          lastMessage.status ||
-          (lastMessage.missed
-            ? "missed"
-            : lastMessage.declined
-            ? "declined"
-            : "ended")
-      ).toLowerCase();
-      const dnum = Number(
-        lastMessage.durationMs ??
-          lastMessage.callDuration ??
-          lastMessage.duration ??
-          0
-      );
-      const dur =
-        SIDEBAR_CONNECTED.has(st) && Number.isFinite(dnum) && dnum > 0
-          ? fmtSidebarDur(dnum)
-          : "";
+    const c = readCall(lastMessage);
+    if (c) {
+      const st = c.status;
       const base =
-        st === "missed"
+        st === "missed" || st === "no-answer" || st === "no_answer"
           ? "Missed call"
           : st === "declined"
           ? "Declined"
@@ -146,10 +154,15 @@ const ConversationItem = memo(function ConversationItem({
           ? "Busy"
           : st === "unreachable" || st === "offline"
           ? "Unreachable"
-          : isVideo
+          : st === "failed"
+          ? "Call failed"
+          : st === "blocked"
+          ? "Call ended"
+          : c.isVideo
           ? "Video call"
           : "Voice call";
-      return `${isVideo ? "📹" : "📞"} ${base}${dur ? ` · ${dur}` : ""}`;
+      const dur = SB_CONNECTED.has(st) ? fmtSidebarDur(c.durationMs) : "";
+      return `${c.isVideo ? "📹" : "📞"} ${base}${dur ? ` · ${dur}` : ""}`;
     }
 
     switch (lastMessage.type) {
@@ -184,7 +197,6 @@ const ConversationItem = memo(function ConversationItem({
       >
         <i className="bi bi-trash-fill" aria-hidden="true"></i>
       </button>
-
       <div
         role="button"
         tabIndex={0}
@@ -223,7 +235,6 @@ const ConversationItem = memo(function ConversationItem({
             />
           )}
         </div>
-
         <div className="conversation-content">
           <div className="conversation-top">
             <strong>{otherUser?.name}</strong>
@@ -235,7 +246,6 @@ const ConversationItem = memo(function ConversationItem({
           </div>
           <p>{getMessagePreview()}</p>
         </div>
-
         <span className="conversation-swipe-hint" aria-hidden="true">
           <i className="bi bi-arrow-left-short"></i>
           <em>slide</em>
@@ -245,16 +255,12 @@ const ConversationItem = memo(function ConversationItem({
   );
 });
 
-/* ═══════════════════════════════════════════════════════
-   MESSAGES PAGE
-   ═══════════════════════════════════════════════════════ */
 function Messages() {
   const { socket } = useSocket();
   const { user } = useAuth();
   const toast = useAlert();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-
   const matchIdFromUrl = searchParams.get("matchId");
 
   const [conversations, setConversations] = useState([]);
@@ -267,7 +273,6 @@ function Messages() {
 
   const openingRef = useRef(false);
   const conversationsRef = useRef([]);
-
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
@@ -280,7 +285,6 @@ function Messages() {
     );
   }, [matches, search]);
 
-  // ✅ CRITICAL FIX 1: Remove `toast` from dependencies to make these functions 100% STABLE
   const loadConversations = useCallback(async () => {
     try {
       const data = await getConversations();
@@ -292,9 +296,9 @@ function Messages() {
       setConversations(sorted);
     } catch (err) {
       console.error("Load conversations error:", err);
-      throw err; // Throw so the caller can catch it and show toast
+      throw err;
     }
-  }, []); // ✅ EMPTY ARRAY = STABLE
+  }, []);
 
   const loadMatches = useCallback(async () => {
     try {
@@ -303,12 +307,10 @@ function Messages() {
     } catch (err) {
       console.error("Load matches error:", err);
     }
-  }, []); // ✅ EMPTY ARRAY = STABLE
+  }, []);
 
-  // ✅ CRITICAL FIX 2: Initial load runs STRICTLY ONCE on mount
   useEffect(() => {
     let isMounted = true;
-
     const fetchInitialData = async () => {
       try {
         setLoading(true);
@@ -322,24 +324,19 @@ function Messages() {
           toast.error("Failed to load conversations", "Error", 4000);
         }
       } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
+        if (isMounted) setLoading(false);
       }
     };
-
     fetchInitialData();
-
     return () => {
       isMounted = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // ✅ EMPTY ARRAY = RUNS ONLY ONCE! NO INFINITE LOOP!
+  }, []);
 
   const moveConversationToTop = useCallback(
     (conversationId, message) => {
       if (!conversationId) return;
-
       const exists = conversationsRef.current.some(
         (c) => c._id === conversationId
       );
@@ -347,14 +344,11 @@ function Messages() {
         loadConversations();
         return;
       }
-
       setConversations((prev) => {
         const idx = prev.findIndex((c) => c._id === conversationId);
         if (idx === -1) return prev;
-
         const updated = [...prev];
         const [conv] = updated.splice(idx, 1);
-
         updated.unshift({
           ...conv,
           lastMessage: message || conv.lastMessage,
@@ -363,31 +357,50 @@ function Messages() {
             conv.lastMessageAt ||
             new Date().toISOString(),
         });
-
         return updated;
       });
     },
     [loadConversations]
   );
 
+  // ✅ Live call bump: when useCall logs a call, surface it in the matching row.
+  useEffect(() => {
+    const onLogged = (e) => {
+      const d = e?.detail;
+      if (!d?.peerId) return;
+      const conv = conversationsRef.current.find(
+        (c) => String(c.user?._id) === String(d.peerId)
+      );
+      if (!conv) return;
+      const iso = new Date(d.at).toISOString();
+      moveConversationToTop(conv._id, {
+        type: "call",
+        callType: d.mediaType === "video" ? "video" : "audio",
+        callStatus: d.status,
+        durationMs: d.durationMs || 0,
+        createdAt: iso,
+        _id: "calllog-" + (d.callId || d.at),
+      });
+    };
+    window.addEventListener("call:logged", onLogged);
+    return () => window.removeEventListener("call:logged", onLogged);
+  }, [moveConversationToTop]);
+
   const handleOpenMatch = useCallback(
     async (match) => {
       try {
         setLoading(true);
         const data = await createOrGetConversation(match._id);
-
         if (data.success && data.conversation) {
           const otherUser = data.conversation.participants.find(
             (p) => p._id.toString() !== user._id.toString()
           );
-
           setSelectedConversation({
             _id: data.conversation._id,
             user: otherUser,
             lastMessage: data.conversation.lastMessage,
             lastMessageAt: data.conversation.lastMessageAt,
           });
-
           setSearch("");
           await loadConversations();
         }
@@ -404,24 +417,20 @@ function Messages() {
   useEffect(() => {
     if (!matchIdFromUrl || !user || openingRef.current) return;
     openingRef.current = true;
-
     (async () => {
       try {
         setLoading(true);
         const data = await createOrGetConversation(matchIdFromUrl);
-
         if (data.success && data.conversation) {
           const otherUser = data.conversation.participants.find(
             (p) => p._id.toString() !== user._id.toString()
           );
-
           setSelectedConversation({
             _id: data.conversation._id,
             user: otherUser,
             lastMessage: data.conversation.lastMessage,
             lastMessageAt: data.conversation.lastMessageAt,
           });
-
           await loadConversations();
           navigate("/messages", { replace: true });
         }
@@ -436,11 +445,8 @@ function Messages() {
 
   useEffect(() => {
     if (!socket) return;
-
-    const handleConversationUpdated = ({ conversationId, message }) => {
+    const handleConversationUpdated = ({ conversationId, message }) =>
       moveConversationToTop(conversationId, message);
-    };
-
     const handleNewMessage = (msg) => {
       const convId =
         typeof msg.conversation === "string"
@@ -448,18 +454,15 @@ function Messages() {
           : msg.conversation?._id;
       moveConversationToTop(convId, msg);
     };
-
     const handleConversationDeleted = ({ conversationId }) => {
       setConversations((prev) => prev.filter((c) => c._id !== conversationId));
       setSelectedConversation((prev) =>
         prev?._id === conversationId ? null : prev
       );
     };
-
     socket.on("conversation_updated", handleConversationUpdated);
     socket.on("new_message", handleNewMessage);
     socket.on("conversation_deleted", handleConversationDeleted);
-
     return () => {
       socket.off("conversation_updated", handleConversationUpdated);
       socket.off("new_message", handleNewMessage);
@@ -471,22 +474,19 @@ function Messages() {
     setSelectedConversation(conversation);
     setSearch("");
   }, []);
-
-  const requestDeleteConversation = useCallback((conversation) => {
-    setConversationToDelete(conversation);
-  }, []);
-
+  const requestDeleteConversation = useCallback(
+    (conversation) => setConversationToDelete(conversation),
+    []
+  );
   const confirmDeleteConversation = useCallback(async () => {
     const target = conversationToDelete;
     setConversationToDelete(null);
     if (!target) return;
-
     try {
       await deleteConversation(target._id);
       setConversations((prev) => prev.filter((c) => c._id !== target._id));
-      if (selectedConversation?._id === target._id) {
+      if (selectedConversation?._id === target._id)
         setSelectedConversation(null);
-      }
     } catch (err) {
       toast.error(
         err.response?.data?.message || "Failed to delete conversation",
@@ -512,7 +512,6 @@ function Messages() {
       </>
     );
   }
-
   if (error && conversations.length === 0) {
     return (
       <>
@@ -556,7 +555,6 @@ function Messages() {
         path="/messages"
         noIndex
       />
-
       <main className="messages-page" id="main-content">
         <div className="messages-container">
           <aside
@@ -568,7 +566,6 @@ function Messages() {
             <div className="conversation-header">
               <h1>Messages</h1>
             </div>
-
             <div className="conversation-search">
               <label
                 htmlFor="conversation-search-input"
@@ -596,7 +593,6 @@ function Messages() {
                 </button>
               )}
             </div>
-
             {search.trim() ? (
               <div
                 className="conversation-list"

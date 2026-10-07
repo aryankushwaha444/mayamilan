@@ -9,7 +9,7 @@ import {
   createCall,
   getCall,
   findActiveBetween,
-  listActiveForUser, // ✅ ADDED (was missing -> forced the dynamic import below)
+  listActiveForUser,
   listActiveForSocket,
   markConnected,
   takeCall,
@@ -118,12 +118,19 @@ const bump = (map, key, limit) => {
   map.set(key, t);
   return t.count <= limit;
 };
+
+// ✅ race-safe once-only finalization (hangup colliding with ring-timeout must not
+// double-write a Call doc or double-emit a chat row). Keyed by callId + timestamp.
+const CHAT_DONE = new Map();
+
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of setupRate.entries())
     if (now - v.windowStart > 60000) setupRate.delete(k);
   for (const [k, v] of signalRate.entries())
     if (now - v.windowStart > 60000) signalRate.delete(k);
+  const cutoff = now - 15 * 60 * 1000;
+  for (const [k, v] of CHAT_DONE.entries()) if (v < cutoff) CHAT_DONE.delete(k);
 }, 60 * 1000).unref?.();
 
 const watchdogs = new Map();
@@ -156,6 +163,153 @@ const persistCall = async (rec, status, endReason) => {
   }
 };
 
+// ✅ Boot-safe lazy Message access (no top-level import -> a wrong export can never
+// crash the server at boot, which matters given the standalone/replica-set fragility).
+let MessageModel = null; // null=unknown, false=unavailable, object=ready
+const getMessageModel = async () => {
+  if (MessageModel !== null) return MessageModel;
+  try {
+    const mod = await import("../models/Message.js");
+    MessageModel = mod.default || mod.Message || false;
+  } catch {
+    MessageModel = false;
+  }
+  return MessageModel;
+};
+
+// ✅ server terminal (status+endReason) -> chat callStatus the client CALL_LABEL knows.
+const mapChatCallStatus = (status, endReason) => {
+  const s = String(status || "").toLowerCase();
+  const r = String(endReason || "").toLowerCase();
+  if (s === "ended") return "ended";
+  if (s === "rejected") {
+    if (r === "busy") return "busy";
+    if (r === "blocked") return "blocked";
+    if (r === "unmatched" || r === "inactive") return "ended";
+    return "declined";
+  }
+  if (s === "failed") return "failed";
+  return "missed";
+};
+
+// ✅ THE durable bridge: write a real type:"call" Message (+ bump the conversation so
+// the SIDEBAR also survives refresh), then emit live to both user rooms. Self-diagnosing:
+// on a throw it prints the exact offending field/enum (mode A); on a success with
+// stripped metadata it warns which fields to declare (mode B). Never throws into teardown.
+const emitCallChatRow = async (io, rec, chatStatus, durationMs) => {
+  try {
+    const convId = rec.conversationId;
+    if (!convId || !mongoose.Types.ObjectId.isValid(convId)) return; // no thread to attach to
+    const convIdStr = String(convId);
+    const startedAt = new Date(rec.createdAt || Date.now());
+    const endedAt = new Date();
+    const callType = rec.mediaType === "video" ? "video" : "audio";
+    const safeDur =
+      chatStatus === "ended" && Number.isFinite(+durationMs) && +durationMs > 0
+        ? Math.min(+durationMs, 24 * 60 * 60 * 1000)
+        : 0;
+
+    const base = {
+      conversation: convIdStr,
+      sender: String(rec.callerId),
+      receiver: String(rec.calleeId),
+      type: "call",
+      text: "",
+      callType,
+      callStatus: chatStatus,
+      durationMs: safeDur,
+      startedAt: startedAt.toISOString(),
+      endedAt: endedAt.toISOString(),
+      callId: String(rec.callId),
+    };
+
+    let payload = {
+      ...base,
+      _id: "callmsg:" + String(rec.callId),
+      createdAt: startedAt.toISOString(),
+    };
+    let savedDoc = null;
+    try {
+      const M = await getMessageModel();
+      if (M) {
+        savedDoc = await M.create({
+          conversation: convIdStr,
+          sender: base.sender,
+          receiver: base.receiver,
+          type: "call",
+          text: "",
+          callType,
+          callStatus: chatStatus,
+          durationMs: safeDur,
+          startedAt,
+          endedAt,
+          callId: base.callId,
+        });
+        payload = {
+          ...base,
+          _id: String(savedDoc._id),
+          createdAt:
+            (savedDoc.createdAt || startedAt).toISOString?.() ||
+            String(savedDoc.createdAt || startedAt),
+        };
+      }
+    } catch (e) {
+      // mode A: enum/validation threw -> row will NOT persist across refresh.
+      const paths =
+        e && e.errors
+          ? Object.keys(e.errors).join(", ")
+          : e?.message || String(e);
+      console.error(
+        "[call-chat] Message.create REJECTED -> call row is live-only and will vanish on refresh. Offending field(s):",
+        paths,
+        '| Add them to server/models/Message.js (see instructions: add "call" to the type enum + declare the call fields).'
+      );
+    }
+
+    // mode B: row saved but strict schema stripped the call metadata -> details lost.
+    if (
+      savedDoc &&
+      (savedDoc.callStatus == null || savedDoc.callType == null)
+    ) {
+      console.warn(
+        "[call-chat] Message saved but call metadata was STRIPPED by strict schema. Declare callType/callStatus/durationMs/startedAt/endedAt/callId in server/models/Message.js so duration & label persist across refresh."
+      );
+    }
+
+    // ✅ bump the conversation so the sidebar shows the call as lastMessage after reload.
+    // updateOne (not findByIdAndUpdate) avoids the Mongoose `new` deprecation you already see.
+    if (savedDoc) {
+      try {
+        await Conversation.updateOne(
+          { _id: convIdStr },
+          {
+            $set: {
+              lastMessage: savedDoc._id,
+              lastMessageAt: savedDoc.createdAt || endedAt,
+            },
+          }
+        );
+      } catch (e) {
+        console.error(
+          "[call-chat] conversation lastMessage bump failed (non-fatal):",
+          e?.message || e
+        );
+      }
+    }
+
+    // ✅ instant live paint for both participants (user rooms; same targeting call:ring uses).
+    for (const uid of [base.sender, base.receiver]) {
+      io.to(`user:${uid}`).emit("new_message", payload);
+      io.to(`user:${uid}`).emit("conversation_updated", {
+        conversationId: convIdStr,
+        message: payload,
+      });
+    }
+  } catch (e) {
+    console.error("emitCallChatRow error (non-fatal):", e?.message || e);
+  }
+};
+
 const registerCallSocket = (io, socket) => {
   const me = socket.user._id.toString();
   const ringTimers = new Map();
@@ -169,18 +323,30 @@ const registerCallSocket = (io, socket) => {
   };
 
   const resolveCall = async (rec, status, endReason, notifyPeerId) => {
-    clearRing(rec.callId);
-    clearWatchdog(rec.callId);
-    takeCall(rec.callId);
-    await persistCall(rec, status, endReason);
-    if (notifyPeerId) {
-      io.to(`user:${notifyPeerId}`).emit("call:ended", {
-        callId: rec.callId,
-        by: "server",
-        reason: endReason,
-        status,
-        durationMs: rec.connectedAt ? Date.now() - rec.connectedAt : 0,
-      });
+    try {
+      clearRing(rec.callId);
+      clearWatchdog(rec.callId);
+      if (CHAT_DONE.has(rec.callId)) return; // another path already finalized
+      CHAT_DONE.set(rec.callId, Date.now());
+
+      takeCall(rec.callId);
+      await persistCall(rec, status, endReason);
+
+      const durationMs = rec.connectedAt ? Date.now() - rec.connectedAt : 0;
+      const chatStatus = mapChatCallStatus(status, endReason);
+      await emitCallChatRow(io, rec, chatStatus, durationMs); // ✅ durable + live chat row
+
+      if (notifyPeerId) {
+        io.to(`user:${notifyPeerId}`).emit("call:ended", {
+          callId: rec.callId,
+          by: "server",
+          reason: endReason,
+          status,
+          durationMs,
+        });
+      }
+    } catch (e) {
+      console.error("resolveCall error:", e?.message || e);
     }
   };
 
@@ -234,6 +400,16 @@ const registerCallSocket = (io, socket) => {
     return { ok: true };
   };
 
+  // ✅ authoritative presence probe (socket.io v4 room introspection); permissive fallback.
+  const isUserOnline = (uid) => {
+    try {
+      const room = io.sockets?.adapter?.rooms?.get?.(`user:${String(uid)}`);
+      return !!room && room.size > 0;
+    } catch {
+      return true;
+    }
+  };
+
   socket.on("call:start", async ({ to, mediaType, conversationId } = {}) => {
     try {
       if (mediaType !== "audio" && mediaType !== "video")
@@ -243,10 +419,8 @@ const registerCallSocket = (io, socket) => {
           message: "Too many call attempts. Slow down.",
           retryAfter: 60,
         });
-      // ✅ FIXED cap: static import, no dynamic await, no empty if-stub
-      if (listActiveForUser(me).length >= MAX_CONCURRENT_CALLS_PER_USER) {
+      if (listActiveForUser(me).length >= MAX_CONCURRENT_CALLS_PER_USER)
         return socket.emit("call:busy", { reason: "max_concurrent" });
-      }
 
       const auth = await assertCanReach(to);
       if (!auth.ok) {
@@ -290,6 +464,26 @@ const registerCallSocket = (io, socket) => {
         conversationId,
         callerSocketId: socket.id,
       });
+      const rec = getCall(callId);
+
+      // ✅ never ring an offline user; still hand the client a callId (call:ready) so the
+      // shipped client dedupe by callId holds, then persist + emit a "missed" chat row.
+      if (!isUserOnline(to)) {
+        socket.emit("call:ready", {
+          callId,
+          iceServers,
+          mediaType,
+          to: String(to),
+        });
+        socket.emit("call:rejected", { callId, reason: "offline" });
+        await safeLogAudit(ctx(), "call_offline", {
+          targetUserId: String(to),
+          mediaType,
+          conversationId,
+        });
+        if (rec) await resolveCall(rec, "missed", "offline", null);
+        return;
+      }
 
       socket.emit("call:ready", {
         callId,
@@ -312,9 +506,9 @@ const registerCallSocket = (io, socket) => {
       ringTimers.set(
         callId,
         setTimeout(() => {
-          const rec = getCall(callId);
-          if (rec && rec.state === "ringing")
-            resolveCall(rec, "missed", "timeout", me);
+          const r = getCall(callId);
+          if (r && r.state === "ringing")
+            void resolveCall(r, "missed", "timeout", me);
         }, RING_TIMEOUT_MS)
       );
       await safeLogAudit(ctx(), "call_invited", {
@@ -387,6 +581,7 @@ const registerCallSocket = (io, socket) => {
       const rec = getCall(callId);
       if (!rec || rec.state === "ended" || rec.state === "ringing") return;
       const other = String(to);
+      if (!mongoose.Types.ObjectId.isValid(other)) return;
       const isCaller = rec.callerId === me && other === rec.calleeId;
       const isCallee = rec.calleeId === me && other === rec.callerId;
       if (!isCaller && !isCallee) return;
@@ -397,7 +592,8 @@ const registerCallSocket = (io, socket) => {
           !sdp ||
           typeof sdp.sdp !== "string" ||
           !["offer", "answer"].includes(sdp.type) ||
-          sdp.sdp.length > MAX_SDP_LEN
+          sdp.sdp.length > MAX_SDP_LEN ||
+          !/^v=0\r?$/m.test(sdp.sdp)
         )
           return;
         io.to(`user:${other}`).emit("call:signal", { callId, from: me, sdp });
@@ -416,7 +612,7 @@ const registerCallSocket = (io, socket) => {
             ? candidate.sdpMLineIndex
             : null,
         };
-        if (!c.candidate) return;
+        if (c.candidate && !/^candidate:/i.test(c.candidate)) return; // allow empty (end-of-candidates)
         io.to(`user:${other}`).emit("call:signal", {
           callId,
           from: me,

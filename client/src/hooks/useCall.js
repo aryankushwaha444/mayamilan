@@ -12,6 +12,7 @@ import {
   preferVideoCodec,
   logLocalMediaSettings,
   startWebRtcStatsMonitor,
+  buildProcessedAudioTrack, // ✅ mic denoiser factory
 } from "../utils/videoQuality.js";
 
 import {
@@ -34,6 +35,25 @@ const ICE_DISCONNECT_GRACE_MS = 8000;
 const OUTGOING_NO_ANSWER_MS = 30000;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 
+// Map a terminal transition -> a chat-log status the UI understands.
+const mapEndedStatus = (payload) => {
+  const st = String(payload?.status || "").toLowerCase();
+  const rs = String(payload?.reason || "").toLowerCase();
+  if (st === "missed" || rs === "no-answer" || rs === "no_answer")
+    return "no-answer";
+  if (rs === "offline" || rs === "unreachable" || st === "unreachable")
+    return "unreachable";
+  if (rs === "busy" || st === "busy") return "busy";
+  if (rs === "blocked") return "blocked";
+  return "ended";
+};
+const mapRejectedStatus = (reason) => {
+  const r = String(reason || "").toLowerCase();
+  if (r === "busy") return "busy";
+  if (r === "offline" || r === "unreachable") return "unreachable";
+  return "declined";
+};
+
 export function useCall() {
   const { socket } = useSocket();
   const toast = useAlert();
@@ -53,10 +73,13 @@ export function useCall() {
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteTracksRef = useRef(new Set()); // #6 live remote track set
+  const remoteTracksRef = useRef(new Set());
   const cameraTrackRef = useRef(null);
   const screenTrackRef = useRef(null);
   const videoSenderRef = useRef(null);
+  const audioSenderRef = useRef(null); // ✅ the audio RTCRtpSender
+  const audioOutTrackRef = useRef(null); // ✅ the track actually transmitted (cleaned or raw)
+  const audioDisposeRef = useRef(null); // ✅ denoiser teardown
   const pendingCandidatesRef = useRef([]);
   const remoteDescSetRef = useRef(false);
   const durationTimerRef = useRef(null);
@@ -67,6 +90,11 @@ export function useCall() {
   const callIdRef = useRef(null);
   const mediaTypeRef = useRef("audio");
 
+  // call-log bookkeeping
+  const peerIdRef = useRef(null);
+  const connectedAtRef = useRef(null);
+  const loggedRef = useRef(false);
+
   const presetRef = useRef(getDefaultPreset());
   const qualityStopRef = useRef(null);
   const statsStopRef = useRef(null);
@@ -74,12 +102,10 @@ export function useCall() {
   const socketRef = useRef(socket);
   const teardownRef = useRef(null);
 
-  // #2 stabilize toast so the socket effect subscribes ONCE per socket.
   const toastRef = useRef(toast);
   useEffect(() => {
     toastRef.current = toast;
   }, [toast]);
-
   useEffect(() => {
     socketRef.current = socket;
   }, [socket]);
@@ -125,8 +151,6 @@ export function useCall() {
     statsStopRef.current = null;
   };
 
-  // publish the live remote track set as a fresh MediaStream so React re-renders
-  // correctly when tracks are added AND removed (fixes frozen/placeholder state).
   const publishRemote = useCallback(() => {
     const tracks = Array.from(remoteTracksRef.current);
     if (tracks.length === 0) {
@@ -137,11 +161,59 @@ export function useCall() {
     if (isMountedRef.current) setRemoteStream(ms);
   }, []);
 
+  const finalizeCall = useCallback((status, durationOverrideMs) => {
+    if (loggedRef.current) return;
+    loggedRef.current = true;
+    try {
+      const peerId = peerIdRef.current || callIdRef.current || null;
+      if (!peerId) return;
+      const connectedMs = connectedAtRef.current
+        ? Date.now() - connectedAtRef.current
+        : 0;
+      const dur =
+        Number.isFinite(+durationOverrideMs) && +durationOverrideMs > 0
+          ? Math.min(+durationOverrideMs, 24 * 60 * 60 * 1000)
+          : connectedMs;
+      const detail = {
+        callId: callIdRef.current || null,
+        peerId: String(peerId),
+        mediaType: mediaTypeRef.current === "video" ? "video" : "audio",
+        status: String(status || "ended")
+          .slice(0, 40)
+          .toLowerCase(),
+        durationMs:
+          status === "ended" ||
+          status === "completed" ||
+          status === "answered" ||
+          status === "connected"
+            ? dur
+            : 0,
+        at: Date.now(),
+      };
+      window.dispatchEvent(new CustomEvent("call:logged", { detail }));
+    } catch {}
+  }, []);
+
+  const resetCallLog = useCallback((peerId) => {
+    loggedRef.current = false;
+    connectedAtRef.current = null;
+    peerIdRef.current = peerId || null;
+  }, []);
+
   const teardown = useCallback(() => {
     clearDurationTimer();
     clearIceDisconnectTimer();
     clearNoAnswerTimer();
     clearQualityBindings();
+
+    // ✅ release the denoiser (stops cleaned track + closes AudioContext) BEFORE
+    // we stop the raw mic / close the pc, so the audio thread is freed promptly.
+    try {
+      audioDisposeRef.current?.();
+    } catch {}
+    audioDisposeRef.current = null;
+    audioOutTrackRef.current = null;
+    audioSenderRef.current = null;
 
     pendingCandidatesRef.current = [];
     remoteDescSetRef.current = false;
@@ -150,7 +222,7 @@ export function useCall() {
 
     if (pcRef.current) {
       try {
-        pcRef.current._abort?.abort(); // #6 drop ontrack/ended listeners
+        pcRef.current._abort?.abort();
         pcRef.current.onicecandidate = null;
         pcRef.current.ontrack = null;
         pcRef.current.onconnectionstatechange = null;
@@ -161,7 +233,7 @@ export function useCall() {
     if (cameraTrackRef.current) {
       try {
         cameraTrackRef.current.__mayaAc?.abort();
-      } catch {} // #6 unbind cam listeners
+      } catch {}
     }
     if (localStreamRef.current) {
       try {
@@ -197,7 +269,6 @@ export function useCall() {
     teardownRef.current = teardown;
   }, [teardown]);
 
-  // #6 system mute/unmute => cameraUnavailable (NOT user videoOff), AbortController-managed.
   const bindCameraListeners = useCallback((track) => {
     if (!track) return;
     const ac = new AbortController();
@@ -211,7 +282,6 @@ export function useCall() {
     track.addEventListener("mute", onMute, { signal: ac.signal });
     track.addEventListener("unmute", onUnmute, { signal: ac.signal });
   }, []);
-
   const unbindCameraListeners = useCallback((track) => {
     try {
       track?.__mayaAc?.abort();
@@ -220,14 +290,13 @@ export function useCall() {
 
   const buildPc = useCallback(
     (iceServers) => {
-      clearQualityBindings(); // #6 never leak a previous pc's timers on retry
-
+      clearQualityBindings();
       const safeServers = sanitizeIceServers(iceServers);
       const pc = createHighQualityPeerConnection(safeServers);
       pcRef.current = pc;
       pc._callId = null;
       pc._peerId = null;
-      pc._abort = new AbortController(); // #6 scoped listener teardown
+      pc._abort = new AbortController();
 
       try {
         qualityStopRef.current = bindQualityToPeerConnection(
@@ -253,7 +322,6 @@ export function useCall() {
         } catch {}
       };
 
-      // #6 robust remote assembly via track set + AbortController (no onended clobber).
       pc.ontrack = (e) => {
         if (!e.track) return;
         remoteTracksRef.current.add(e.track);
@@ -273,6 +341,7 @@ export function useCall() {
         if (st === "connected") {
           clearIceDisconnectTimer();
           clearNoAnswerTimer();
+          if (!connectedAtRef.current) connectedAtRef.current = Date.now();
           setPhaseSafe("in-call");
           try {
             socketRef.current?.emit("call:connected", { callId: pc._callId });
@@ -291,6 +360,7 @@ export function useCall() {
               reason: "error",
             });
           } catch {}
+          finalizeCall("failed");
           teardown();
         } else if (st === "disconnected") {
           clearIceDisconnectTimer();
@@ -302,6 +372,7 @@ export function useCall() {
                   reason: "error",
                 });
               } catch {}
+              finalizeCall("failed");
               teardown();
             }
           }, ICE_DISCONNECT_GRACE_MS);
@@ -310,7 +381,7 @@ export function useCall() {
 
       return pc;
     },
-    [teardown, publishRemote]
+    [teardown, publishRemote, finalizeCall]
   );
 
   const flushPendingCandidates = useCallback(async (pc) => {
@@ -323,16 +394,13 @@ export function useCall() {
     pendingCandidatesRef.current = [];
   }, []);
 
-  // Graceful acquisition: busy/denied CAMERA must NOT cancel; mic failure aborts.
   const acquireLocal = useCallback(
     async (mt) => {
       const preset = presetRef.current;
       const base = getMediaConstraints(preset);
       const audioOnly = { audio: base.audio, video: false };
-
       let stream = null;
       let degraded = false;
-
       if (mt === "video") {
         try {
           stream = await navigator.mediaDevices.getUserMedia(base);
@@ -347,19 +415,16 @@ export function useCall() {
         }
         if (!stream) {
           degraded = true;
-          stream = await navigator.mediaDevices.getUserMedia(audioOnly); // may throw -> abort
+          stream = await navigator.mediaDevices.getUserMedia(audioOnly);
         }
       } else {
         stream = await navigator.mediaDevices.getUserMedia(audioOnly);
       }
-
       localStreamRef.current = stream;
       if (isMountedRef.current) setLocalStream(stream);
-
       const v = stream.getVideoTracks()[0] || null;
       cameraTrackRef.current = v;
       bindCameraListeners(v);
-
       if (degraded && isMountedRef.current) {
         setCameraUnavailable(true);
         toastRef.current?.warning?.(
@@ -374,40 +439,135 @@ export function useCall() {
     [bindCameraListeners]
   );
 
-  const attachLocalToPc = useCallback((pc, stream) => {
-    if (!pc || !stream) return;
-    const preset = presetRef.current;
-    stream.getTracks().forEach((track) => {
-      try {
-        if (typeof pc.addTransceiver === "function") {
-          const transceiver = pc.addTransceiver(track, {
-            direction: "sendrecv",
-            streams: [stream],
-          });
-          if (track.kind === "video") {
-            preferVideoCodec(transceiver, "compatible"); // #1 valid order
-            videoSenderRef.current = transceiver.sender;
-          }
-        } else {
-          const sender = pc.addTrack(track, stream);
-          if (track.kind === "video") videoSenderRef.current = sender;
-        }
-      } catch (err) {
-        if (isWebRtcDebugEnabled())
-          console.warn("attachLocalToPc track failed:", err?.message || err);
+  // ✅ Swap the raw mic for the denoised track on the audio sender. Fire-and-forget:
+  //    negotiation already happened with the raw track, so replaceTrack mid-call is
+  //    exactly like the camera/screen swap (no renegotiation). On ANY failure the
+  //    raw track stays in place (browser NS only) -> never breaks the call.
+  const applyNoiseSuppression = useCallback(async () => {
+    try {
+      const sender = audioSenderRef.current;
+
+      const raw =
+        sender?.track || localStreamRef.current?.getAudioTracks?.()[0] || null;
+
+      if (!sender || !raw || raw.kind !== "audio") return;
+
+      // Do not rebuild an already processed track.
+      if (audioOutTrackRef.current === sender.track) {
+        return;
       }
-    });
-    // audio-only side must still RECEIVE peer video (cross-browser).
-    const hasVideoSender = pc
-      .getSenders()
-      .some((s) => s.track?.kind === "video");
-    if (!hasVideoSender && typeof pc.addTransceiver === "function") {
+
+      const built = await buildProcessedAudioTrack(raw);
+
+      if (!built?.track || typeof built.dispose !== "function") {
+        return;
+      }
+
+      // Prevent a race with call teardown / sender replacement.
+      if (
+        audioSenderRef.current !== sender ||
+        pcRef.current == null ||
+        sender.track !== raw
+      ) {
+        try {
+          built.dispose();
+        } catch {}
+
+        return;
+      }
+
+      const previousDispose = audioDisposeRef.current;
+
       try {
-        pc.addTransceiver("video", { direction: "recvonly" });
+        await sender.replaceTrack(built.track);
+      } catch {
+        try {
+          built.dispose();
+        } catch {}
+
+        return;
+      }
+
+      // Only dispose the previous processor AFTER
+      // the new track has successfully replaced it.
+      if (previousDispose && previousDispose !== built.dispose) {
+        try {
+          previousDispose();
+        } catch {}
+      }
+
+      audioOutTrackRef.current = built.track;
+      audioDisposeRef.current = built.dispose;
+
+      try {
+        built.track.addEventListener(
+          "ended",
+          () => {
+            if (audioOutTrackRef.current === built.track) {
+              audioOutTrackRef.current = null;
+            }
+
+            if (audioDisposeRef.current === built.dispose) {
+              audioDisposeRef.current = null;
+            }
+          },
+          { once: true }
+        );
       } catch {}
+
+      if (isWebRtcDebugEnabled()) {
+        console.log("🎚 microphone noise suppression engaged");
+      }
+    } catch (e) {
+      if (isWebRtcDebugEnabled()) {
+        console.warn(
+          "noise suppression skipped (raw/browser NS remains active):",
+          e?.message || e
+        );
+      }
     }
-    applyAllSendersQuality(pc, preset).catch(() => {});
   }, []);
+
+  const attachLocalToPc = useCallback(
+    (pc, stream) => {
+      if (!pc || !stream) return;
+      const preset = presetRef.current;
+      stream.getTracks().forEach((track) => {
+        try {
+          if (typeof pc.addTransceiver === "function") {
+            const transceiver = pc.addTransceiver(track, {
+              direction: "sendrecv",
+              streams: [stream],
+            });
+            if (track.kind === "video") {
+              preferVideoCodec(transceiver, "compatible");
+              videoSenderRef.current = transceiver.sender;
+            } else if (track.kind === "audio") {
+              audioSenderRef.current = transceiver.sender; // ✅ remember audio sender
+            }
+          } else {
+            const sender = pc.addTrack(track, stream);
+            if (track.kind === "video") videoSenderRef.current = sender;
+            else if (track.kind === "audio") audioSenderRef.current = sender; // ✅
+          }
+        } catch (err) {
+          if (isWebRtcDebugEnabled())
+            console.warn("attachLocalToPc track failed:", err?.message || err);
+        }
+      });
+      const hasVideoSender = pc
+        .getSenders()
+        .some((s) => s.track?.kind === "video");
+      if (!hasVideoSender && typeof pc.addTransceiver === "function") {
+        try {
+          pc.addTransceiver("video", { direction: "recvonly" });
+        } catch {}
+      }
+      applyAllSendersQuality(pc, preset).catch(() => {});
+      void applyNoiseSuppression(); // ✅ engage denoiser after senders exist
+    },
+    [applyNoiseSuppression]
+  );
 
   const startCall = useCallback(
     (to, mt, conversationId) => {
@@ -419,6 +579,7 @@ export function useCall() {
         ? sanitizeCallId(conversationId)
         : undefined;
 
+      resetCallLog(safeTo);
       setMediaType(mt);
       setPhaseSafe("outgoing");
       setPeer(
@@ -436,13 +597,13 @@ export function useCall() {
           conversationId: safeConv,
         });
       } catch {
+        finalizeCall("failed");
         teardown();
         return;
       }
 
       clearNoAnswerTimer();
       noAnswerTimerRef.current = setTimeout(() => {
-        // #4 fire even if call:ready never arrived (callIdRef may be null).
         if (phaseRef.current !== "outgoing") return;
         if (callIdRef.current) {
           try {
@@ -454,10 +615,11 @@ export function useCall() {
         }
         if (isMountedRef.current)
           toastRef.current?.info?.("No answer", "Call", 3000);
+        finalizeCall("no-answer");
         teardown();
       }, OUTGOING_NO_ANSWER_MS);
     },
-    [teardown]
+    [teardown, resetCallLog, finalizeCall]
   );
 
   const acceptCall = useCallback(async () => {
@@ -468,7 +630,7 @@ export function useCall() {
     )
       return;
     const id = callIdRef.current;
-    const peerId = peer?._id;
+    const peerId = peer?._id || peerIdRef.current;
     if (!peerId) {
       try {
         socketRef.current.emit("call:reject", {
@@ -476,6 +638,7 @@ export function useCall() {
           reason: "declined",
         });
       } catch {}
+      finalizeCall("declined");
       teardown();
       return;
     }
@@ -485,10 +648,12 @@ export function useCall() {
       const pc = pcRef.current || buildPc(iceServersRef.current || []);
       pc._callId = id;
       pc._peerId = peerId;
+      peerIdRef.current = peerId;
       attachLocalToPc(pc, stream);
       try {
         socketRef.current.emit("call:accept", { callId: id });
       } catch {
+        finalizeCall("failed");
         teardown();
       }
     } catch (e) {
@@ -508,9 +673,10 @@ export function useCall() {
           reason: "declined",
         });
       } catch {}
+      finalizeCall("failed");
       teardown();
     }
-  }, [peer, acquireLocal, buildPc, attachLocalToPc, teardown]);
+  }, [peer, acquireLocal, buildPc, attachLocalToPc, teardown, finalizeCall]);
 
   const rejectCall = useCallback(() => {
     if (
@@ -525,12 +691,14 @@ export function useCall() {
         reason: "declined",
       });
     } catch {}
+    finalizeCall("declined");
     teardown();
-  }, [teardown]);
+  }, [teardown, finalizeCall]);
 
   const endCall = useCallback(
     (reason = "hangup") => {
       if (!socketRef.current) {
+        finalizeCall(connectedAtRef.current ? "ended" : "canceled");
         teardown();
         return;
       }
@@ -546,16 +714,31 @@ export function useCall() {
           });
         } catch {}
       }
+      const st =
+        safeReason === "no-answer"
+          ? "no-answer"
+          : connectedAtRef.current
+          ? "ended"
+          : "canceled";
+      finalizeCall(st);
       teardown();
     },
-    [teardown]
+    [teardown, finalizeCall]
   );
 
+  // ✅ Mute the track that is ACTUALLY transmitted (the cleaned one after the
+  //    swap), not the raw mic — otherwise muting silently stops working once
+  //    the denoiser replaces the sender track. Falls back to raw if no swap.
   const toggleMute = useCallback(() => {
-    const s = localStreamRef.current;
-    if (!s) return;
     const next = !muted;
-    s.getAudioTracks().forEach((t) => (t.enabled = !next));
+    const out = audioOutTrackRef.current;
+    if (out && out.readyState !== "ended") {
+      out.enabled = !next;
+    } else {
+      localStreamRef.current
+        ?.getAudioTracks()
+        .forEach((t) => (t.enabled = !next));
+    }
     if (isMountedRef.current) setMuted(next);
   }, [muted]);
 
@@ -586,7 +769,7 @@ export function useCall() {
         if ("contentHint" in nt)
           nt.contentHint = preset.contentHint || "motion";
       } catch {}
-      unbindCameraListeners(t); // #6 strip old listeners before stop
+      unbindCameraListeners(t);
       t.stop();
       if (videoSenderRef.current) {
         await videoSenderRef.current.replaceTrack(nt);
@@ -680,10 +863,8 @@ export function useCall() {
     }
   }, [screenSharing]);
 
-  // Single subscription per socket (deps are all stable refs/callbacks now -> #2).
   useEffect(() => {
     if (!socket) return;
-
     const emit = (...a) => {
       try {
         socketRef.current?.emit(...a);
@@ -698,6 +879,7 @@ export function useCall() {
       const pc = buildPc(iceServersRef.current);
       pc._callId = cid;
       pc._peerId = peerId;
+      peerIdRef.current = peerId;
       if (isMountedRef.current) {
         setCallId(cid);
         setPeer(
@@ -743,12 +925,13 @@ export function useCall() {
           else toastRef.current?.error?.("Could not start call", "Call", 4000);
         }
         emit("call:end", { callId: cid, reason: "error" });
+        finalizeCall("failed");
         teardown();
       }
     };
 
     const onRing = (payload) => {
-      clearNoAnswerTimer(); // #7 drop any lingering outgoing timer
+      clearNoAnswerTimer();
       const id = sanitizeCallId(payload?.callId);
       const mt = payload?.mediaType;
       const from = sanitizePeer(payload?.from);
@@ -761,6 +944,7 @@ export function useCall() {
         emit("call:reject", { callId: id, reason: "busy" });
         return;
       }
+      resetCallLog(from._id);
       iceServersRef.current = ice;
       if (isMountedRef.current) {
         setCallId(id);
@@ -774,11 +958,11 @@ export function useCall() {
         pc._peerId = from._id;
       } catch {
         emit("call:reject", { callId: id, reason: "busy" });
+        finalizeCall("failed");
         teardown();
       }
     };
 
-    // #3 require exact callId match (no fall-through teardown on missing id).
     const onDismiss = ({ callId: id }) => {
       const cid = sanitizeCallId(id);
       if (phaseRef.current === "incoming" && cid && cid === callIdRef.current)
@@ -787,7 +971,7 @@ export function useCall() {
 
     const onRejected = (payload) => {
       const cid = sanitizeCallId(payload?.callId);
-      if (!cid || cid !== callIdRef.current) return; // #3
+      if (!cid || cid !== callIdRef.current) return;
       const reason =
         typeof payload?.reason === "string"
           ? payload.reason.replace(CONTROL_CHARS_RE, "").slice(0, 80)
@@ -803,12 +987,13 @@ export function useCall() {
           3000
         );
       }
+      finalizeCall(mapRejectedStatus(reason));
       teardown();
     };
 
     const onEnded = (payload) => {
       const cid = sanitizeCallId(payload?.callId);
-      if (!cid || cid !== callIdRef.current) return; // #3
+      if (!cid || cid !== callIdRef.current) return;
       const ms = Number(payload?.durationMs);
       const safeDuration = Number.isFinite(ms) && ms > 0 ? ms : 0;
       const status =
@@ -836,13 +1021,15 @@ export function useCall() {
           );
         else toastRef.current?.info?.(label, "Call", 3000);
       }
+      finalizeCall(mapEndedStatus(payload), safeDuration);
       teardown();
     };
 
     const onBusy = () => {
-      if (phaseRef.current !== "outgoing") return; // #3 busy only cancels OUR attempt
+      if (phaseRef.current !== "outgoing") return;
       if (isMountedRef.current)
         toastRef.current?.warning?.("You're already in a call", "Call", 3000);
+      finalizeCall("busy");
       teardown();
     };
 
@@ -859,7 +1046,7 @@ export function useCall() {
           : null
       );
       if (!fromId) return;
-      if (pc._peerId && fromId !== pc._peerId) return; // signaling-hijack guard
+      if (pc._peerId && fromId !== pc._peerId) return;
 
       if (sdp) {
         const cleanSdp = sanitizeSdp(sdp);
@@ -869,7 +1056,6 @@ export function useCall() {
           remoteDescSetRef.current = true;
           await flushPendingCandidates(pc);
           await applyAllSendersQuality(pc, presetRef.current).catch(() => {});
-          // #5 answer exactly once, driven by signaling state (idempotent vs re-offer).
           if (pc.signalingState === "have-remote-offer") {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -897,12 +1083,15 @@ export function useCall() {
 
     const onError = (payload) => {
       const cid = sanitizeCallId(payload?.callId);
-      if (cid && cid !== callIdRef.current) return; // targeted error -> only if ours
-      if (!cid && phaseRef.current === "idle") return; // #3 global error ignored when idle
+      if (cid && cid !== callIdRef.current) return;
+      if (!cid && phaseRef.current === "idle") return;
       const safeMessage = sanitizeErrorMessage(payload?.message);
       if (isMountedRef.current)
         toastRef.current?.error?.(safeMessage, "Call", 4000);
-      if (phaseRef.current !== "idle") teardown();
+      if (phaseRef.current !== "idle") {
+        finalizeCall("failed");
+        teardown();
+      }
     };
 
     socket.on("call:ready", onReady);
@@ -933,6 +1122,8 @@ export function useCall() {
     attachLocalToPc,
     flushPendingCandidates,
     teardown,
+    resetCallLog,
+    finalizeCall,
   ]);
 
   useEffect(() => {
@@ -946,9 +1137,11 @@ export function useCall() {
           s.emit("call:end", { callId: id, reason: "disconnected" });
         } catch {}
       }
+      if (phaseRef.current !== "idle")
+        finalizeCall(connectedAtRef.current ? "ended" : "canceled");
       teardownRef.current?.();
     };
-  }, []);
+  }, [finalizeCall]);
 
   return {
     phase,

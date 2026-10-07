@@ -5,6 +5,9 @@
  * - Request real camera resolution instead of browser default low quality.
  * - Force higher encoder bitrate for video/audio senders.
  * - Provide stats logging to identify whether issue is CPU, bandwidth, TURN, or camera.
+ * - ✅ Add a dependency-free, offline-safe microphone denoiser (high-pass + adaptive
+ *   soft gate / downward expander) so steady background noise (fan/AC/keyboard/hiss)
+ *   is attenuated WITHOUT relying on a remote model or extra committed files.
  */
 
 import { sanitizeIceServers, isWebRtcDebugEnabled } from "./webrtcSecurity.js";
@@ -68,25 +71,80 @@ export const getPresetById = (id) => {
 /**
  * Use this instead of:
  * navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+ *
+ * ✅ AUDIO CHANGES:
+ *  - channelCount / sampleRate are now {ideal:...} (NOT exact) so a device that
+ *    can't deliver exactly 1ch/48kHz no longer throws OverconstrainedError and
+ *    silently degrades the whole call.
+ *  - Added the experimental Google `advanced` processors (NS/EC/AGC/high-pass +
+ *    the "*2" stronger models). Unknown keys are ignored per-spec on browsers
+ *    that don't implement them (Firefox/Safari), so this is cross-browser safe.
+ *    These engage the *stronger* built-in suppression that the plain booleans miss.
  */
-export const getMediaConstraints = (preset = getDefaultPreset()) => ({
-  video: {
+const readPipeline = () => {
+  try {
+    const m = (globalThis.localStorage?.getItem("MAYA_AUDIO_PIPELINE") || "native").toLowerCase();
+    return ["raw", "native", "notch", "notch+gate", "gate"].includes(m) ? m : "native";
+  } catch { return "native"; }
+};
+
+export const getMediaConstraints = (preset = getDefaultPreset()) => {
+  const pipeline = readPipeline();
+  const rawMic = pipeline === "raw"; // isolation test only: native processing OFF
+
+  const video = {
     width: { ideal: preset.width },
     height: { ideal: preset.height },
-    frameRate: {
-      ideal: preset.frameRate,
-      max: preset.frameRate,
-    },
+    frameRate: { ideal: preset.frameRate, max: preset.frameRate },
     facingMode: "user",
-  },
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
-    channelCount: 1,
-    sampleRate: 48000,
-  },
-});
+  };
+
+  if (rawMic) {
+    return {
+      video,
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: 48000 },
+      },
+    };
+  }
+
+  // DEFAULT (native): browser NS + EC + AGC. The custom gate is NOT engaged
+  // (buildProcessedAudioTrack returns null for "native"), so this is pure
+  // WebRTC processing — the correct primary path.
+  return {
+    video,
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+
+      channelCount: { ideal: 1 },
+      sampleRate: { ideal: 48000 },
+
+      advanced: [
+        {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+
+          googEchoCancellation: true,
+          googNoiseSuppression: true,
+          googAutoGainControl: true,
+          googHighpassFilter: true,
+
+          googEchoCancellation2: true,
+          googNoiseSuppression2: true,
+          googAutoGainControl2: true,
+          googLatestEchoCancellation: true,
+        },
+      ],
+    },
+  };
+};
 
 /**
  * Create RTCPeerConnection with settings favorable for quality.
@@ -195,12 +253,9 @@ export async function applyAllSendersQuality(pc, preset = getDefaultPreset()) {
 /**
  * Codec preference.
  *
- * SECURITY/ROBUSTNESS FIX (#1): RTX ("/rtx") and FEC ("/fec","flexfec") codecs
- * MUST remain immediately after their parent media codec (linked by
- * parameters.apt). A naive full-array sort produces an INVALID order which can
- * make setCodecPreferences throw or break negotiation (one-way media /
- * "auto-cancel"). We therefore score+sort ONLY the media codecs and re-attach
- * each auxiliary codec right after its parent.
+ * RTX ("/rtx") and FEC codecs MUST remain immediately after their parent media
+ * codec (linked by parameters.apt). We score+sort ONLY the media codecs and
+ * re-attach each auxiliary codec right after its parent.
  *
  * Modes:
  * - "compatible": prefer H264/VP8 (hardware/mobile stable)  <- default
@@ -224,7 +279,7 @@ export function preferVideoCodec(transceiver, mode = "compatible") {
 
     const media = all.filter((c) => !isAux(c));
     const aux = all.filter(isAux);
-    if (!media.length) return; // nothing to order
+    if (!media.length) return;
 
     const score = (c) => {
       const m = mimeOf(c);
@@ -259,8 +314,6 @@ export function preferVideoCodec(transceiver, mode = "compatible") {
         }
       }
     }
-    // Any auxiliary codec whose parent was filtered out (rare) goes last so we
-    // never DROP a codec the remote might require.
     for (const a of aux) if (!usedAux.has(a)) ordered.push(a);
 
     transceiver.setCodecPreferences(ordered);
@@ -327,6 +380,7 @@ export async function logLocalMediaSettings(stream) {
 
     console.log("🎤 Local audio settings:", {
       deviceId: audioSettings.deviceId,
+      width: undefined,
       sampleRate: audioSettings.sampleRate,
       channelCount: audioSettings.channelCount,
       echoCancellation: audioSettings.echoCancellation,
@@ -470,4 +524,313 @@ export function startWebRtcStatsMonitor(pc, intervalMs = 3000) {
   }, intervalMs);
 
   return () => clearInterval(timer);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ✅ MICROPHONE DENOISER (self-contained, offline, attacker-safe)
+   ---------------------------------------------------------------------
+   Pipeline:  mic -> [high-pass BiquadFilter @85Hz] -> [AudioWorklet soft
+   gate / downward expander] -> MediaStreamDestination -> cleaned track.
+
+   The worklet is injected via a SAME-ORIGIN Blob URL (no CDN, no remote
+   model, no extra committed file) so it cannot be tampered with over the
+   network and works fully offline. It is a conservative adaptive gate:
+   speech passes at unity gain; steady background (fan/AC/hiss/keyboard
+   between words) is attenuated by a soft ~2:1 expander with hysteresis +
+   a short hold so consonant onsets are never chopped and there is no
+   "musical noise" / robotic cutoff (it never hard-mutes). Thresholds are
+   PEAK-relative so browser AGC can't fool it.
+
+   GUARANTEES:
+   - Returns null (=> caller keeps the RAW track, browser NS only) if the
+     API is missing, the AudioContext can't start (autoplay), or ANY step
+     throws. A call can therefore NEVER become one-way-silent because of
+     this feature.
+   - Kill switch: localStorage MAYA_DISABLE_DENOISE === "1" disables it.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const DENOISER_WORKLET_SRC = `
+   class MayaDenoiser extends AudioWorkletProcessor {
+     constructor() {
+       super();
+       this.gain = 1; this.peak = 0.01; this.floor = 0.0005; this.hold = 0;
+       this.gateOn = true;       // false => transparent passthrough (notch-only mode)
+       this.analyze = false;     // Goertzel reporter on/off
+       this.fs = sampleRate;
+   
+       // log-spaced Goertzel grid ~180..7500 Hz
+       this.bins = [];
+       const fMin = 180, fMax = 7500, octaves = Math.log2(fMax / fMin);
+       const N = 28;
+       for (let i = 0; i < N; i++) {
+         const f = fMin * Math.pow(2, (i / (N - 1)) * octaves);
+         const w = (2 * Math.PI * f) / this.fs;
+         this.bins.push({ f, coeff: 2 * Math.cos(w), s1: 0, s2: 0 });
+       }
+       this.win = 1024; this.n = 0;
+       this.lastHz = 0; this.stable = 0;
+   
+       this.port.onmessage = (e) => {
+         const d = e && e.data; if (!d) return;
+         if (d.type === 'gate') this.gateOn = !!d.value;
+         if (d.type === 'analyze') this.analyze = !!d.value;
+       };
+     }
+   
+     _goertzelReset() { for (const b of this.bins) { b.s1 = 0; b.s2 = 0; } this.n = 0; }
+   
+     _report() {
+       let best = -1, bi = -1;
+       for (let i = 0; i < this.bins.length; i++) {
+         const b = this.bins[i];
+         const p = b.s1 * b.s1 + b.s2 * b.s2 - b.coeff * b.s1 * b.s2;
+         if (p > best) { best = p; bi = i; }
+       }
+       if (bi < 0) return;
+       // parabolic interpolation on power for sub-bin accuracy
+       let hz = this.bins[bi].f;
+       if (bi > 0 && bi < this.bins.length - 1) {
+         const a = this._pow(bi - 1), c = this._pow(bi + 1), y = best;
+         const denom = (a - 2 * y + c);
+         if (denom !== 0) {
+           const delta = 0.5 * (a - c) / denom;
+           const bw = this.bins[bi].f - this.bins[bi - 1].f; // approx spacing in Hz
+           hz = this.bins[bi].f + delta * bw;
+         }
+       }
+       const mag = Math.sqrt(Math.max(0, best)) / this.win;
+       this.port.postMessage({ type: 'dominant', hz: Math.round(hz), mag });
+     }
+     _pow(i) { const b = this.bins[i]; return b.s1 * b.s1 + b.s2 * b.s2 - b.coeff * b.s1 * b.s2; }
+   
+     process(inputs, outputs) {
+       const inp = inputs[0], outp = outputs[0];
+       if (!inp || !inp.length || !outp || !outp.length) return true;
+       const n = outp[0].length, ch = inp.length;
+   
+       let sum = 0, cnt = 0;
+       for (let c = 0; c < ch; c++) { const d = inp[c]; for (let i = 0; i < n; i++) { const v = d[i]; sum += v * v; cnt++; } }
+       const rms = cnt ? Math.sqrt(sum / cnt) : 0;
+   
+       // analysis (incremental Goertzel on mono mix)
+       if (this.analyze) {
+         const mix = ch > 1 ? null : inp[0];
+         for (let i = 0; i < n; i++) {
+           const x = ch > 1 ? (inp.reduce((s, d) => s + d[i], 0) / ch) : mix[i];
+           for (const b of this.bins) { const s = x + b.coeff * b.s1 - b.s2; b.s2 = b.s1; b.s1 = s; }
+           if (++this.n >= this.win) { this._report(); this._goertzelReset(); }
+         }
+       }
+   
+       const outCh = outp[0], inCh0 = inp[0];
+   
+       if (!this.gateOn) { for (let i = 0; i < n; i++) outCh[i] = inCh0[i]; return true; } // transparent
+   
+       this.peak = Math.max(rms, this.peak * 0.9995);
+       if (rms < this.peak * 0.2) { this.floor = this.floor * 0.98 + rms * 0.02; if (this.floor < 0.0002) this.floor = 0.0002; }
+       const open = Math.max(this.floor * 3.0, this.peak * 0.30);
+       const close = open * 0.65;
+       let target;
+       if (rms >= open) { target = 1; this.hold = 14; }
+       else if (this.hold > 0) { target = 1; this.hold--; }
+       else if (rms <= close) { const r = close > 0 ? rms / close : 0; target = Math.max(0.025, Math.pow(r, 2.2)); }
+       else target = this.gain;
+       for (let i = 0; i < n; i++) { const a = target > this.gain ? 0.65 : 0.045; this.gain += (target - this.gain) * a; outCh[i] = inCh0[i] * this.gain; }
+       return true;
+     }
+   }
+   registerProcessor('maya-denoiser', MayaDenoiser);
+   `;
+
+/**
+ * Build a noise-suppressed replacement for a microphone audio track.
+ * @param {MediaStreamTrack} micTrack the raw getUserMedia audio track
+ * @returns {Promise<{track:MediaStreamTrack, dispose:()=>void, node:AudioWorkletNode}|null>}
+ *          null => not supported / disabled / failed; KEEP the raw track.
+ */
+export async function buildProcessedAudioTrack(micTrack) {
+  try {
+    if (!micTrack || micTrack.kind !== "audio") return null;
+    if (typeof window === "undefined") return null;
+
+    let pipeline = "native";
+    try {
+      pipeline = (
+        globalThis.localStorage?.getItem("MAYA_AUDIO_PIPELINE") || "native"
+      ).toLowerCase();
+    } catch {}
+    if (pipeline === "raw" || pipeline === "native") return null; // no worklet; native/none only
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC || !AC.prototype || !AC.prototype.audioWorklet) return null;
+    try {
+      if (globalThis.localStorage?.getItem("MAYA_DISABLE_DENOISE") === "1")
+        return null;
+    } catch {}
+
+    let ctx = null;
+    try {
+      ctx = new AC({ sampleRate: 48000 });
+    } catch {
+      ctx = null;
+    }
+    if (!ctx) {
+      try {
+        ctx = new AC();
+      } catch {
+        return null;
+      }
+    }
+    if (!ctx) return null;
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {}
+      if (ctx.state !== "running") {
+        try {
+          ctx.close();
+        } catch {}
+        return null;
+      }
+    }
+
+    let analyze = false,
+      autoNotch = false,
+      notchHz = 0,
+      notchQ = 18;
+    try {
+      analyze =
+        globalThis.localStorage?.getItem("MAYA_ANALYZE") === "1" ||
+        globalThis.localStorage?.getItem("MAYA_NOTCH_AUTO") === "1" ||
+        isWebRtcDebugEnabled();
+      autoNotch = globalThis.localStorage?.getItem("MAYA_NOTCH_AUTO") === "1";
+      const nh = Number(globalThis.localStorage?.getItem("MAYA_NOTCH_HZ"));
+      if (Number.isFinite(nh) && nh >= 120 && nh <= 12000) notchHz = nh;
+      const nq = Number(globalThis.localStorage?.getItem("MAYA_NOTCH_Q"));
+      if (Number.isFinite(nq) && nq > 0.5 && nq <= 50) notchQ = nq;
+    } catch {}
+
+    const src = ctx.createMediaStreamSource(new MediaStream([micTrack]));
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 85;
+    hp.Q.value = 0.7;
+    src.connect(hp);
+
+    let notch = null;
+    const wantsNotch = pipeline === "notch" || pipeline === "notch+gate";
+    if (wantsNotch && (notchHz > 0 || autoNotch)) {
+      notch = ctx.createBiquadFilter();
+      notch.type = "notch";
+      notch.frequency.value = notchHz || 1000;
+      notch.Q.value = notchQ;
+      hp.connect(notch);
+    } else {
+      // no notch node: chain hp straight into the worklet below
+    }
+
+    const blob = new Blob([DENOISER_WORKLET_SRC], {
+      type: "application/javascript",
+    });
+    const url = URL.createObjectURL(blob);
+    let node = null;
+    try {
+      await ctx.audioWorklet.addModule(url);
+      node = new AudioWorkletNode(ctx, "maya-denoiser", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+    } finally {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }
+    if (!node) return null;
+
+    node.port.postMessage({
+      type: "gate",
+      value: pipeline === "gate" || pipeline === "notch+gate",
+    });
+    node.port.postMessage({ type: "analyze", value: !!analyze });
+
+    // auto-notch: track the dominant tone only while non-speech, smoothed
+    if (notch && autoNotch) {
+      let ema = 0;
+      node.port.onmessage = (e) => {
+        const d = e && e.data;
+        if (!d || d.type !== "dominant") return;
+        if (isWebRtcDebugEnabled() && d.mag > 0.0008)
+          console.log(
+            "🔎 dominant ~" + d.hz + " Hz (mag " + d.mag.toFixed(5) + ")"
+          );
+        if (d.mag < 0.0008) return; // ignore noise-floor wobble
+        if (d.hz < 150 || d.hz > 9000) return;
+        ema = ema ? ema * 0.7 + d.hz * 0.3 : d.hz; // smooth
+        try {
+          notch.frequency.setTargetAtTime(ema, ctx.currentTime, 0.25);
+        } catch {}
+      };
+    } else if (isWebRtcDebugEnabled()) {
+      node.port.onmessage = (e) => {
+        const d = e && e.data;
+        if (d && d.type === "dominant" && d.mag > 0.0008)
+          console.log("🔎 dominant ~" + d.hz + " Hz");
+      };
+    }
+
+    const dest = ctx.createMediaStreamDestination();
+    if (notch) notch.connect(node);
+    else hp.connect(node);
+    node.connect(dest);
+
+    const out = dest.stream.getAudioTracks()[0];
+    if (!out) throw new Error("no processed audio track produced");
+    out.enabled = micTrack.enabled;
+
+    let disposed = false;
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      try {
+        out.stop();
+      } catch {}
+      try {
+        src.disconnect();
+      } catch {}
+      try {
+        hp.disconnect();
+      } catch {}
+      try {
+        notch && notch.disconnect();
+      } catch {}
+      try {
+        node.disconnect();
+      } catch {}
+      try {
+        ctx.close();
+      } catch {}
+    };
+    try {
+      micTrack.addEventListener("ended", dispose, { once: true });
+    } catch {}
+
+    if (isWebRtcDebugEnabled())
+      console.log(
+        "🎚 audio pipeline: " +
+          pipeline +
+          (notch
+            ? " (notch @" +
+              Math.round(notch.frequency.value) +
+              "Hz" +
+              (autoNotch ? " auto)" : ")")
+            : "") +
+          (analyze ? " [analyzer]" : "")
+      );
+    return { track: out, dispose, node };
+  } catch (err) {
+    if (isWebRtcDebugEnabled())
+      console.warn("buildProcessedAudioTrack skipped:", err?.message || err);
+    return null; // never throw into the call flow
+  }
 }

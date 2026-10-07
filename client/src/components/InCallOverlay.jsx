@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCallContext } from "../context/CallContext.jsx";
 import { avatarImg } from "../utils/cloudinary";
 import {
@@ -60,12 +60,23 @@ const safeText = (v, fallback = "") => {
   return c.slice(0, 80) || fallback;
 };
 
+// ✅ SINGLE-INSTANCE GUARD. If two InCallOverlay components are mounted at once
+// (e.g. rendered both in a global layout AND inside Messages.jsx), each binds
+// the SAME call.remoteStream to its own <video>/<audio> -> the far voice plays
+// twice with a tiny offset, which sounds exactly like an echo/doubling. This is
+// the only software path to "remote stream played more than once"; the guard
+// turns it from a suspicion into a console error that names the fix.
+let OVERLAY_MOUNT_COUNT = 0;
+
 export default function InCallOverlay() {
   const call = useCallContext();
 
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const localVideoRef = useRef(null);
+  // Which element currently OWNS the remote stream: "video" | "audio" | null.
+  // Enforces the invariant that the remote stream is on exactly one element.
+  const remoteOwnerRef = useRef(null);
 
   const [sinkIds, setSinkIds] = useState([]);
   const [speakerOn, setSpeakerOn] = useState(true);
@@ -74,53 +85,112 @@ export default function InCallOverlay() {
   const isVideo = call.mediaType === "video";
   const isIncoming = call.phase === "incoming";
   const isOutgoing = call.phase === "outgoing";
+  const isConnected = call.phase === "in-call" || call.phase === "connecting";
+
+  const remoteHasVideo = useMemo(
+    () =>
+      !!call.remoteStream &&
+      typeof call.remoteStream.getVideoTracks === "function" &&
+      call.remoteStream.getVideoTracks().length > 0,
+    [call.remoteStream]
+  );
+  const showRemoteVideo = isVideo && remoteHasVideo;
 
   const { blocked: ringBlocked, enable: enableRingtone } =
     useIncomingCallSound(isIncoming);
   const { blocked: rbBlocked, enable: enableRingback } =
     useOutgoingRingback(isOutgoing);
 
+  // Mount-count guard (dev): warn loudly if more than one overlay is alive.
+  useEffect(() => {
+    OVERLAY_MOUNT_COUNT += 1;
+    if (import.meta.env?.DEV && OVERLAY_MOUNT_COUNT > 1) {
+      console.error(
+        `[InCallOverlay] ${OVERLAY_MOUNT_COUNT} overlay instances mounted simultaneously. ` +
+          `The remote stream will play more than once and sound like an echo. ` +
+          `Render <InCallOverlay/> in EXACTLY ONE place (grep your codebase for "<InCallOverlay").`
+      );
+    }
+    return () => {
+      OVERLAY_MOUNT_COUNT = Math.max(0, OVERLAY_MOUNT_COUNT - 1);
+    };
+  }, []);
+
+  // Bind the remote stream to ONE element chosen by remote CONTENT, and hard-null
+  // the other, recording the owner. Idempotent across rapid remoteStream rebuilds
+  // and StrictMode double-invoke (the owner ref makes the second run a no-op).
   const bindRemote = useCallback(() => {
-    const el = isVideo ? remoteVideoRef.current : remoteAudioRef.current;
-    if (!el) return;
-    el.srcObject = call.remoteStream || null;
+    const vEl = remoteVideoRef.current;
+    const aEl = remoteAudioRef.current;
+    const desiredOwner = showRemoteVideo ? "video" : "audio";
+    const target = desiredOwner === "video" ? vEl : aEl;
+    const other = desiredOwner === "video" ? aEl : vEl;
+
+    // Dev double-bind detector: if BOTH elements ever hold the same stream object,
+    // that is audible duplication (echo). With the owner logic this must never fire;
+    // if it does, another file is also binding remoteStream -> find it.
+    if (
+      import.meta.env?.DEV &&
+      vEl &&
+      aEl &&
+      vEl.srcObject &&
+      vEl.srcObject === aEl.srcObject
+    ) {
+      console.error(
+        "[InCallOverlay] DOUBLE REMOTE PLAYBACK detected: same MediaStream on <video> and <audio>. Echo is software, not acoustic."
+      );
+    }
+
+    try {
+      if (other && other.srcObject) other.srcObject = null;
+    } catch {}
+    if (!target) {
+      remoteOwnerRef.current = null;
+      return;
+    }
+
+    if (
+      remoteOwnerRef.current !== desiredOwner ||
+      target.srcObject !== (call.remoteStream || null)
+    ) {
+      target.srcObject = call.remoteStream || null;
+      remoteOwnerRef.current = call.remoteStream ? desiredOwner : null;
+    }
+
     if (!call.remoteStream) {
       setMediaBlocked(false);
       return;
     }
-    const p = el.play();
+    const p = target.play();
     if (p && typeof p.catch === "function") {
       p.catch(() => {
-        if (isVideo) {
-          el.muted = true;
-          el.play().catch(() => {});
-        }
+        try {
+          target.muted = true;
+          target.play().catch(() => {});
+        } catch {}
         setMediaBlocked(true);
       });
     } else {
       setMediaBlocked(false);
     }
-  }, [isVideo, call.remoteStream]);
+  }, [showRemoteVideo, call.remoteStream]);
 
   useEffect(() => {
     bindRemote();
   }, [bindRemote]);
 
+  // Local preview: ALWAYS muted -> localStream can never be an audible echo source.
   useEffect(() => {
-    const v = remoteVideoRef.current,
-      a = remoteAudioRef.current;
-    if (isVideo) {
-      if (a) a.srcObject = null;
-    } else {
-      if (v) v.srcObject = null;
+    const el = localVideoRef.current;
+    if (!el) return;
+    if (import.meta.env?.DEV && !el.muted) {
+      console.error(
+        "[InCallOverlay] local preview is NOT muted -> your own voice could feed back. Keep muted on the local <video>."
+      );
     }
-  }, [isVideo]);
-
-  useEffect(() => {
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = call.localStream;
-      localVideoRef.current.play?.().catch(() => {});
-    }
+    el.srcObject = call.localStream;
+    el.muted = true; // enforce regardless of JSX
+    el.play?.().catch(() => {});
   }, [call.localStream]);
 
   useEffect(() => {
@@ -145,16 +215,26 @@ export default function InCallOverlay() {
         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
         if (localVideoRef.current) localVideoRef.current.srcObject = null;
       } catch {}
+      remoteOwnerRef.current = null;
       stopIncomingRingtone();
       stopOutgoingRingback();
     },
     []
   );
 
+  // Route gesture-unmute / speaker toggle to the element that actually owns the stream.
+  const getRemoteEl = useCallback(
+    () =>
+      remoteOwnerRef.current === "video"
+        ? remoteVideoRef.current
+        : remoteAudioRef.current,
+    []
+  );
+
   const enableAllSound = useCallback(async () => {
     if (isIncoming) await enableRingtone();
     else if (isOutgoing) await enableRingback();
-    const el = isVideo ? remoteVideoRef.current : remoteAudioRef.current;
+    const el = getRemoteEl();
     if (el) {
       el.muted = false;
       try {
@@ -162,11 +242,11 @@ export default function InCallOverlay() {
       } catch {}
     }
     setMediaBlocked(false);
-  }, [isIncoming, isOutgoing, enableRingtone, enableRingback, isVideo]);
+  }, [isIncoming, isOutgoing, enableRingtone, enableRingback, getRemoteEl]);
 
   const toggleSpeaker = async () => {
     if (!call.supportsSpeaker) return;
-    const el = isVideo ? remoteVideoRef.current : remoteAudioRef.current;
+    const el = getRemoteEl();
     if (!el || typeof el.setSinkId !== "function") return;
     const next = !speakerOn;
     try {
@@ -216,16 +296,15 @@ export default function InCallOverlay() {
     2,
     "0"
   )}:${String(call.durationSec % 60).padStart(2, "0")}`;
-  const statusText =
-    phase === "incoming"
-      ? "Incoming call…"
-      : phase === "outgoing"
-      ? "Ringing…"
-      : phase === "connecting"
-      ? "Connecting…"
-      : call.error
-      ? "Reconnecting…"
-      : mmss;
+
+  let statusText;
+  if (phase === "incoming") statusText = "Incoming call…";
+  else if (phase === "outgoing") statusText = "Ringing…";
+  else if (isVideo && !remoteHasVideo && isConnected)
+    statusText = "Their camera is off";
+  else if (phase === "connecting") statusText = "Connecting…";
+  else if (call.error) statusText = "Reconnecting…";
+  else statusText = mmss;
 
   const showSoundButton = ringBlocked || rbBlocked || mediaBlocked;
   const hasLocalVideo =
@@ -239,14 +318,13 @@ export default function InCallOverlay() {
       aria-label="Call"
     >
       <div className="incall-stage">
-        {isVideo ? (
+        {showRemoteVideo ? (
           <video
             ref={remoteVideoRef}
             className="incall-remote"
             autoPlay
             playsInline
             controls={false}
-            muted={false}
           />
         ) : (
           <div className="incall-audio-avatar" aria-hidden="true">
@@ -258,6 +336,7 @@ export default function InCallOverlay() {
           </div>
         )}
 
+        {/* Always mounted; owns the stream only when there's no remote video. */}
         <audio
           ref={remoteAudioRef}
           autoPlay

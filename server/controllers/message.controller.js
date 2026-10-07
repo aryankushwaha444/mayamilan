@@ -9,6 +9,10 @@ import { getIO } from "../sockets/socket.js";
 import { sendPushIfOffline } from "../utils/push.js";
 import { sanitize } from "../utils/sanitize.js";
 import { logAudit } from "../utils/auditLogger.js";
+// ✅ single source of truth, call-FREE (clients can never POST type:"call").
+// The old local `const ALLOWED_MESSAGE_TYPES = [...]` is REMOVED — keeping both
+// was a fatal redeclaration (SyntaxError) that blocked server boot.
+import { ALLOWED_MESSAGE_TYPES } from "../models/Message.js";
 import {
   ALLOWED_MIME,
   MAX_FILE_SIZE,
@@ -17,18 +21,19 @@ import {
 // ═══════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════
-const ALLOWED_MESSAGE_TYPES = [
-  "text",
-  "image",
-  "voice",
-  "gif",
-  "sticker",
-  "heart",
-  "post",
-  "system",
-];
 const MEDIA_REQUIRED_TYPES = new Set(["image", "voice", "gif"]);
-const ALLOWED_REACTION_EMOJIS = ["❤️", "😂", "", "😢", "", "", "🔥", ""];
+const ALLOWED_REACTION_EMOJIS = [
+  "❤️",
+  "😂",
+  "😮",
+  "😢",
+  "🔥",
+  "👍",
+  "👎",
+  "",
+  "👏",
+  "🤔",
+];
 
 const MAX_MESSAGE_LENGTH = 2000;
 const MESSAGES_PER_PAGE = 50;
@@ -255,6 +260,12 @@ const resolveAudioDuration = async (publicId, resultDuration) => {
   return Number.isFinite(d) && d > 0 ? Math.round(d) : 0;
 };
 
+// ✅ call fields appended to every lastMessage projection so the SIDEBAR can
+// render the correct audio/video icon + label + duration after a refresh
+// (previously callType was stripped -> a video call showed as "Voice call").
+const LAST_MESSAGE_SELECT =
+  "_id sender receiver text isRead createdAt type attachment callType callStatus durationMs startedAt endedAt callId";
+
 // ═══════════════════════════════════════════
 // CONVERSATIONS
 // ═══════════════════════════════════════════
@@ -359,10 +370,7 @@ export const createOrGetConversation = async (req, res, next) => {
 
     conv = await Conversation.findById(conv._id)
       .populate("participants", "_id name photos isOnline lastSeen")
-      .populate(
-        "lastMessage",
-        "_id sender receiver text isRead createdAt type attachment"
-      )
+      .populate("lastMessage", LAST_MESSAGE_SELECT) // ✅ was missing call fields
       .lean();
     sanitizeMessageMedia(conv.lastMessage);
 
@@ -404,10 +412,7 @@ export const getConversations = async (req, res, next) => {
         "participants",
         "_id name photos isOnline lastSeen blockedUsers"
       )
-      .populate(
-        "lastMessage",
-        "_id sender receiver text isRead createdAt type attachment"
-      )
+      .populate("lastMessage", LAST_MESSAGE_SELECT) // ✅ was missing call fields
       .sort({ lastMessageAt: -1, updatedAt: -1 })
       .lean();
 
@@ -838,10 +843,7 @@ export const getRecentConversations = async (req, res, next) => {
         "participants",
         "_id name photos isOnline lastSeen blockedUsers"
       )
-      .populate(
-        "lastMessage",
-        "text createdAt sender receiver isRead type attachment"
-      )
+      .populate("lastMessage", LAST_MESSAGE_SELECT) // ✅ was missing call fields
       .sort({ lastMessageAt: -1 })
       .limit(5)
       .lean();
@@ -1037,6 +1039,7 @@ export const sendMessage = async (req, res, next) => {
         .status(400)
         .json({ success: false, message: "Invalid conversation ID" });
     if (!ALLOWED_MESSAGE_TYPES.includes(type))
+      // ✅ call-free list -> clients cannot forge type:"call"
       return res
         .status(400)
         .json({ success: false, message: "Invalid message type" });

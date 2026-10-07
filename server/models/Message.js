@@ -1,6 +1,9 @@
 import mongoose from "mongoose";
 
-const ALLOWED_MESSAGE_TYPES = [
+// ✅ CLIENT-INPUT WHITELIST — exported, deliberately EXCLUDES "call".
+// Any controller / socket send-message handler that validates req.body.type
+// MUST check against THIS list, so a client can never forge a call row.
+export const ALLOWED_MESSAGE_TYPES = [
   "text",
   "image",
   "gif",
@@ -10,6 +13,12 @@ const ALLOWED_MESSAGE_TYPES = [
   "post",
   "system",
 ];
+
+// ✅ STORAGE ENUM — superset used ONLY by the Mongoose schema. "call" rows are
+// created exclusively server-side by the call bridge (call.socket.js), which is
+// participant-validated + rate-limited; the client-facing path above stays closed.
+export const STORED_MESSAGE_TYPES = [...ALLOWED_MESSAGE_TYPES, "call"];
+
 const ALLOWED_REACTION_EMOJIS = [
   "❤️",
   "😂",
@@ -61,7 +70,9 @@ const messageSchema = new mongoose.Schema(
       maxlength: [2000, "Message cannot exceed 2000 characters"],
       default: "",
     },
-    type: { type: String, enum: ALLOWED_MESSAGE_TYPES, default: "text" },
+    // ✅ schema uses the STORAGE superset (accepts server-created "call");
+    //    client input is still gated by ALLOWED_MESSAGE_TYPES in the controller.
+    type: { type: String, enum: STORED_MESSAGE_TYPES, default: "text" },
     post: { type: mongoose.Schema.Types.ObjectId, ref: "Post", default: null },
     attachment: { type: attachmentSchema, default: null },
     reactions: [
@@ -86,7 +97,15 @@ const messageSchema = new mongoose.Schema(
     readAt: { type: Date, default: null },
     isSystem: { type: Boolean, default: false },
     isFlagged: { type: Boolean, default: false },
+    // ✅ call-log fields (persisted so call rows survive refresh; read by the client's extractCall)
+    callType: { type: String, enum: ["audio", "video"], default: null },
+    callStatus: { type: String, default: null },
+    durationMs: { type: Number, default: 0 },
+    startedAt: { type: Date, default: null },
+    endedAt: { type: Date, default: null },
+    callId: { type: String, default: null, index: true },
   },
+
   { timestamps: true }
 );
 

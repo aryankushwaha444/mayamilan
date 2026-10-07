@@ -13,7 +13,7 @@ import { avatarImg } from "../utils/cloudinary";
 import { useAlert } from "../context/AlertContext";
 import { useNavigate } from "react-router-dom";
 import { getBlockStatus, toggleBlockUser } from "../services/userService.js";
-import { useCallContext } from "../context/CallContext.jsx"; // ✅ real call engine
+import { useCallContext } from "../context/CallContext.jsx";
 import {
   getMessages,
   sendMessage,
@@ -51,10 +51,13 @@ const isSafeUrl = (u) => {
   }
 };
 
-// ✅ Call-message detection + normalization (server may name fields several ways).
-// NOTE: bare "voice"/"audio" are NOT call types (voice = a recorded voice message),
-// so we never misclassify a voice note as a call row.
-const CALL_TYPES = new Set(["call", "audio_call", "video_call", "voice_call"]);
+// ✅ Call detection tolerant of FLAT and NESTED server shapes.
+const CALL_TYPE_SET = new Set([
+  "call",
+  "audio_call",
+  "video_call",
+  "voice_call",
+]);
 const CONNECTED_STATUSES = new Set([
   "ended",
   "completed",
@@ -63,6 +66,8 @@ const CONNECTED_STATUSES = new Set([
 ]);
 const CALL_LABEL = {
   missed: "Missed call",
+  "no-answer": "No answer",
+  no_answer: "No answer",
   declined: "Declined",
   canceled: "Canceled",
   cancelled: "Canceled",
@@ -70,15 +75,97 @@ const CALL_LABEL = {
   busy: "Busy",
   unreachable: "Unreachable",
   offline: "Offline",
-  no_answer: "No answer",
-  "no-answer": "No answer",
+  blocked: "Call ended (blocked)",
   ended: "Call ended",
   completed: "Call ended",
   answered: "Call ended",
   connected: "Call ended",
 };
 
-// Same clock format the bubble/header already use -> guaranteed visual parity.
+const firstStr = (...vals) => {
+  for (const v of vals) if (typeof v === "string" && v.trim()) return v.trim();
+  return null;
+};
+const firstNum = (...vals) => {
+  for (const v of vals) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+};
+
+const extractCall = (m) => {
+  if (!m || typeof m !== "object") return null;
+  const nested =
+    (m.call && typeof m.call === "object" ? m.call : null) ||
+    (m.callInfo && typeof m.callInfo === "object" ? m.callInfo : null) ||
+    (m.callMetadata && typeof m.callMetadata === "object"
+      ? m.callMetadata
+      : null) ||
+    (m.metadata && typeof m.metadata === "object" ? m.metadata : null) ||
+    (m.details && typeof m.details === "object" ? m.details : null) ||
+    null;
+
+  const typeHay = firstStr(m.type, m.kind, nested?.type, nested?.kind) || "";
+  const typeIsCall =
+    CALL_TYPE_SET.has(String(typeHay).toLowerCase()) ||
+    String(typeHay).toLowerCase().includes("call");
+
+  const callTypeRaw = firstStr(
+    m.callType,
+    m.mediaType,
+    nested?.callType,
+    nested?.mediaType,
+    nested?.type
+  );
+  const callStatusRaw = firstStr(
+    m.callStatus,
+    m.status,
+    nested?.callStatus,
+    nested?.status
+  );
+  const durRaw = firstNum(
+    m.durationMs,
+    m.callDuration,
+    m.duration,
+    m.lengthMs,
+    nested?.durationMs,
+    nested?.callDuration,
+    nested?.duration
+  );
+  const hasCallish =
+    typeIsCall ||
+    callStatusRaw != null ||
+    (callTypeRaw != null && callTypeRaw !== "") ||
+    (durRaw != null && durRaw > 0);
+
+  if (!hasCallish) return null;
+
+  const ct = (callTypeRaw || typeHay || "").toLowerCase();
+  const callType = ct.includes("video") ? "video" : "audio";
+  const callStatus = String(
+    callStatusRaw || (m.missed ? "missed" : m.declined ? "declined" : "ended")
+  )
+    .slice(0, 40)
+    .toLowerCase();
+  const durationMs =
+    durRaw != null && durRaw > 0 ? Math.min(durRaw, 24 * 60 * 60 * 1000) : 0;
+  const startedAt =
+    firstStr(
+      m.startedAt,
+      nested?.startedAt,
+      m.createdAt,
+      m.created_at,
+      nested?.createdAt
+    ) || null;
+  const endedAt = firstStr(m.endedAt, nested?.endedAt) || null;
+  const callId =
+    firstStr(m.callId, m._callId, nested?.callId, m.call_id, nested?.id) ||
+    null;
+
+  return { callType, callStatus, durationMs, startedAt, endedAt, callId };
+};
+
 const fmtCallTime = (v) => {
   try {
     const d = new Date(v);
@@ -88,7 +175,6 @@ const fmtCallTime = (v) => {
     return "";
   }
 };
-// mm:ss (or h:mm:ss past an hour); 0/invalid -> "".
 const fmtCallDuration = (ms) => {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return "";
@@ -100,16 +186,9 @@ const fmtCallDuration = (ms) => {
   return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
 };
 
-// Whitelist message fields coming from socket/HTTP.
 const pickMessage = (m) => {
   if (!m || typeof m !== "object") return m;
-
-  const rawType = typeof m.type === "string" ? m.type.toLowerCase() : "";
-  const isCall =
-    CALL_TYPES.has(rawType) ||
-    m.callStatus != null ||
-    (m.callType != null && m.callType !== "");
-
+  const call = extractCall(m);
   const out = {
     _id: m._id,
     conversation: m.conversation,
@@ -128,35 +207,16 @@ const pickMessage = (m) => {
     createdAt: m.createdAt,
     reactions: Array.isArray(m.reactions) ? m.reactions : [],
     post: m.post || null,
-    // ✅ preserved so call rows can render date/time/duration like messages
-    isCall,
+    isCall: !!call,
   };
-
-  if (isCall) {
-    const ct =
-      (typeof m.callType === "string" && m.callType) ||
-      (typeof m.mediaType === "string" && m.mediaType) ||
-      (rawType.includes("video") ? "video" : "audio");
-    out.callType = ct === "video" ? "video" : "audio";
-
-    const st =
-      (typeof m.callStatus === "string" && m.callStatus) ||
-      (typeof m.status === "string" && m.status) ||
-      (m.missed ? "missed" : m.declined ? "declined" : "ended");
-    out.callStatus = String(st).slice(0, 40).toLowerCase();
-
-    const dnum = Number(
-      m.durationMs ?? m.callDuration ?? m.duration ?? m.lengthMs ?? 0
-    );
-    out.durationMs =
-      Number.isFinite(dnum) && dnum > 0
-        ? Math.min(dnum, 24 * 60 * 60 * 1000) // clamp absurd values
-        : 0;
-
-    out.startedAt = m.startedAt || m.createdAt || null;
-    out.endedAt = m.endedAt || null;
+  if (call) {
+    out.callType = call.callType;
+    out.callStatus = call.callStatus;
+    out.durationMs = call.durationMs;
+    out.startedAt = call.startedAt;
+    out.endedAt = call.endedAt;
+    out.callId = call.callId;
   }
-
   if (m.attachment && typeof m.attachment === "object") {
     out.attachment = {
       url: isSafeUrl(m.attachment.url) ? m.attachment.url : null,
@@ -184,17 +244,13 @@ const pickMessage = (m) => {
   return out;
 };
 
-// Centered call-log row (rendered by ChatWindow so it never depends on
-// MessageBubble internals). All text flows through JSX => escaped; icon/label
-// come from fixed maps keyed by a normalized status => no socket-string markup.
 function CallRow({ message }) {
-  const isVideo = message.callType === "video";
-  const status = message.callStatus || "ended";
+  const isVideo = message?.callType === "video";
+  const status = message?.callStatus || "ended";
   const connected = CONNECTED_STATUSES.has(status);
-  const dur = connected ? fmtCallDuration(message.durationMs) : "";
+  const dur = connected ? fmtCallDuration(message?.durationMs) : "";
   const label = CALL_LABEL[status] || (isVideo ? "Video call" : "Voice call");
-  const time = fmtCallTime(message.startedAt || message.createdAt);
-
+  const time = fmtCallTime(message?.startedAt || message?.createdAt);
   const aria = [label, dur ? `duration ${dur}` : "", time]
     .filter(Boolean)
     .join(", ");
@@ -234,7 +290,7 @@ function CallRow({ message }) {
         }}
       >
         <i
-          className={`bi ${isVideo ? "bi-videocam-fill" : "bi-telephone-fill"}`}
+          className={`bi ${isVideo ? "bi-camera-video" : "bi-telephone-fill"}`}
         />
       </span>
       <span
@@ -279,6 +335,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const call = useCallContext();
 
   const [messages, setMessages] = useState([]);
+  const [callLogs, setCallLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [sending, setSending] = useState(false);
@@ -288,7 +345,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [typingUsers, setTypingUsers] = useState(new Set());
 
-  // ✅ block state for the chat header (call gating + hamburger label)
   const [blockStatus, setBlockStatus] = useState({
     iBlocked: false,
     blockedMe: false,
@@ -304,6 +360,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const readRequestedRef = useRef(new Set());
   const typingTimeoutRef = useRef(null);
   const sendingRef = useRef(false);
+  const seenLogIdsRef = useRef(new Set());
 
   const snapToBottom = useCallback(() => {
     const el = scrollRef.current;
@@ -318,8 +375,12 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           page: pageNum,
           limit: MESSAGES_PER_PAGE,
         });
-        const fresh = (data.messages || []).map(pickMessage);
-        append ? setMessages((p) => [...fresh, ...p]) : setMessages(fresh);
+        const fresh = (Array.isArray(data?.messages) ? data.messages : []).map(
+          pickMessage
+        );
+        append
+          ? setMessages((p) => [...fresh, ...(Array.isArray(p) ? p : [])])
+          : setMessages(fresh);
         setHasMore(fresh.length === MESSAGES_PER_PAGE);
         setPage(pageNum);
       } catch (e) {
@@ -336,41 +397,125 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     if (!conversationId) return;
     isAtBottomRef.current = true;
     prevTailRef.current = { id: null, len: 0 };
+    seenLogIdsRef.current = new Set();
     setMessages([]);
+    setCallLogs([]);
     setHasMore(true);
     setPage(1);
     loadMessages(1, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
+  // ✅ Receive live call logs from useCall and attach them to THIS thread by peerId.
+  useEffect(() => {
+    if (!otherUser?._id) return;
+    const me = String(otherUser._id);
+    const onLogged = (e) => {
+      const d = e?.detail;
+      if (!d || String(d.peerId) !== me) return;
+      const key = d.callId ? `cid:${d.callId}` : `ts:${d.at}:${d.status}`;
+      if (seenLogIdsRef.current.has(key)) return;
+      seenLogIdsRef.current.add(key);
+      const iso = new Date(d.at).toISOString();
+      setCallLogs((p) => [
+        ...(Array.isArray(p) ? p : []),
+        {
+          _id: "calllog-" + (d.callId || d.at),
+          isCall: true,
+          callId: d.callId || null,
+          callType: d.mediaType === "video" ? "video" : "audio",
+          callStatus: d.status,
+          durationMs: d.durationMs || 0,
+          startedAt: iso,
+          createdAt: iso,
+        },
+      ]);
+    };
+    window.addEventListener("call:logged", onLogged);
+    return () => window.removeEventListener("call:logged", onLogged);
+  }, [otherUser?._id]);
+
   useEffect(() => {
     if (conversationId) sessionStorage.setItem("activeChatId", conversationId);
     return () => sessionStorage.removeItem("activeChatId");
   }, [conversationId]);
 
+  // ✅ ORDERING FIX: timeline + grouped are declared BEFORE any hook that
+  //    references them in a dependency array (the prior TDZ crash lived here).
+  const timeline = useMemo(() => {
+    const visibleMessages = (Array.isArray(messages) ? messages : []).filter(
+      (m) =>
+        !(Array.isArray(m?.deletedFor) ? m.deletedFor : []).includes(
+          currentUserId
+        )
+    );
+    const storedCallIds = new Set(
+      visibleMessages.filter((m) => m?.isCall && m?.callId).map((m) => m.callId)
+    );
+    const logs = (Array.isArray(callLogs) ? callLogs : []).filter(
+      (l) => !(l?.callId && storedCallIds.has(l.callId))
+    );
+
+    const items = [];
+    for (const m of visibleMessages) {
+      const ts = new Date(m?.startedAt || m?.createdAt).getTime();
+      items.push({
+        kind: m?.isCall ? "call" : "message",
+        ts: Number.isFinite(ts) ? ts : 0,
+        key: m?._id,
+        data: m,
+      });
+    }
+    for (const l of logs) {
+      const ts = new Date(l?.createdAt).getTime();
+      items.push({
+        kind: "call",
+        ts: Number.isFinite(ts) ? ts : 0,
+        key: l?._id,
+        data: l,
+      });
+    }
+    items.sort((a, b) => a.ts - b.ts);
+    return items;
+  }, [messages, callLogs, currentUserId]);
+
+  const grouped = useMemo(() => {
+    const g = [];
+    let cur = null;
+    for (const it of timeline) {
+      const raw = it?.data?.startedAt || it?.data?.createdAt;
+      const dObj = new Date(raw);
+      const d = Number.isNaN(dObj.getTime()) ? "" : dObj.toDateString();
+      if (d && d !== cur) {
+        cur = d;
+        g.push({ type: "date", date: d, key: "date-" + d });
+      }
+      g.push({ type: "item", item: it, key: it?.key ?? String(g.length) });
+    }
+    return g;
+  }, [timeline]);
+
+  // ✅ Now safe: `timeline` is already initialized when this deps array evaluates.
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || messages.length === 0) return;
-    const last = messages[messages.length - 1];
-    const tailId = last
-      ? typeof last._id === "string"
-        ? last._id
-        : last._id?.toString?.()
+    if (!el) return;
+    const tail = timeline[timeline.length - 1];
+    const tailId = tail
+      ? typeof tail.key === "string"
+        ? tail.key
+        : String(tail.key)
       : null;
     const prev = prevTailRef.current;
-    const grew = messages.length > prev.len;
+    const grew = timeline.length > prev.len;
     const tailChanged = tailId !== prev.id;
-
     if (grew && tailChanged) {
       if (isAtBottomRef.current) {
         el.scrollTop = el.scrollHeight;
         setShowScrollButton(false);
-      } else {
-        setShowScrollButton(true);
-      }
+      } else setShowScrollButton(true);
     }
-    prevTailRef.current = { id: tailId, len: messages.length };
-  }, [messages]);
+    prevTailRef.current = { id: tailId, len: timeline.length };
+  }, [timeline]);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -386,9 +531,8 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     const el = innerRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      if (isAtBottomRef.current && scrollRef.current) {
+      if (isAtBottomRef.current && scrollRef.current)
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -407,7 +551,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   useEffect(() => {
     readRequestedRef.current = new Set();
   }, [conversationId]);
-
   useEffect(
     () => () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
@@ -415,7 +558,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     []
   );
 
-  // ✅ block status fetch (cancelled-flag pattern)
   useEffect(() => {
     let cancelled = false;
     if (!otherUser?._id) {
@@ -439,7 +581,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     };
   }, [otherUser?._id]);
 
-  // ✅ outside-click + Escape for the hamburger
   useEffect(() => {
     if (!menuOpen) return;
     const onDown = (e) => {
@@ -462,7 +603,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     };
   }, [menuOpen]);
 
-  // ✅ close menu when switching conversation
   useEffect(() => {
     setMenuOpen(false);
   }, [conversationId]);
@@ -471,7 +611,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const callPhase = call?.phase || "idle";
   const canCall = !isCallBlocked && callPhase === "idle" && !!call;
 
-  // ✅ real call start (server re-validates match/block/rate)
   const startCall = (mediaType) => {
     if (!canCall || !otherUser?._id) return;
     call.startCall(otherUser._id, mediaType, conversationId);
@@ -484,17 +623,13 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       const blocked = res?.blocked ?? res?.data?.blocked;
       setBlockStatus((p) => ({ ...p, iBlocked: !!blocked }));
       setMenuOpen(false);
-
       if (blocked) {
-        // ✅ If currently in a call with this peer, end it client-side too.
-        // Server-side authoritative teardown happens in user.controller.toggleBlock.
         if (
           call &&
           callPhase !== "idle" &&
           String(call.peer?._id) === String(otherUser._id)
-        ) {
+        )
           call.endCall("blocked");
-        }
         toast.warning(`${otherUser.name} blocked 🚫`, "Blocked", 3000);
       } else {
         toast.success(`${otherUser.name} unblocked`, "Unblocked", 3000);
@@ -509,7 +644,13 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   };
 
   useEffect(() => {
-    if (!socket || !conversationId || messages.length === 0) return;
+    if (
+      !socket ||
+      !conversationId ||
+      !Array.isArray(messages) ||
+      messages.length === 0
+    )
+      return;
     const pending = messages.filter((m) => {
       const r =
         typeof m.receiver === "string"
@@ -518,7 +659,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       return (
         r === currentUserId &&
         !m.deletedForEveryone &&
-        !m.isCall && // ✅ call logs are not read-receipted (avoids bogus writes)
+        !m.isCall &&
         (!m.isRead || !m.isDelivered)
       );
     });
@@ -549,7 +690,9 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           : msg.conversation?._id?.toString?.();
       if (cid !== conversationId) return;
       setMessages((p) =>
-        p.some((m) => sameId(m._id, msg._id)) ? p : [...p, msg]
+        Array.isArray(p) && p.some((m) => sameId(m._id, msg._id))
+          ? p
+          : [...(Array.isArray(p) ? p : []), msg]
       );
       const r =
         typeof msg.receiver === "string"
@@ -566,12 +709,15 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     };
     const onDelivered = ({ messageId }) =>
       setMessages((p) =>
-        p.map((m) =>
-          sameId(m._id, messageId) ? { ...m, isDelivered: true } : m
-        )
+        Array.isArray(p)
+          ? p.map((m) =>
+              sameId(m._id, messageId) ? { ...m, isDelivered: true } : m
+            )
+          : p
       );
     const onRead = ({ messageId }) =>
       setMessages((p) => {
+        if (!Array.isArray(p)) return p;
         const t = p.find((m) => sameId(m._id, messageId));
         const cut = t ? new Date(t.createdAt).getTime() : null;
         return p.map((m) =>
@@ -589,30 +735,38 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       if (readerId === currentUserId) return;
       const cut = new Date(readUpTo).getTime();
       setMessages((p) =>
-        p.map((m) =>
-          senderOf(m) === currentUserId &&
-          new Date(m.createdAt).getTime() <= cut
-            ? { ...m, isDelivered: true, isRead: true, readAt: readUpTo }
-            : m
-        )
+        Array.isArray(p)
+          ? p.map((m) =>
+              senderOf(m) === currentUserId &&
+              new Date(m.createdAt).getTime() <= cut
+                ? { ...m, isDelivered: true, isRead: true, readAt: readUpTo }
+                : m
+            )
+          : p
       );
     };
     const onReacted = ({ messageId, reactions }) =>
       setMessages((p) =>
-        p.map((m) =>
-          sameId(m._id, messageId)
-            ? {
-                ...m,
-                reactions: Array.isArray(reactions) ? reactions : m.reactions,
-              }
-            : m
-        )
+        Array.isArray(p)
+          ? p.map((m) =>
+              sameId(m._id, messageId)
+                ? {
+                    ...m,
+                    reactions: Array.isArray(reactions)
+                      ? reactions
+                      : m.reactions,
+                  }
+                : m
+            )
+          : p
       );
     const onDeleted = ({ messageId }) =>
       setMessages((p) =>
-        p.map((m) =>
-          sameId(m._id, messageId) ? { ...m, deletedForEveryone: true } : m
-        )
+        Array.isArray(p)
+          ? p.map((m) =>
+              sameId(m._id, messageId) ? { ...m, deletedForEveryone: true } : m
+            )
+          : p
       );
     const onTyping = ({ userId, isTyping }) =>
       setTypingUsers((p) => {
@@ -657,12 +811,11 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       sendingRef.current = false;
       return;
     }
-
     const tempId = `temp-${Date.now()}-${Math.random()
       .toString(36)
       .slice(2, 9)}`;
     setMessages((p) => [
-      ...p,
+      ...(Array.isArray(p) ? p : []),
       {
         _id: tempId,
         text,
@@ -678,7 +831,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         isCall: false,
       },
     ]);
-
     try {
       setSending(true);
       let att = attachment;
@@ -694,7 +846,8 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       const real = pickMessage(response.message);
       const rid = real._id;
       setMessages((p) => {
-        const sock = p.find((m) => m._id === rid);
+        const arr = Array.isArray(p) ? p : [];
+        const sock = arr.find((m) => m._id === rid);
         const finalMsg = {
           ...real,
           sending: false,
@@ -704,7 +857,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           isRead: real.isRead || sock?.isRead || false,
           readAt: real.readAt || sock?.readAt || null,
         };
-        return p
+        return arr
           .filter((m) => m._id !== tempId && m._id !== rid)
           .concat(finalMsg);
       });
@@ -712,9 +865,11 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       console.error("Send error:", e);
       toast.error(e.message || "Failed to send message. Tap to retry.");
       setMessages((p) =>
-        p.map((m) =>
-          m._id === tempId ? { ...m, failed: true, sending: false } : m
-        )
+        Array.isArray(p)
+          ? p.map((m) =>
+              m._id === tempId ? { ...m, failed: true, sending: false } : m
+            )
+          : p
       );
     } finally {
       setSending(false);
@@ -726,9 +881,11 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     if (sendingRef.current) return;
     sendingRef.current = true;
     setMessages((p) =>
-      p.map((m) =>
-        m._id === failed._id ? { ...m, failed: false, sending: true } : m
-      )
+      Array.isArray(p)
+        ? p.map((m) =>
+            m._id === failed._id ? { ...m, failed: false, sending: true } : m
+          )
+        : p
     );
     try {
       const response = await sendMessage(conversationId, {
@@ -739,7 +896,8 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       const real = pickMessage(response.message);
       const rid = real._id;
       setMessages((p) => {
-        const sock = p.find((m) => m._id === rid);
+        const arr = Array.isArray(p) ? p : [];
+        const sock = arr.find((m) => m._id === rid);
         const finalMsg = {
           ...real,
           sending: false,
@@ -749,16 +907,18 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           isRead: real.isRead || sock?.isRead || false,
           readAt: real.readAt || sock?.readAt || null,
         };
-        return p
+        return arr
           .filter((m) => m._id !== failed._id && m._id !== rid)
           .concat(finalMsg);
       });
     } catch {
       toast.error("Retry failed. Please try again.");
       setMessages((p) =>
-        p.map((m) =>
-          m._id === failed._id ? { ...m, failed: true, sending: false } : m
-        )
+        Array.isArray(p)
+          ? p.map((m) =>
+              m._id === failed._id ? { ...m, failed: true, sending: false } : m
+            )
+          : p
       );
     } finally {
       sendingRef.current = false;
@@ -775,7 +935,10 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const handleDeleteMessage = async (id, scope) => {
     try {
       await deleteMessage(id, scope);
-      if (scope === "me") setMessages((p) => p.filter((m) => m._id !== id));
+      if (scope === "me")
+        setMessages((p) =>
+          Array.isArray(p) ? p.filter((m) => m._id !== id) : p
+        );
     } catch (e) {
       toast.error(e.response?.data?.message || "Failed to delete message");
     }
@@ -801,22 +964,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       2000
     );
   };
-
-  const grouped = useMemo(() => {
-    const g = [];
-    let cur = null;
-    messages
-      .filter((m) => !m.deletedFor?.includes(currentUserId))
-      .forEach((m) => {
-        const d = new Date(m.createdAt).toDateString();
-        if (d !== cur) {
-          cur = d;
-          g.push({ type: "date", date: d });
-        }
-        g.push({ type: "message", data: m });
-      });
-    return g;
-  }, [messages, currentUserId]);
 
   const otherTyping = typingUsers.has(otherUser?._id?.toString());
   const otherPhoto = otherUser?.photos?.[0]?.url;
@@ -1011,7 +1158,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
           <div className="chat-loading" aria-label="Loading messages">
             <div className="spinner-border spinner-border-sm text-primary"></div>
           </div>
-        ) : messages.length === 0 ? (
+        ) : timeline.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-icon" aria-hidden="true">
               💬
@@ -1039,41 +1186,43 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
                 <div className="spinner-border spinner-border-sm text-primary"></div>
               </div>
             )}
-            {grouped.map((it, idx) =>
-              it.type === "date" ? (
-                <div key={`date-${idx}`} className="chat-date-separator">
-                  <span>
-                    {it.date === new Date().toDateString()
-                      ? "Today"
-                      : it.date ===
-                        new Date(Date.now() - 86400000).toDateString()
-                      ? "Yesterday"
-                      : new Date(it.date).toLocaleDateString()}
-                  </span>
-                </div>
-              ) : it.data.isCall ? (
-                // ✅ call log row: same date (separator) + same time format as a
-                //    bubble, plus the call duration. Rendered here so it does not
-                //    depend on MessageBubble's internal call handling.
-                <CallRow key={it.data._id} message={it.data} />
-              ) : (
+            {grouped.map((it) => {
+              if (it.type === "date") {
+                return (
+                  <div key={it.key} className="chat-date-separator">
+                    <span>
+                      {it.date === new Date().toDateString()
+                        ? "Today"
+                        : it.date ===
+                          new Date(Date.now() - 86400000).toDateString()
+                        ? "Yesterday"
+                        : new Date(it.date).toLocaleDateString()}
+                    </span>
+                  </div>
+                );
+              }
+              const item = it.item;
+              if (!item || !item.data) return null; // ✅ never crash on a malformed row
+              if (item.kind === "call")
+                return <CallRow key={it.key} message={item.data} />;
+              return (
                 <MessageBubble
-                  key={it.data._id}
-                  message={it.data}
+                  key={it.key}
+                  message={item.data}
                   isMine={
-                    (typeof it.data.sender === "string"
-                      ? it.data.sender
-                      : it.data.sender?._id) === currentUserId
+                    (typeof item.data.sender === "string"
+                      ? item.data.sender
+                      : item.data.sender?._id) === currentUserId
                   }
-                  onReact={(e) => handleReact(it.data._id, e)}
-                  onDelete={(s) => handleDeleteMessage(it.data._id, s)}
+                  onReact={(e) => handleReact(item.data._id, e)}
+                  onDelete={(s) => handleDeleteMessage(item.data._id, s)}
                   onImageClick={handleImageClick}
-                  onRetry={() => handleRetry(it.data)}
-                  sending={it.data.sending}
-                  failed={it.data.failed}
+                  onRetry={() => handleRetry(item.data)}
+                  sending={item.data.sending}
+                  failed={item.data.failed}
                 />
-              )
-            )}
+              );
+            })}
             {otherTyping && (
               <div
                 className="chat-typing-indicator"
