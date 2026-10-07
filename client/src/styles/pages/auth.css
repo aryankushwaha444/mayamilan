@@ -4,13 +4,17 @@
 
 .auth-page {
   min-height: 100vh;
+  background-color: #fafafa;
+  background-image: radial-gradient(
+      circle at top left,
+      rgba(236, 72, 153, 0.12),
+      transparent 35%
     ),
     radial-gradient(
       circle at bottom right,
       rgba(139, 92, 246, 0.12),
       transparent 35%
-    ),
-    #fafafa;
+    );
   display: flex;
   align-items: center;
 }
