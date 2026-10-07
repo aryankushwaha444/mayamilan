@@ -4,7 +4,6 @@
 
 .suggestion-page {
   min-height: calc(100vh - 76px);
-  background: linear-gradient(180deg, #fff5f9 0%, #fdf2f8 50%, #fff 100%);
   padding: 60px 24px;
   display: flex;
   justify-content: center;

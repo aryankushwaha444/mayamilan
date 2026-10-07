@@ -21,7 +21,7 @@ function ChangePassword() {
           user.oauthProvider === "google" ? "Google" : user.oauthProvider
         }. Password changes are not available.`,
         "OAuth Account",
-        5000
+        3000
       );
       navigate("/settings", { replace: true });
     }
@@ -111,7 +111,6 @@ function ChangePassword() {
       );
 
       setSuccess(true);
-      toast.success("Password changed successfully! 🔐", "Success", 3000);
 
       // ✅ Navigate immediately with state instead of setTimeout
       navigate("/profile", { state: { passwordChanged: true }, replace: true });

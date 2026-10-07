@@ -15,6 +15,7 @@ import { Virtuoso } from "react-virtuoso";
 import Loader from "../components/Loader.jsx";
 import SEO from "../components/SEO";
 import { avatarImg } from "../utils/cloudinary";
+import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback";
 
 /* ═══════════════════════════════════════════════════════
    CONVERSATION ITEM (memoized — hover / swipe / hold delete)
@@ -140,11 +141,14 @@ const ConversationItem = memo(function ConversationItem({
               src={avatarImg(otherUser.photos[0].url)}
               alt=""
               loading="lazy"
+              onError={onAvatarError}
             />
           ) : (
-            <span aria-hidden="true">
-              {otherUser?.name?.charAt(0)?.toUpperCase() || "?"}
-            </span>
+            <img
+              src={DEFAULT_AVATAR}
+              alt=""
+              style={{ objectFit: "contain", background: "#f1f5f9" }}
+            />
           )}
         </div>
 
@@ -411,7 +415,6 @@ function Messages() {
       if (selectedConversation?._id === target._id) {
         setSelectedConversation(null);
       }
-      toast.success("Conversation deleted 🗑️", "Deleted", 3000);
     } catch (err) {
       toast.error(
         err.response?.data?.message || "Failed to delete conversation",
@@ -549,11 +552,17 @@ function Messages() {
                             src={avatarImg(match.user.photos[0].url)}
                             alt=""
                             loading="lazy"
+                            onError={onAvatarError}
                           />
                         ) : (
-                          <span aria-hidden="true">
-                            {match.user?.name?.charAt(0)?.toUpperCase() || "?"}
-                          </span>
+                          <img
+                            src={DEFAULT_AVATAR}
+                            alt=""
+                            style={{
+                              objectFit: "contain",
+                              background: "#f1f5f9",
+                            }}
+                          />
                         )}
                       </div>
                       <div className="conversation-content">

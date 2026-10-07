@@ -12,6 +12,7 @@ import { useAlert } from "../context/AlertContext";
 import { useSocket } from "../hooks/useSocket";
 import SEO from "../components/SEO";
 import { avatarImg } from "../utils/cloudinary";
+import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback";
 
 /* ═══════════════════════════════════════════════════════
    NOTIFICATION ITEM (memoized — swipe to delete)
@@ -110,13 +111,16 @@ const NotificationItem = memo(function NotificationItem({
               alt=""
               className="notif-avatar rounded-circle"
               loading="lazy"
+              onError={onAvatarError}
             />
           ) : (
-            <div className="notif-avatar-placeholder rounded-circle bg-secondary d-flex align-items-center justify-content-center text-white fw-bold">
-              {notification.sender?.name?.charAt(0) || "U"}
-            </div>
+            <img
+              src={DEFAULT_AVATAR}
+              alt=""
+              className="notif-avatar rounded-circle"
+              style={{ objectFit: "contain", background: "#f1f5f9" }}
+            />
           )}
-
           {!notification.isRead && (
             <span className="notif-unread-dot" aria-label="Unread"></span>
           )}
@@ -213,7 +217,6 @@ function Notifications() {
 
       try {
         await deleteNotification(notification._id);
-        toast.info("Notification deleted 🗑️", "Deleted", 2000);
       } catch (err) {
         setNotifications(previousNotifications); // Revert
         toast.error("Failed to delete notification", "Error", 3000);
@@ -231,7 +234,6 @@ function Notifications() {
 
     try {
       await deleteAllNotifications();
-      toast.success("All notifications cleared ✨", "Cleared", 3000);
     } catch (err) {
       setNotifications(previousNotifications); // Revert
       toast.error("Failed to clear notifications", "Error", 4000);

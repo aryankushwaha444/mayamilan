@@ -136,7 +136,7 @@ function Register() {
       await sendOTP(formData.email, formData.name, honeypotValue, formLoadTime);
       setOtpSent(true);
       setSuccess("OTP sent to your email!");
-      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000);
+      toast.success("OTP sent to your email! 📧", "Check your inbox", 3000);
       startResendTimer();
     } catch (err) {
       const data = err.response?.data || {};
@@ -145,7 +145,7 @@ function Register() {
         toast.warning(
           "Request expired. Please refresh and try again.",
           "Security",
-          5000
+          3000
         );
         window.location.reload();
         return;
@@ -189,7 +189,6 @@ function Register() {
         document.querySelector('input[name="website"]')?.value || "";
       await verifyOTP(formData.email, otp, honeypotValue);
       setSuccess("Email verified successfully!");
-      toast.success("Email verified! ✅", "Almost done", 3000);
       await handleCompleteRegistration();
     } catch (err) {
       const msg = err.response?.data?.message || "Invalid OTP";
@@ -218,12 +217,6 @@ function Register() {
         website: honeypotValue,
         _formLoadTime: formLoadTime,
       });
-
-      toast.success(
-        `Welcome to Maya Milan, ${formData.name}! 🎉`,
-        "Account created",
-        4000
-      );
       window.location.href = "/discover";
     } catch (err) {
       const data = err.response?.data || {};

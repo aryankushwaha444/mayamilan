@@ -145,7 +145,6 @@ function PostCard({ post, onUpdate }) {
         }));
       }
 
-      toast.success(res?.isSaved ? "Post saved! 📌" : "Removed from saved");
     } catch (err) {
       console.error(err);
       toast.error("Failed to save post");
@@ -241,7 +240,6 @@ function PostCard({ post, onUpdate }) {
     try {
       await postService.deletePost(post._id);
       updatePost(null);
-      toast.success("Post deleted successfully 🗑️");
     } catch (err) {
       console.error(err);
       toast.error("Failed to delete post");
@@ -269,7 +267,6 @@ function PostCard({ post, onUpdate }) {
       }));
 
       setEditing(false);
-      toast.success("Post updated successfully ✏️");
     } catch (err) {
       console.error(err);
       // 🔒 Show the REAL server reason (e.g. "Content cannot exceed 2000 characters")

@@ -168,7 +168,7 @@
   width: 100%;
   border-radius: 28px;
   box-shadow: 0 30px 60px -15px rgba(219, 39, 119, 0.35);
-  object-fit: cover;
+  object-fit: fill;
   animation: heroFloat 6s ease-in-out infinite;
 }
 

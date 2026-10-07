@@ -8,6 +8,7 @@ import Loader from "../components/Loader.jsx";
 import SEO from "../components/SEO";
 import { compressProfilePhoto } from "../utils/imageCompressor";
 import { cardImg, avatarImg } from "../utils/cloudinary";
+import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback";
 import api from "../utils/api";
 import {
   getMyProfile,
@@ -145,15 +146,11 @@ function Profile() {
 
     try {
       setUploading(true);
-      toast.info("Optimizing image...", "Compressing", 2000);
-
       const compressedFile = await compressProfilePhoto(file);
       const data = await uploadProfilePhoto(compressedFile);
 
       setProfile((prev) => ({ ...prev, photos: data.photos }));
       updateUser({ ...authUser, photos: data.photos });
-      setSuccess("Photo uploaded successfully");
-      toast.success("Photo uploaded! 📸", "Success", 3000);
     } catch (err) {
       const msg = err.response?.data?.message || "Failed to upload photo";
       setError(msg);
@@ -175,7 +172,6 @@ function Profile() {
       setProfile((prev) => ({ ...prev, photos: data.photos }));
       updateUser({ ...authUser, photos: data.photos });
       setSuccess("Photo deleted successfully");
-      toast.success("Photo deleted 🗑️", "Deleted", 3000);
     } catch (err) {
       const msg = err.response?.data?.message || "Failed to delete photo";
       setError(msg);
@@ -196,7 +192,6 @@ function Profile() {
       setProfile((prev) => ({ ...prev, photos: data.photos }));
       updateUser({ ...authUser, photos: data.photos });
       setSuccess("Primary photo updated");
-      toast.success("Primary photo updated! ⭐", "Success", 3000);
     } catch (err) {
       const msg =
         err.response?.data?.message || "Failed to update primary photo";
@@ -225,12 +220,6 @@ function Profile() {
       const response = await api.delete("/account", {
         data: { password: isOAuthUser ? undefined : deletePassword },
       });
-
-      toast.success(
-        response.data.message || "Your account has been deactivated.",
-        "Deactivated",
-        5000
-      );
 
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
@@ -403,17 +392,14 @@ function Profile() {
                           alt={`${profile.name} photo ${index + 1}`}
                           className="profile-photo"
                           loading="lazy"
+                          onError={onAvatarError}
                           onClick={() => setLightboxIndex(index)}
                           role="button"
                           tabIndex={0}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              setLightboxIndex(index);
-                            }
+                            /* ... */
                           }}
                         />
-
                         {photo.isPrimary && (
                           <span className="badge bg-primary position-absolute top-0 start-0 m-2">
                             <i
@@ -423,7 +409,6 @@ function Profile() {
                             Primary
                           </span>
                         )}
-
                         <div className="profile-photo-actions position-absolute bottom-0 start-0 end-0 p-2">
                           {!photo.isPrimary && (
                             <button
@@ -485,9 +470,17 @@ function Profile() {
               <div className="d-flex align-items-center gap-3 mb-4">
                 <div className="profile-avatar">
                   {primaryPhoto?.url ? (
-                    <img src={avatarImg(primaryPhoto.url)} alt="" />
+                    <img
+                      src={avatarImg(primaryPhoto.url)}
+                      alt=""
+                      onError={onAvatarError}
+                    />
                   ) : (
-                    <i className="bi bi-person-fill" aria-hidden="true"></i>
+                    <img
+                      src={DEFAULT_AVATAR}
+                      alt=""
+                      style={{ objectFit: "contain", background: "#f1f5f9" }}
+                    />
                   )}
                 </div>
                 <div>

@@ -104,15 +104,6 @@ function ShareModal({ post, onClose, onShared }) {
     try {
       const res = await postService.sharePost(post._id, selected);
 
-      // ✅ Success feedback before closing
-      toast.success(
-        `Shared with ${selected.length} ${
-          selected.length === 1 ? "match" : "matches"
-        }! 🎉`,
-        "Post Shared",
-        3000
-      );
-
       onShared?.(res.sharedCount);
       onClose();
     } catch (err) {

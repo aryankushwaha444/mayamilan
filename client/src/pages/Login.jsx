@@ -222,7 +222,7 @@ function Login() {
       localStorage.setItem("accessToken", data.accessToken);
       localStorage.setItem("user", JSON.stringify(data.user));
 
-      toast.success("Welcome back! Account reactivated. 🎉", "Success", 3000);
+      toast.success("Welcome back! Account reactivated. 🎉", "Success", 2000);
       window.location.replace(
         data.user?.role === "admin" ? "/admin" : "/discover"
       );
@@ -260,11 +260,6 @@ function Login() {
       });
 
       if (response.success) {
-        toast.success(
-          `Welcome back, ${response.user?.name || "there"}! 👋`,
-          "Login successful",
-          3000
-        );
         window.location.href =
           response.user?.role === "admin" ? "/admin" : "/discover";
       } else {
@@ -379,11 +374,6 @@ function Login() {
       if (data.success) {
         localStorage.setItem("accessToken", data.accessToken);
         localStorage.setItem("user", JSON.stringify(data.user));
-        toast.success(
-          `Welcome back, ${data.user?.name}! 🎉`,
-          "Login successful",
-          3000
-        );
         window.location.href =
           data.user?.role === "admin" ? "/admin" : "/discover";
       }

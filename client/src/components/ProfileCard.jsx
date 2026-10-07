@@ -1,6 +1,7 @@
 import { useMemo, memo, useState } from "react";
 import { Link } from "react-router-dom";
 import { cardImg } from "../utils/cloudinary";
+import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback"; // ✅ ADD THIS LINE
 
 // ✅ Moved helper functions outside the component for better performance and readability
 function calculateAge(dateOfBirth) {
@@ -77,11 +78,15 @@ function ProfileCard({ user, onLike, onPass }) {
             loading="lazy"
             decoding="async"
             className="card-img-top discovery-profile-image"
+            onError={onAvatarError}
           />
         ) : (
-          <div className="discovery-profile-placeholder">
-            <i className="bi bi-person" aria-hidden="true"></i>
-          </div>
+          <img
+            src={DEFAULT_AVATAR}
+            alt={`${user.name} — no photo`}
+            className="card-img-top discovery-profile-image"
+            style={{ objectFit: "contain", background: "#f1f5f9" }}
+          />
         )}
 
         {user.isOnline && (

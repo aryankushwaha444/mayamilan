@@ -13,6 +13,7 @@ import { useAlert } from "../context/AlertContext";
 import Loader from "../components/Loader.jsx";
 import SEO from "../components/SEO";
 import { cardImg } from "../utils/cloudinary";
+import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback";
 
 function UserProfile() {
   const { userId } = useParams();
@@ -152,10 +153,8 @@ function UserProfile() {
             toast.success(
               "It's a Match! 💕",
               `You and ${profile.name} liked each other`,
-              5000
+              3000
             );
-          } else {
-            toast.success(`Like sent to ${profile.name}! ❤️`, "Liked", 3000);
           }
         }
       }
@@ -180,7 +179,7 @@ function UserProfile() {
       toast.success(
         res.message || "Report submitted successfully 🚩",
         "Thank you",
-        4000
+        2000
       );
       setReportOpen(false);
       setReportMessage("");
@@ -205,10 +204,8 @@ function UserProfile() {
         toast.warning(
           `${profile.name} has been blocked 🚫`,
           "User blocked",
-          4000
+          3000
         );
-      } else {
-        toast.success(`${profile.name} has been unblocked`, "Unblocked", 3000);
       }
     } catch (err) {
       toast.error(
@@ -334,22 +331,19 @@ function UserProfile() {
                   role="button"
                   tabIndex={0}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setLightboxIndex(primaryIndex);
-                    }
+                    /* ... */
                   }}
                   loading="eager"
+                  onError={onAvatarError}
                 />
               ) : (
-                <div className="user-profile-placeholder d-flex align-items-center justify-content-center bg-light text-muted">
-                  <i
-                    className="bi bi-person-circle fs-1"
-                    aria-hidden="true"
-                  ></i>
-                </div>
+                <img
+                  src={DEFAULT_AVATAR}
+                  alt={`${profile.name} — no photo`}
+                  className="w-100 user-profile-main-photo"
+                  style={{ objectFit: "contain", background: "#f1f5f9" }}
+                />
               )}
-
               <div className="position-absolute top-0 end-0 m-3">
                 <span
                   className={`badge rounded-pill ${
@@ -575,12 +569,10 @@ function UserProfile() {
                           role="button"
                           tabIndex={0}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              setLightboxIndex(index);
-                            }
+                            /* ... */
                           }}
                           loading="lazy"
+                          onError={onAvatarError}
                         />
                       </div>
                     ))}

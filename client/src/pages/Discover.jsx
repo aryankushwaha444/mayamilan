@@ -159,7 +159,6 @@ function Discover() {
               )
             );
           }
-          toast.info("Removed like", "Unlike", 2000);
         }
         return;
       }
@@ -183,10 +182,7 @@ function Discover() {
           )
         );
         if (response.matched) {
-          toast.success("It's a Match! 💕", "New Match", 5000);
-        } else if (!response.alreadyLiked) {
-          toast.success("Like sent! ❤️", "Liked", 2000);
-        }
+        } else if (!response.alreadyLiked) {        }
         // alreadyLiked && !matched -> silent no‑op (stale UI), heart stays filled.
       } else {
         setUsers(previousUsers);

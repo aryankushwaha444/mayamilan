@@ -4,10 +4,6 @@
 
 .auth-page {
   min-height: 100vh;
-  background: radial-gradient(
-      circle at top left,
-      rgba(236, 72, 153, 0.12),
-      transparent 35%
     ),
     radial-gradient(
       circle at bottom right,
@@ -268,14 +264,15 @@
   background: rgba(15, 15, 15, 0.5);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; /* centering now via child margin:auto so an over-tall modal SCROLLS instead of clipping */
+  overflow-y: auto; /* DEFECT-1 FIX: modal taller than viewport becomes reachable on mobile / short landscape */
+  -webkit-overflow-scrolling: touch;
   padding: 1rem;
   animation: overlayFadeIn 0.25s ease-out;
 }
 
 .reactivation-modal {
+  margin: auto; /* center modal vertically and horizontally */
   max-width: 480px;
   width: 100%;
   border-radius: 1.25rem;
@@ -464,5 +461,86 @@
 
   .relationship-option {
     padding: 13px;
+  }
+}
+
+/* ── Reactivation modal: small-screen scaling ──
+   The existing @media (max-width:576px) block above never targeted any
+   .reactivation-* rule, which is why this panel was not responsive. */
+@media (max-width: 576px) {
+  .reactivation-overlay,
+  .reactivation-modal-overlay {
+    padding: 0.75rem;
+  }
+  .reactivation-modal {
+    border-radius: 1rem;
+  }
+  .reactivation-header {
+    padding: 1.25rem 1rem 1rem;
+  }
+  .reactivation-header h4 {
+    font-size: 1.15rem;
+  }
+  .reactivation-icon-circle {
+    width: 52px;
+    height: 52px;
+    font-size: 1.5rem;
+    margin-bottom: 0.75rem;
+  }
+  .reactivation-body {
+    padding: 1rem;
+  }
+  .reactivation-countdown-card {
+    padding: 0.625rem;
+    gap: 0.625rem;
+  }
+  .reactivation-countdown-icon {
+    width: 40px;
+    height: 40px;
+    font-size: 1.25rem;
+    border-radius: 10px;
+  }
+  .reactivation-days {
+    font-size: 1.25rem;
+  }
+  .reactivation-attempts {
+    font-size: 0.8125rem;
+    padding: 0.5rem;
+  }
+  .reactivation-warning-box {
+    font-size: 0.8125rem;
+    padding: 0.625rem;
+  }
+  .reactivation-footer {
+    padding: 0.75rem 1rem 1rem;
+  }
+  .reactivation-activate-btn {
+    font-size: 0.95rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .reactivation-overlay,
+  .reactivation-modal-overlay {
+    padding: 0.5rem;
+  }
+  .reactivation-header {
+    padding: 1rem 0.875rem 0.875rem;
+  }
+  .reactivation-header h4 {
+    font-size: 1.05rem;
+  }
+  .reactivation-icon-circle {
+    width: 46px;
+    height: 46px;
+    font-size: 1.3rem;
+  }
+  .reactivation-countdown-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 1.1rem;
+  }
+  .reactivation-days {
+    font-size: 1.1rem;
   }
 }

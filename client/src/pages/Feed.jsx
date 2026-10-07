@@ -265,7 +265,6 @@ function Feed() {
         if (prev.some((p) => p._id === np._id)) return prev;
         return [np, ...prev];
       });
-      toast.success("Post shared with your community! 🎉", "Posted", 3000);
       virtuosoRef.current?.scrollToIndex({ index: 0, behavior: "smooth" });
     },
     [toast]

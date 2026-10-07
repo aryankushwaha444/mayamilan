@@ -17,13 +17,22 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 20px;
+  /* ✅ RESPONSIVE: allow the title block and the count/refresh group to wrap
+       instead of squeezing each other on narrow viewports. */
+  flex-wrap: wrap;
+  gap: 12px 20px;
   margin-bottom: 35px;
 }
 
-.matches-header h1, h2 {
+/* ✅ RESPONSIVE + BUGFIX: was `.matches-header h1, h2` — the bare `h2` leaked a
+     GLOBAL rule onto every page's <h2>. Scoped to the header h1 only, and given an
+     explicit font-size so it no longer inherits reset.css's 56px (which overflowed
+     horizontally on phones and got clipped by body{overflow-x:hidden}). */
+.matches-header h1 {
   margin: 0 0 8px;
-  color:black;
+  color: black;
+  font-size: clamp(1.5rem, 4.5vw, 2rem);
+  line-height: 1.15;
 }
 
 .matches-header p {
@@ -87,7 +96,10 @@
 .match-card-content h3,
 .match-card-name {
   margin: 0 0 8px;
-  font-size: 22px;
+  /* ✅ RESPONSIVE: scale the name down on small cards (was a flat 22px) and let a
+       pathologically long name break instead of overflowing the card's overflow:hidden. */
+  font-size: clamp(1.05rem, 3.5vw, 1.375rem);
+  overflow-wrap: anywhere;
 }
 
 .match-age {
@@ -108,13 +120,22 @@
 
 .match-card-actions {
   display: flex;
-  gap: 10px;
+  /* ✅ THE MARKED FIX: the row must WRAP. Without this the three `flex:1` buttons
+       are forced into equal thirds and the rightmost label ("Unmatch") overflows its
+       73px box and is clipped by .match-card{overflow:hidden} -> "Unma". */
+  flex-wrap: wrap;
+  gap: 8px 10px;
   margin-top: 20px;
 }
 
 .match-card-actions button {
-  flex: 1;
-  padding: 11px 14px;
+  /* ✅ THE MARKED FIX: basis auto (not 0%) so each button is at least as wide as its
+       label, and min-width:0 so a flex item can never refuse to shrink and push past
+       the card edge. Combined with flex-wrap above, labels fit on one line when the
+       card is wide enough and the row wraps (2+1) when it isn't — never clipped. */
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 12px;
   border: 0;
   border-radius: 10px;
   cursor: pointer;
@@ -177,3 +198,37 @@
   padding: 60px 20px;
 }
 
+/* ✅ RESPONSIVE: tighten horizontal padding + card/action internals on small
+       screens so the wrapped buttons (and the now-clamped title) have room. Top
+       padding is left at 100px (it clears the fixed navbar) — only the sides change,
+       so desktop spacing is untouched. */
+@media (max-width: 576px) {
+  .matches-page {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .matches-header {
+    gap: 10px 16px;
+  }
+}
+
+@media (max-width: 380px) {
+  .matches-page {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .match-card-content {
+    padding: 14px;
+  }
+
+  .match-card-actions {
+    gap: 8px;
+  }
+
+  .match-card-actions button {
+    padding: 10px;
+    font-size: 0.8125rem; /* 13px — still legible, gives the label more room */
+  }
+}

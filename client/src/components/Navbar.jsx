@@ -14,6 +14,21 @@ import {
 } from "../services/messageService.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
+// ✅ CHANGED — public/ assets are served at the site ROOT, so reference them with
+// BASE_URL (== "/" at a root deploy, but base-proof). The old "../../public/images/..."
+// 404s because Vite strips the "public" segment. BRAND_LOGO fixes the same latent bug
+// on nested routes (./images/logo.png -> /users/images/logo.png on /users/:id).
+const DEFAULT_AVATAR = `${import.meta.env.BASE_URL}images/default-avatar.png`;
+const BRAND_LOGO = `${import.meta.env.BASE_URL}images/logo.png`;
+
+// ✅ CHANGED — graceful degradation: if a photo URL 404s (e.g. a Cloudinary asset that
+// deleteProfilePhoto destroyed, or any dead link), swap to the default silhouette instead
+// of a broken-image icon. onerror=null stops an infinite loop if the default itself fails.
+const handleAvatarError = (e) => {
+  e.currentTarget.src = DEFAULT_AVATAR;
+  e.currentTarget.onerror = null;
+};
+
 // Simple inline debounce hook to prevent API flooding from rapid socket events
 const useDebounce = (callback, delay = 500) => {
   const timeoutRef = useRef(null);
@@ -301,12 +316,10 @@ function Navbar() {
 
   const closeMobileMenu = () => setMobileOpen(false);
 
-  const profilePhoto = avatarImg(
-    Array.isArray(user?.photos) && user.photos.length > 0
-      ? (user.photos.find((photo) => photo?.isPrimary) || user.photos[0])
-          ?.url || null
-      : null
-  );
+  // ✅ CHANGED — reuse the tested getAvatarUrl (handles empty array + url||secure_url)
+  // and only call avatarImg when a URL exists, so we never feed avatarImg(null).
+  const selfPhotoUrl = getAvatarUrl(user?.photos);
+  const profilePhoto = selfPhotoUrl ? avatarImg(selfPhotoUrl) : null;
 
   const profileInitial = user?.name?.charAt(0)?.toUpperCase() || "U";
 
@@ -334,7 +347,8 @@ function Navbar() {
             onClick={closeMobileMenu}
           >
             <span className="brand-logo">
-              <img src="./images/logo.png" alt="Maya~Milan Logo" />
+              {/* ✅ CHANGED — was "./images/logo.png" (404s on nested routes like /users/:id) */}
+              <img src={BRAND_LOGO} alt="Maya~Milan Logo" />
             </span>
             <div className="brand-text">
               <span className="brand-name">Maya~Milan</span>
@@ -517,6 +531,8 @@ function Navbar() {
                                       )}
                                       alt=""
                                       className="chat-avatar-img"
+                                      // ✅ CHANGED — dead/broken photo URL -> default silhouette
+                                      onError={handleAvatarError}
                                     />
                                   ) : (
                                     <span className="chat-avatar-initial">
@@ -629,6 +645,8 @@ function Navbar() {
                                       )}
                                       alt=""
                                       className="item-avatar-img"
+                                      // ✅ CHANGED — dead/broken photo URL -> default silhouette
+                                      onError={handleAvatarError}
                                     />
                                   ) : (
                                     <span>
@@ -678,9 +696,16 @@ function Navbar() {
                 >
                   <div className="navbar-avatar">
                     {profilePhoto ? (
-                      <img src={profilePhoto} alt="" />
+                      // ✅ CHANGED — onError so a dead self-photo URL degrades to default
+                      <img
+                        src={profilePhoto}
+                        alt=""
+                        onError={handleAvatarError}
+                      />
                     ) : (
-                      <span>{profileInitial}</span>
+                      // ✅ CHANGED — was your broken "../../public/images/default-avatar.png";
+                      // self with no photo now shows the default silhouette (your intent).
+                      <img src={DEFAULT_AVATAR} alt="" />
                     )}
                     <span className="online-indicator"></span>
                   </div>
@@ -700,9 +725,16 @@ function Navbar() {
                     <div className="profile-dropdown-header">
                       <div className="profile-dropdown-avatar">
                         {profilePhoto ? (
-                          <img src={profilePhoto} alt="" />
+                          // ✅ CHANGED — onError fallback
+                          <img
+                            src={profilePhoto}
+                            alt=""
+                            onError={handleAvatarError}
+                          />
                         ) : (
-                          <span>{profileInitial}</span>
+                          // ✅ CHANGED — was <span>{profileInitial}</span>; self no-photo now
+                          // shows the default silhouette, consistent with the navbar button.
+                          <img src={DEFAULT_AVATAR} alt="" />
                         )}
                       </div>
                       <div>

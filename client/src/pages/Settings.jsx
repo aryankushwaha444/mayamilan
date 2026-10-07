@@ -434,7 +434,7 @@ function Settings() {
         toastRef.current?.warning?.(
           "Request expired. Please try again.",
           "Session expired",
-          5000
+          3000
         );
         setTwoFaBusy(false);
         return;

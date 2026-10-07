@@ -36,7 +36,7 @@ function Matches() {
     } catch (err) {
       if (id !== reqIdRef.current) return;
       setError(err.response?.data?.message || "Unable to load your matches.");
-      toastRef.current?.error?.("Failed to load matches", "Error", 4000);
+      toastRef.current?.error?.("Failed to load matches", "Error", 2000);
     } finally {
       if (id === reqIdRef.current) setLoading(false);
     }
@@ -59,7 +59,7 @@ function Matches() {
       toastRef.current?.success?.(
         "You have a new match! 💕",
         "New Match",
-        4000
+        2000
       );
     };
 
@@ -104,14 +104,14 @@ function Matches() {
       toastRef.current?.success?.(
         "Match removed successfully 💔",
         "Unmatched",
-        3000
+        2000
       );
     } catch (err) {
       if (snapshot) setMatches(snapshot); // revert on failure
       toastRef.current?.error?.(
         err.response?.data?.message || "Failed to remove match.",
         "Error",
-        4000
+        2000
       );
     } finally {
       unmatchingRef.current.delete(matchId);

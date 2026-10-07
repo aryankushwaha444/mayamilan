@@ -46,11 +46,6 @@ export default function DeleteAccount() {
         data: { password: isOAuthUser ? undefined : password },
       });
 
-      toast.success(
-        response.data.message || "Account deactivated",
-        "Deactivated",
-        5000
-      );
       await logout();
       navigate("/login", { replace: true });
     } catch (error) {
@@ -87,8 +82,6 @@ export default function DeleteAccount() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-
-      toast.success("Your data has been downloaded!", "Export Complete", 4000);
     } catch (error) {
       console.error("Export error:", error);
       toast.error(

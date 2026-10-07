@@ -294,11 +294,45 @@ export const getUserProfile = async (req, res, next) => {
       });
     }
 
+    // ✅ PREVENTION (A): the old `{ ...user }` shipped the ENTIRE doc (minus password)
+    // to any authenticated stranger — email, role (admin enumeration), lastLoginIp/
+    // Country/City, twoFactorEnabled, reactivationAttempts, oauthProvider/oauthId,
+    // isBanned/isActive, and raw location.coordinates (a physical-safety/stalking
+    // vector on a dating app). Redact to a public-safe view. password + twoFactor* +
+    // twoFactorPending* are already select:false so never present; blockedUsers was
+    // already nulled and is now deleted outright.
+    const SENSITIVE_PROFILE_KEYS = [
+      "email",
+      "role",
+      "isBanned",
+      "isActive",
+      "deletedAt",
+      "scheduledDeletionAt",
+      "lastLoginIp",
+      "lastLoginCountry",
+      "lastLoginCity",
+      "twoFactorEnabled",
+      "reactivationAttempts",
+      "emailBlockedUntil",
+      "oauthProvider",
+      "oauthId",
+      "hiddenConversations",
+      "blockedUsers",
+    ];
+    const publicUser = { ...user };
+    for (const key of SENSITIVE_PROFILE_KEYS) delete publicUser[key];
+    // strip precise geo from the stranger-facing payload; keep city/country for display.
+    if (publicUser.location) {
+      publicUser.location = {
+        city: publicUser.location?.city ?? "",
+        country: publicUser.location?.country ?? "",
+      };
+    }
+
     res.status(200).json({
       success: true,
       user: {
-        ...user,
-        blockedUsers: undefined,
+        ...publicUser,
         isLiked: Boolean(sentLike),
         isMatched: Boolean(match),
       },
@@ -395,7 +429,15 @@ export const uploadProfilePhoto = async (req, res, next) => {
     });
   } catch (error) {
     if (cloudinaryPublicId)
-      cloudinary.uploader.destroy(cloudinaryPublicId).catch(() => {});
+      cloudinary.uploader
+        .destroy(cloudinaryPublicId)
+        .catch((e) =>
+          console.error(
+            "☁️ upload rollback destroy failed (orphan from failed save):",
+            cloudinaryPublicId,
+            e.message
+          )
+        );
     next(error);
   }
 };
@@ -421,14 +463,33 @@ export const deleteProfilePhoto = async (req, res, next) => {
         .json({ success: false, message: "Photo not found" });
 
     const wasPrimary = photo.isPrimary;
-    if (photo.publicId)
-      cloudinary.uploader.destroy(photo.publicId).catch(() => {});
 
+    // ✅ PREVENTION (B): remove the DB row FIRST (source of truth — the photo must
+    // vanish for the user immediately and a Cloudinary outage must never leave a
+    // PII row behind), THEN destroy the asset. The old code destroyed first and
+    // swallowed errors with `.catch(()=>{})`, which both (i) could leave a row
+    // pointing at a dead image if save() threw, and (ii) silently forgot any
+    // destroy failure -> a "deleted" photo stayed fetchable on res.cloudinary.com
+    // forever (the W-2 leak class, attacker-reachable).
     user.photos = user.photos.filter((p) => p.publicId !== publicId);
-
     if (wasPrimary && user.photos.length > 0) user.photos[0].isPrimary = true;
 
     await user.save();
+
+    try {
+      await cloudinary.uploader.destroy(publicId);
+    } catch (destroyErr) {
+      // Never swallow. Log at error so the orphan is OBSERVABLE. Full prevention
+      // also needs a persisted retry queue drained by the daily cleanup cron
+      // (e.g. redis sAdd "cloudinary:destroy:retry" publicId) — I will wire that
+      // the moment you send cache.js + the cron file, since the redis client's
+      // export shape isn't in this file and I won't blind-import it.
+      console.error(
+        "☁️ Cloudinary destroy failed for deleted photo (orphan needs sweep):",
+        publicId,
+        destroyErr.message
+      );
+    }
 
     await safeLogAudit(req, "photo_deleted", {
       userId: user._id,
@@ -521,17 +582,45 @@ export const reorderPhotos = async (req, res, next) => {
         .status(404)
         .json({ success: false, message: "User not found" });
 
-    const validIds = publicIds.filter((id) =>
-      user.photos.some((p) => p.publicId === id)
-    );
-    if (validIds.length !== publicIds.length)
-      return res
-        .status(400)
-        .json({ success: false, message: "Some photo IDs are invalid" });
+    // ✅ PREVENTION (C): the old `filter + length===length` accepted DUPLICATES
+    // (inflate the gallery past MAX_PHOTOS, bypassing the upload cap) and SUBSETS
+    // (silently DROP photos from the array WITHOUT destroying their Cloudinary
+    // assets -> orphaned live images + data loss). Require an exact permutation of
+    // the user's current photos: every id present once, no extras, no omissions.
+    const seen = new Set();
+    const ordered = [];
+    for (const id of publicIds) {
+      if (seen.has(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Duplicate publicId in reorder payload",
+        });
+      }
+      const existing = user.photos.find((p) => p.publicId === id);
+      if (!existing) {
+        return res.status(400).json({
+          success: false,
+          message: "Some photo IDs are invalid or not owned by you",
+        });
+      }
+      seen.add(id);
+      ordered.push(existing);
+    }
+    if (ordered.length !== user.photos.length) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "publicIds must reorder ALL current photos (no drops, no additions)",
+      });
+    }
+    if (ordered.length > MAX_PHOTOS) {
+      return res.status(400).json({
+        success: false,
+        message: `Maximum ${MAX_PHOTOS} photos allowed`,
+      });
+    }
 
-    user.photos = validIds.map((id) =>
-      user.photos.find((p) => p.publicId === id)
-    );
+    user.photos = ordered;
     await user.save();
 
     await safeLogAudit(req, "photos_reordered", {

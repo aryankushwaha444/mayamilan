@@ -70,7 +70,7 @@ function EditProfile() {
     return () => {
       cancelled = true;
     };
-  }, [toast]);
+  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -131,8 +131,6 @@ function EditProfile() {
       if (response?.user) {
         updateUser(response.user);
       }
-
-      toast.success("Profile updated successfully! ✨", "Saved", 3000);
 
       // ✅ Navigate immediately with state instead of setTimeout
       navigate("/profile", { state: { profileUpdated: true }, replace: true });

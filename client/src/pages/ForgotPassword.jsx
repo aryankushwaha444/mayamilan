@@ -100,7 +100,6 @@ function ForgotPassword() {
     try {
       await forgotPassword(email, "", formLoadTime);
       setSuccess("OTP sent to your email!");
-      toast.success("OTP sent to your email! 📧", "Check your inbox", 5000);
       setStep(2);
       startResendTimer();
     } catch (err) {
@@ -157,7 +156,7 @@ function ForgotPassword() {
 
     try {
       await resetPassword(email, otp, newPassword, "", formLoadTime);
-      toast.success("Password reset successfully! 🔐", "All done", 4000);
+      toast.success("Password reset successfully! 🔐", "All done", 2000);
 
       // ✅ Navigate immediately with state instead of setTimeout
       navigate("/login", { state: { passwordReset: true }, replace: true });
