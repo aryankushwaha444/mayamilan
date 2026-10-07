@@ -30,7 +30,9 @@ const conversationSchema = new mongoose.Schema(
     participantsKey: {
       type: String,
       unique: true,
-      required: true, // Enforced by pre-save hook
+      required: true, // ✅ Enforced by the pre("validate") hook BELOW (NOT pre("save"):
+      //    the `required` check runs in the validate phase, which a
+      //    pre("save") assignment cannot reliably precede on create()).
     },
 
     lastMessage: {
@@ -85,26 +87,37 @@ conversationSchema.index({ match: 1 });
 conversationSchema.index({ isActive: 1, updatedAt: 1 });
 
 // ═══════════════════════════════════════════
-// PRE-SAVE HOOKS
+// VALIDATE HOOK (✅ authoritative key generation)
+// ═══════════════════════════════════════════
+
+// Runs BEFORE validators by definition, so it satisfies `required: true` on
+// participantsKey for every create()/save(), including the match auto-create
+// path that previously omitted the key and crashed. The expression is kept
+// byte-identical to message.controller.js's createOrGetConversation key
+// (map->toString->default .sort()->join "_") so the UNIQUE index never sees two
+// different keys for the same pair (which would duplicate conversations /
+// throw E11000). Recomputing unconditionally also self-heals any legacy doc
+// that was saved without a key. Tolerates populated participants (p._id) as
+// well as bare ObjectIds.
+conversationSchema.pre("validate", function () {
+  if (Array.isArray(this.participants) && this.participants.length === 2) {
+    this.participantsKey = this.participants
+      .map((p) => (p && p._id ? p._id : p).toString())
+      .sort()
+      .join("_");
+  }
+});
+
+// ═══════════════════════════════════════════
+// PRE-SAVE HOOK (✅ now ONLY hiddenBy dedup; key-gen moved to pre("validate"))
 // ═══════════════════════════════════════════
 
 conversationSchema.pre("save", function () {
-  // Auto-generate participantsKey to prevent developer error
-  if (this.isModified("participants") || !this.participantsKey) {
-    if (this.participants.length === 2) {
-      const sortedIds = [...this.participants].sort((a, b) =>
-        a.toString().localeCompare(b.toString())
-      );
-      this.participantsKey = `${sortedIds[0].toString()}_${sortedIds[1].toString()}`;
-    }
-  }
-
   // Ensure hiddenBy doesn't have duplicate user IDs
   if (this.isModified("hiddenBy") && this.hiddenBy.length > 0) {
     const uniqueIds = [...new Set(this.hiddenBy.map((id) => id.toString()))];
     this.hiddenBy = uniqueIds.map((id) => new mongoose.Types.ObjectId(id));
   }
-
 });
 
 // ═══════════════════════════════════════════
