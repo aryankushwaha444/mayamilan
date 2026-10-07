@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from "react"; // ✅ SCROLL-FIX: +useLayoutEffect
 import ChatInputBar from "./ChatInputBar.jsx";
 import MessageBubble from "./MessageBubble.jsx";
 import PhotoLightbox from "./PhotoLightbox.jsx";
@@ -16,6 +23,7 @@ import { useSocket } from "../hooks/useSocket.js";
 
 const MESSAGES_PER_PAGE = 50;
 const MAX_TEXT = 2000;
+const BOTTOM_THRESHOLD = 120; // ✅ SCROLL-FIX: px-from-bottom treated as "pinned to newest"
 
 // Defence-in-depth: even though the server normalises URLs, never render a
 // javascript:/data:/non-allow-listed host from a socket/HTTP payload.
@@ -105,10 +113,21 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const [typingUsers, setTypingUsers] = useState(new Set());
 
   const scrollRef = useRef(null);
-  const isInitialLoad = useRef(true);
+  // ✅ SCROLL-FIX: replace the old `isInitialLoad` ref with three precise signals.
+  const innerRef = useRef(null); //          ResizeObserver target -> catches late image/height growth
+  const isAtBottomRef = useRef(true); //      user-position truth, written ONLY by real scroll events
+  const prevTailRef = useRef({ id: null, len: 0 }); // append-detection baseline (vs prepend vs receipt tick)
   const readRequestedRef = useRef(new Set());
   const typingTimeoutRef = useRef(null);
   const sendingRef = useRef(false);
+
+  // ✅ SCROLL-FIX: instant pin to newest. The scrollTop SETTER bypasses the container's
+  // CSS `scroll-behavior:smooth`; the previous smooth scrollTo() was the root of the
+  // "lagging / not stable under rapid sends" symptom (cause #1).
+  const snapToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
 
   const loadMessages = useCallback(
     async (pageNum = 1, append = false) => {
@@ -134,7 +153,9 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
   useEffect(() => {
     if (!conversationId) return;
-    isInitialLoad.current = true;
+    // ✅ SCROLL-FIX: a fresh thread starts pinned to newest and resets the append baseline.
+    isAtBottomRef.current = true;
+    prevTailRef.current = { id: null, len: 0 };
     setMessages([]);
     setHasMore(true);
     setPage(1);
@@ -147,39 +168,78 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     return () => sessionStorage.removeItem("activeChatId");
   }, [conversationId]);
 
-  useEffect(() => {
-    if (!scrollRef.current || messages.length === 0) return;
-    if (isInitialLoad.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      isInitialLoad.current = false;
-    } else {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      scrollHeight - scrollTop - clientHeight < 100
-        ? scrollRef.current.scrollTo({
-            top: scrollRef.current.scrollHeight,
-            behavior: "smooth",
-          })
-        : setShowScrollButton(true);
+  // ✅ SCROLL-FIX (replaces the old [messages] useEffect): run BEFORE paint (useLayoutEffect),
+  // act ONLY on genuine bottom-appends, decide follow from isAtBottomRef (NOT a post-append
+  // measurement, cause #2), and use an instant snap. Prepends (older history) and receipt
+  // ticks (causes #3) are ignored so they can no longer yank or jitter the view.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || messages.length === 0) return;
+    const last = messages[messages.length - 1];
+    const tailId = last
+      ? typeof last._id === "string"
+        ? last._id
+        : last._id?.toString?.()
+      : null;
+    const prev = prevTailRef.current;
+    const grew = messages.length > prev.len;
+    const tailChanged = tailId !== prev.id;
+
+    if (grew && tailChanged) {
+      // something was appended AT THE BOTTOM (own send or incoming message)
+      if (isAtBottomRef.current) {
+        el.scrollTop = el.scrollHeight; // instant, defeats CSS smooth
+        setShowScrollButton(false);
+      } else {
+        setShowScrollButton(true); // user is reading history -> don't steal their place
+      }
     }
+    // grew && !tailChanged  => PREPEND (older page loaded at top) => native scroll
+    //   anchoring preserves position; do nothing.
+    // !grew                 => status-only update (delivered/read/reaction) or an
+    //   in-place temp->real swap => do nothing here; the ResizeObserver below re-pins
+    //   if that swap changed the bottom bubble's height (e.g. an image appeared).
+    prevTailRef.current = { id: tailId, len: messages.length };
   }, [messages]);
 
   const handleScroll = useCallback(() => {
-    if (!scrollRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-    setShowScrollButton(scrollHeight - scrollTop - clientHeight >= 100);
+    const el = scrollRef.current;
+    if (!el) return;
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    // ✅ SCROLL-FIX: maintain the at-bottom truth from REAL scroll events only, so a tall
+    // appended bubble can never be misread as "user scrolled away" (cause #2).
+    const atBottom = scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD;
+    isAtBottomRef.current = atBottom;
+    setShowScrollButton(!atBottom);
     if (scrollTop < 50 && hasMore && !loadingMore) loadMessages(page + 1, true);
   }, [hasMore, loadingMore, page, loadMessages]);
+
+  // ✅ SCROLL-FIX (new): observe the inner wrapper so ANY post-paint height growth — a
+  // res.cloudinary.com image finishing its load, the temp->real bubble swap, the typing
+  // indicator appearing — re-pins to newest while the user is at the bottom (cause #4),
+  // WITHOUT needing to edit MessageBubble.jsx.
+  useEffect(() => {
+    const el = innerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current && scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [conversationId, loading]); // re-attach once the inner list mounts after each load
 
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     const onResize = () => {
-      if (scrollRef.current)
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      // ✅ SCROLL-FIX: on keyboard open/rotate, follow only if the user was pinned to newest.
+      if (isAtBottomRef.current) snapToBottom();
     };
     vv.addEventListener("resize", onResize);
     return () => vv.removeEventListener("resize", onResize);
-  }, []);
+  }, [snapToBottom]);
 
   useEffect(() => {
     readRequestedRef.current = new Set();
@@ -468,10 +528,13 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   };
   const scrollToBottom = () => {
     if (scrollRef.current) {
+      // user-initiated jump: smooth is fine HERE (it's a single deliberate action, not a
+      // per-message follow). Re-arm the at-bottom flag so subsequent sends follow again.
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
         behavior: "smooth",
       });
+      isAtBottomRef.current = true; // ✅ SCROLL-FIX
       setShowScrollButton(false);
     }
   };
@@ -570,7 +633,20 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
             </p>
           </div>
         ) : (
-          <>
+          // ✅ SCROLL-FIX: wrap the live list in an observed inner box. It replicates the
+          // column/flex/gap the bubbles had as direct children of .chat-messages, so the
+          // visual layout is identical; its height == the scroll content height, so the
+          // ResizeObserver above fires the instant an image/late layout grows the thread.
+          <div
+            ref={innerRef}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              width: "100%",
+              minWidth: 0,
+            }}
+          >
             {loadingMore && (
               <div
                 className="chat-loading-more"
@@ -622,7 +698,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
                 <small>{otherUser?.name} is typing...</small>
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
 

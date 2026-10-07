@@ -1,4 +1,8 @@
 import mongoose from "mongoose";
+import {
+  isSensitiveKey,
+  MAX_AUDIT_METADATA_BYTES,
+} from "../utils/sensitiveKeys.js";
 
 // ═══════════════════════════════════════════
 // AUDIT ACTIONS (comprehensive enum)
@@ -71,6 +75,7 @@ export const AUDIT_ACTIONS = {
   PHOTO_UPLOADED: "photo_uploaded",
   PHOTO_DELETED: "photo_deleted",
   PRIMARY_PHOTO_CHANGED: "primary_photo_changed",
+  PHOTOS_REORDERED: "photos_reordered",
   PHOTO_GPS_STRIPPED: "photo_gps_stripped",
   UPLOAD_REJECTED: "upload_rejected",
   UPLOAD_REJECTED_FILTER: "upload_rejected_filter",
@@ -94,12 +99,12 @@ export const AUDIT_ACTIONS = {
   CONVERSATION_BLOCKED_ATTEMPT: "conversation_blocked_attempt",
   ATTACHMENT_UPLOADED: "attachment_uploaded",
 
-  // Matches ✅ match_deleted is PROVEN in match.controller.js deleteMatch (was silently
-  // dropping every unmatch audit row); match_created is the conventional sibling.
+  // Matches
   MATCH_CREATED: "match_created",
   MATCH_DELETED: "match_deleted",
+  MATCHES_RESTORED_ON_REACTIVATION: "matches_restored_on_reactivation",
 
-  // Posts & Comments — strings MUST match post.controller.js safeLogAudit calls
+  // Posts & Comments
   POST_CREATED: "post_created",
   POST_UPDATED: "post_updated",
   POST_EDITED: "post_edited",
@@ -121,6 +126,10 @@ export const AUDIT_ACTIONS = {
   REPLY_ADDED: "reply_added",
   REACTION_ADDED: "reaction_added",
   REACTION_REMOVED: "reaction_removed",
+
+  // Notifications
+  NOTIFICATIONS_MARKED_READ: "notifications_marked_read",
+  ALL_NOTIFICATIONS_DELETED: "all_notifications_deleted",
 
   // Signatures
   SIGNATURE_MISSING: "signature_missing",
@@ -176,18 +185,18 @@ export const AUDIT_ACTIONS = {
 // SECURITY CONSTANTS
 // ═══════════════════════════════════════════
 const MAX_METADATA_DEPTH = 5;
-const MAX_METADATA_SIZE = 10240; // 10KB
+// ✅ shared with the logger so the two size limits can never drift again.
+const MAX_METADATA_SIZE = MAX_AUDIT_METADATA_BYTES;
 const MAX_STRING_LENGTH = 500;
 const MAX_IP_LENGTH = 45; // IPv6 max length
 const MAX_USER_AGENT_LENGTH = 256;
 
 // ═══════════════════════════════════════════
-// SEVERITY DERIVATION ✅ (the level enum/index existed but was never populated
-// above the default "info", so compromise signals sat next to page views).
+// SEVERITY DERIVATION
 // Monotonic: pre('save') only UPGRADES toward these, never downgrades an
-// explicitly-higher level a caller passed. Routine churn (auth_failed,
-// login_failed, registration_failed, otp_verification_failed) is DELIBERATELY
-// left at "info" — an expired-token 401 is not an alarm (see auth.middleware).
+// explicitly‑higher level a caller passed. Routine churn (auth_failed,
+// login_failed, registration_failed, otp_verification_failed, oauth_login_failed)
+// is DELIBERATELY left at "info" — an expired‑token 401 is not an alarm.
 // ═══════════════════════════════════════════
 const LEVEL_RANK = { info: 0, warning: 1, error: 2, critical: 3 };
 
@@ -200,7 +209,7 @@ const SEVERITY_BY_ACTION = {
   [AUDIT_ACTIONS.IP_REPUTATION_BLOCKED]: "critical",
   [AUDIT_ACTIONS.HONEYPOT_TRIGGERED]: "critical",
 
-  // warning — denied access, tamper, abuse-attempt, destructive state change
+  // warning — denied access, tamper, abuse‑attempt, destructive state change
   [AUDIT_ACTIONS.SUSPICIOUS_LOGIN]: "warning",
   [AUDIT_ACTIONS.SUSPICIOUS_IP_CHANGE]: "warning",
   [AUDIT_ACTIONS.SOCKET_INVALID_ROOM_JOIN]: "warning",
@@ -234,45 +243,26 @@ const SEVERITY_BY_ACTION = {
   [AUDIT_ACTIONS.PASSWORD_RESET_FAILED]: "warning",
   [AUDIT_ACTIONS.LOGIN_2FA_FAILED]: "warning",
   [AUDIT_ACTIONS.OAUTH_2FA_FAILED]: "warning",
+  // ✅ newly promoted (were unlisted → defaulted to info, so the logger's
+  // high‑severity bypass couldn't protect them and they sat next to page views):
+  // abuse / account‑weakening / misconfig signals, NOT routine churn.
+  [AUDIT_ACTIONS.RATE_LIMIT_EXCEEDED]: "warning",
+  [AUDIT_ACTIONS.CSP_VIOLATION]: "warning",
+  [AUDIT_ACTIONS.TWO_FA_DISABLE_FAILED]: "warning",
+  [AUDIT_ACTIONS.TWO_FA_SETUP_FAILED]: "warning",
+};
+
+// ✅ exported so the logger can refuse to DROP these under flood (vector #2).
+export const isHighSeverityAction = (action) => {
+  const lvl = SEVERITY_BY_ACTION[action];
+  return lvl === "warning" || lvl === "error" || lvl === "critical";
 };
 
 // ═══════════════════════════════════════════
-// SENSITIVE KEYS (security hardening)
+// SENSITIVE KEYS — now sourced from the shared module (vector #1). The local
+// exact‑match Set is REMOVED; `isSensitiveKey` (substring, NFKC‑normalized) is
+// imported so the logger and the model can never disagree again.
 // ═══════════════════════════════════════════
-const SENSITIVE_KEYS = new Set([
-  "password",
-  "currentpassword",
-  "newpassword",
-  "secret",
-  "twofactorsecret",
-  "token",
-  "refreshtoken",
-  "apikey",
-  "creditcard",
-  "cvv",
-  "ssn",
-  "signature",
-  "authorization",
-  "cookie",
-  "bearer",
-  "jwt",
-  "session",
-  "pin",
-  "otp",
-  "securitycode",
-  "accesskey",
-  "privatekey",
-]);
-
-// ═══════════════════════════════════════════
-// SECURITY: Sanitization helpers
-// ═══════════════════════════════════════════
-
-const isSensitiveKey = (key) => {
-  if (typeof key !== "string") return false;
-  const normalized = key.normalize("NFKC").toLowerCase().trim();
-  return SENSITIVE_KEYS.has(normalized);
-};
 
 const sanitizeObject = (obj, depth = 0) => {
   if (!obj || typeof obj !== "object") return obj;
@@ -312,13 +302,6 @@ const sanitizeObject = (obj, depth = 0) => {
   return obj;
 };
 
-/**
- * ✅ FIX: per-value safe serialization. Previously JSON.stringify(undefined)
- * returned the JS value undefined and `…length` threw, which the outer catch
- * turned into "[sanitization_error]" — wiping redaction for the whole row over
- * one harmless missing key. Now undefined adds 0 and BigInt/circular degrade to
- * a placeholder instead of nuking the payload.
- */
 const validateMetadataSize = (metadata) => {
   if (!metadata || typeof metadata.entries !== "function") return true;
   let totalSize = 0;
@@ -336,24 +319,25 @@ const validateMetadataSize = (metadata) => {
   return true;
 };
 
+// ✅ VECTOR #4: sanitize to a safe charset instead of storing attacker junk. Real
+// forms (`::1`, `::ffff:127.0.0.1`, dotted IPv4) survive because every char is in
+// [0‑9a‑fA‑F:.]; a spoofed `<script>…` or oversized blob collapses to `unknown`,
+// so the indexed `ip` field can't be poisoned with lookalike strings. Sentinels
+// pass through untouched (a naive strip would mangle the default 'system' → 'e').
 const validateIP = (ip) => {
   if (!ip || typeof ip !== "string") return "system";
-  const trimmed = ip.substring(0, MAX_IP_LENGTH);
-  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
-  if (ipv4Regex.test(trimmed)) {
-    const parts = trimmed.split(".");
-    if (parts.every((p) => parseInt(p, 10) >= 0 && parseInt(p, 10) <= 255)) {
-      return trimmed;
-    }
-  }
-  const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
-  if (ipv6Regex.test(trimmed)) return trimmed;
-  return trimmed.substring(0, 45);
+  const t = ip.trim();
+  if (t === "system" || t === "unknown" || t === "invalid") return t;
+  const cleaned = t.substring(0, MAX_IP_LENGTH).replace(/[^0-9a-fA-F:.]/g, "");
+  return cleaned || "unknown";
 };
 
+// ✅ strip ASCII control chars (a UA is attacker‑controlled) before bounding length.
 const validateUserAgent = (userAgent) => {
   if (!userAgent || typeof userAgent !== "string") return null;
-  return userAgent.substring(0, MAX_USER_AGENT_LENGTH);
+  return userAgent
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .substring(0, MAX_USER_AGENT_LENGTH);
 };
 
 // ═══════════════════════════════════════════
@@ -428,24 +412,22 @@ const auditLogSchema = new mongoose.Schema(
 
 auditLogSchema.pre("save", async function () {
   try {
-    // ✅ 1) Severity FIRST — must run before the metadata early-return below,
-    // otherwise an oversized-metadata row would skip level derivation.
-    // Monotonic upgrade only (never downgrades an explicit higher level).
+    // 1) Severity FIRST (before the metadata early‑return below).
     const target = SEVERITY_BY_ACTION[this.action];
     if (target && (LEVEL_RANK[target] ?? 0) > (LEVEL_RANK[this.level] ?? 0)) {
       this.level = target;
     }
 
-    // 2) ip / user-agent bounding
+    // 2) ip / user‑agent bounding.
     if (this.ip) this.ip = validateIP(this.ip);
     if (this.userAgent) this.userAgent = validateUserAgent(this.userAgent);
 
-    // 3) metadata redaction (duck-typed Map; the old `instanceof Map` guard
-    // silently skipped ALL redaction — fixed in a prior turn, kept here)
+    // 3) metadata redaction (duck‑typed Map; the logger now ALWAYS passes a Map, so
+    // this layer is guaranteed to run — vector #3).
     if (this.metadata && typeof this.metadata.entries === "function") {
       if (!validateMetadataSize(this.metadata)) {
         this.metadata = new Map([["error", "[REDACTED: metadata too large]"]]);
-        return; // level already set above, so the early-return is safe
+        return; // level already set above, so the early‑return is safe
       }
       for (const [key, value] of this.metadata.entries()) {
         if (

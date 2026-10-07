@@ -273,8 +273,6 @@ function ChatInputBar({ onSend, disabled, onTyping }) {
     setSending(true);
     setCompressing(true);
 
-    toast.info("Optimizing image...", "Compressing", 2000);
-
     try {
       const compressedFile = await compressChatImage(file);
       setSendingMedia(true);

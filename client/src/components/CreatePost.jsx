@@ -3,6 +3,7 @@ import { postService } from "../services/postService";
 import { compressPostPhoto } from "../utils/imageCompressor";
 import { useAlert } from "../context/AlertContext";
 import { avatarImg } from "../utils/cloudinary";
+import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback"; // ✅ ADD
 import ConfirmDialog from "./ConfirmDialog.jsx";
 
 // ✅ Constants
@@ -28,10 +29,10 @@ function CreatePost({ user, onPostCreated }) {
   const textareaRef = useRef(null);
   const previewsRef = useRef([]); // ✅ Track previews for cleanup
 
-  const userPhoto =
-    user?.photos?.find((p) => p.isPrimary)?.url ||
-    user?.photos?.[0]?.url ||
-    "/images/default-avatar.png";
+  const primaryPhotoObj =
+    user?.photos?.find((p) => p?.isPrimary) || user?.photos?.[0] || null;
+  const userPhoto = primaryPhotoObj?.url || primaryPhotoObj?.secure_url || null;
+  const avatarSrc = userPhoto ? avatarImg(userPhoto) : DEFAULT_AVATAR;
 
   const firstName = user?.name?.split(" ")[0] || "there";
 
@@ -243,10 +244,11 @@ function CreatePost({ user, onPostCreated }) {
       {!expanded ? (
         <div className="create-post-collapsed">
           <img
-            src={avatarImg(userPhoto)}
+            src={avatarSrc}
             alt=""
             className="create-post-avatar"
             aria-hidden="true"
+            onError={onAvatarError}
           />
 
           <button
@@ -281,10 +283,11 @@ function CreatePost({ user, onPostCreated }) {
         >
           <div className="create-post-header">
             <img
-              src={avatarImg(userPhoto)}
+              src={avatarSrc}
               alt=""
               className="create-post-avatar"
               aria-hidden="true"
+              onError={onAvatarError}
             />
             <strong className="create-post-name">{user?.name}</strong>
 
