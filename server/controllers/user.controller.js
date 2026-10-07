@@ -8,6 +8,14 @@ import Conversation from "../models/Conversation.js";
 import { invalidateUserCache } from "../utils/cache.js";
 import { sendPushToMany, getMatchIds } from "../utils/push.js";
 import { getIO } from "../sockets/socket.js";
+// ✅ #3: the teardown helpers live in call.socket.js (NOT callRegistry.js — my prior
+// diff had the wrong path and would have crashed boot). No cycle: call.socket.js does
+// not import user.controller.js or socket.js.
+import {
+  findActiveCallForTeardown,
+  takeCallForTeardown,
+  persistCallForTeardown,
+} from "../sockets/call.socket.js";
 import { logAudit } from "../utils/auditLogger.js";
 import { sanitize } from "../utils/sanitize.js";
 
@@ -63,6 +71,27 @@ const validateImageFile = (file) => {
   }
 };
 
+// ✅ #5: deep-clean attacker JSON before it reaches Mongoose $set. Drops prototype-pollution
+// carriers AND Mongo operator keys ($gt/$ne/$where/...) at every depth, so a crafted profile
+// body can't trigger a CastError -> 500 (and can't smuggle operators into a Mixed field).
+// Passes primitives / Date / ObjectId / Buffer through untouched (only plain objects & arrays
+// are recursed, via constructor === Object).
+const PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const stripDangerousKeys = (val, depth = 0) => {
+  if (depth > 8) return undefined;
+  if (Array.isArray(val))
+    return val.map((v) => stripDangerousKeys(v, depth + 1));
+  if (val && typeof val === "object" && val.constructor === Object) {
+    const out = {};
+    for (const k of Object.keys(val)) {
+      if (PROTO_KEYS.has(k) || k.startsWith("$")) continue;
+      out[k] = stripDangerousKeys(val[k], depth + 1);
+    }
+    return out;
+  }
+  return val;
+};
+
 const sanitizeProfileFields = (updates) => {
   const sanitized = {};
   const stringFields = [
@@ -90,23 +119,48 @@ const sanitizeProfileFields = (updates) => {
       .slice(0, 20);
   }
 
-  if (updates.location && typeof updates.location === "object") {
+  // ✅ location must be a plain object; coordinates only accepted as a real Array (an
+  // injected {"$ne":null} object is dropped -> no CastError). city/country coerced to string.
+  if (
+    updates.location &&
+    typeof updates.location === "object" &&
+    updates.location.constructor === Object
+  ) {
     sanitized.location = {
-      city: updates.location.city ? sanitize(updates.location.city) : undefined,
-      country: updates.location.country
-        ? sanitize(updates.location.country)
+      city: updates.location.city
+        ? sanitize(String(updates.location.city))
         : undefined,
-      coordinates: updates.location.coordinates,
+      country: updates.location.country
+        ? sanitize(String(updates.location.country))
+        : undefined,
+      coordinates: Array.isArray(updates.location.coordinates)
+        ? updates.location.coordinates
+        : undefined,
     };
   }
 
-  if (updates.preferences && typeof updates.preferences === "object") {
+  // preferences is a Mixed/Object field -> no strict cast to error on; nested $/proto keys
+  // are removed by stripDangerousKeys() applied to the whole result in updateMyProfile.
+  if (
+    updates.preferences &&
+    typeof updates.preferences === "object" &&
+    updates.preferences.constructor === Object
+  ) {
     sanitized.preferences = updates.preferences;
   }
 
-  if (updates.dateOfBirth !== undefined)
+  // ✅ #5 scalar type-guards: an operator object ({"$gt":...}) must never reach the Date/enum cast.
+  if (
+    updates.dateOfBirth !== undefined &&
+    (typeof updates.dateOfBirth === "string" ||
+      typeof updates.dateOfBirth === "number" ||
+      updates.dateOfBirth instanceof Date)
+  ) {
     sanitized.dateOfBirth = updates.dateOfBirth;
-  if (updates.gender !== undefined) sanitized.gender = updates.gender;
+  }
+  if (updates.gender !== undefined && typeof updates.gender === "string") {
+    sanitized.gender = updates.gender;
+  }
 
   return sanitized;
 };
@@ -177,7 +231,8 @@ export const updateMyProfile = async (req, res, next) => {
         .json({ success: false, message: "No valid fields to update" });
     }
 
-    const updates = sanitizeProfileFields(rawUpdates);
+    // ✅ #5: sanitize then deep-strip operator/proto carriers before $set.
+    const updates = stripDangerousKeys(sanitizeProfileFields(rawUpdates));
 
     if (updates.bio && updates.bio.length > MAX_BIO_LENGTH) {
       return res.status(400).json({
@@ -294,13 +349,6 @@ export const getUserProfile = async (req, res, next) => {
       });
     }
 
-    // ✅ PREVENTION (A): the old `{ ...user }` shipped the ENTIRE doc (minus password)
-    // to any authenticated stranger — email, role (admin enumeration), lastLoginIp/
-    // Country/City, twoFactorEnabled, reactivationAttempts, oauthProvider/oauthId,
-    // isBanned/isActive, and raw location.coordinates (a physical-safety/stalking
-    // vector on a dating app). Redact to a public-safe view. password + twoFactor* +
-    // twoFactorPending* are already select:false so never present; blockedUsers was
-    // already nulled and is now deleted outright.
     const SENSITIVE_PROFILE_KEYS = [
       "email",
       "role",
@@ -321,7 +369,6 @@ export const getUserProfile = async (req, res, next) => {
     ];
     const publicUser = { ...user };
     for (const key of SENSITIVE_PROFILE_KEYS) delete publicUser[key];
-    // strip precise geo from the stranger-facing payload; keep city/country for display.
     if (publicUser.location) {
       publicUser.location = {
         city: publicUser.location?.city ?? "",
@@ -464,13 +511,6 @@ export const deleteProfilePhoto = async (req, res, next) => {
 
     const wasPrimary = photo.isPrimary;
 
-    // ✅ PREVENTION (B): remove the DB row FIRST (source of truth — the photo must
-    // vanish for the user immediately and a Cloudinary outage must never leave a
-    // PII row behind), THEN destroy the asset. The old code destroyed first and
-    // swallowed errors with `.catch(()=>{})`, which both (i) could leave a row
-    // pointing at a dead image if save() threw, and (ii) silently forgot any
-    // destroy failure -> a "deleted" photo stayed fetchable on res.cloudinary.com
-    // forever (the W-2 leak class, attacker-reachable).
     user.photos = user.photos.filter((p) => p.publicId !== publicId);
     if (wasPrimary && user.photos.length > 0) user.photos[0].isPrimary = true;
 
@@ -479,11 +519,6 @@ export const deleteProfilePhoto = async (req, res, next) => {
     try {
       await cloudinary.uploader.destroy(publicId);
     } catch (destroyErr) {
-      // Never swallow. Log at error so the orphan is OBSERVABLE. Full prevention
-      // also needs a persisted retry queue drained by the daily cleanup cron
-      // (e.g. redis sAdd "cloudinary:destroy:retry" publicId) — I will wire that
-      // the moment you send cache.js + the cron file, since the redis client's
-      // export shape isn't in this file and I won't blind-import it.
       console.error(
         "☁️ Cloudinary destroy failed for deleted photo (orphan needs sweep):",
         publicId,
@@ -582,11 +617,6 @@ export const reorderPhotos = async (req, res, next) => {
         .status(404)
         .json({ success: false, message: "User not found" });
 
-    // ✅ PREVENTION (C): the old `filter + length===length` accepted DUPLICATES
-    // (inflate the gallery past MAX_PHOTOS, bypassing the upload cap) and SUBSETS
-    // (silently DROP photos from the array WITHOUT destroying their Cloudinary
-    // assets -> orphaned live images + data loss). Require an exact permutation of
-    // the user's current photos: every id present once, no extras, no omissions.
     const seen = new Set();
     const ordered = [];
     for (const id of publicIds) {
@@ -768,15 +798,9 @@ export const toggleBlock = async (req, res, next) => {
       });
     } else {
       // ── BLOCK ──
-      // Core security write FIRST and on its own: this is what actually
-      // enforces the block (checkBlocked in messages + getUserProfile).
       me.blockedUsers.push(targetOid);
       await me.save();
 
-      // Hygiene cascade (deactivate match, purge likes, hide conversation,
-      // notify the other user). Best-effort via allSettled so a transient
-      // failure here NEVER turns a successful block into a 500.
-      // No transaction: standalone MongoDB does not support them.
       const io = getIO();
       await Promise.allSettled([
         (async () => {
@@ -815,6 +839,36 @@ export const toggleBlock = async (req, res, next) => {
             $addToSet: { hiddenBy: { $each: [req.user._id, targetOid] } },
           }
         ),
+        // ✅ #3 §5: a block MUST tear down any live/ringing call between the pair,
+        //    else media keeps flowing after the victim blocks. Best-effort (allSettled)
+        //    so a teardown failure never turns a successful block into a 500.
+        (async () => {
+          try {
+            const rec = findActiveCallForTeardown(req.user._id, targetOid);
+            if (!rec) return;
+            takeCallForTeardown(rec.callId);
+            await persistCallForTeardown(
+              rec,
+              rec.connectedAt ? "ended" : "missed",
+              "blocked"
+            );
+            if (io) {
+              const peer =
+                rec.callerId === req.user._id.toString()
+                  ? rec.calleeId
+                  : rec.callerId;
+              io.to(`user:${peer}`).emit("call:ended", {
+                callId: rec.callId,
+                by: "server",
+                reason: "blocked",
+                status: "ended",
+                durationMs: 0,
+              });
+            }
+          } catch (e) {
+            console.error("call teardown on block failed:", e.message);
+          }
+        })(),
       ]);
 
       await safeLogAudit(req, "user_blocked", {
@@ -839,7 +893,6 @@ export const toggleBlock = async (req, res, next) => {
       ]),
     ]);
 
-    // Re-read OUTSIDE any session to report the authoritative final state.
     const fresh = await User.findById(req.user._id)
       .select("blockedUsers")
       .lean();
@@ -964,6 +1017,9 @@ export const searchBlockableUsers = async (req, res, next) => {
       _id: { $ne: req.user._id },
       isActive: true,
       deletedAt: null,
+      // ✅ #6: exclude users who already blocked ME — otherwise name-search lets a
+      //    blocked person confirm their identity/existence (privacy/stalking leak).
+      blockedUsers: { $ne: req.user._id },
       name: { $regex: safe, $options: "i" },
     })
       .select("name photos gender relationshipGoal")

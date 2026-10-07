@@ -1,10 +1,21 @@
 import crypto from "crypto";
 
+// ✅ #1 FAIL CLOSED: a hardcoded fallback secret would let an attacker compute valid
+// device fingerprints for ANY device id (full device-binding bypass) the moment the
+// env is misconfigured. There is no safe default -> refuse to boot without a real secret.
+// JWT_REFRESH_SECRET_CURRENT is an acceptable source (validated >=64 in generateToken),
+// but DEVICE_BINDING_SECRET is preferred so device binding isn't coupled to refresh.
 const DEVICE_SECRET =
-  process.env.DEVICE_BINDING_SECRET ||
-  process.env.JWT_REFRESH_SECRET_CURRENT ||
-  "fallback-secret-please-change-in-production";
+  process.env.DEVICE_BINDING_SECRET || process.env.JWT_REFRESH_SECRET_CURRENT;
+if (!DEVICE_SECRET || DEVICE_SECRET.length < 32) {
+  throw new Error(
+    "DEVICE_BINDING_SECRET (or JWT_REFRESH_SECRET_CURRENT) must be set to a strong value (>=32 chars). " +
+      "Device binding cannot run with a fallback secret. Generate with:\n" +
+      "node -e \"console.log(require('crypto').randomBytes(48).toString('hex'))\""
+  );
+}
 const MAX_UA_LENGTH = 500;
+const MAX_CARRIED_LEN = 2048; // ✅ defence-in-depth cap before decodeURIComponent/JSON.parse
 
 const validId = (v) =>
   typeof v === "string" &&
@@ -199,14 +210,14 @@ const parseClientHints = (req) => {
 const parseCarried = (req) => {
   let obj = null;
   const hdr = req.headers?.["x-device-info"];
-  if (hdr) {
+  if (hdr && String(hdr).length <= MAX_CARRIED_LEN) {
     try {
       obj = JSON.parse(decodeURIComponent(String(hdr)));
     } catch {}
   }
   if (!obj) {
     const ck = req.cookies?.mm_device_info;
-    if (ck) {
+    if (ck && String(ck).length <= MAX_CARRIED_LEN) {
       try {
         obj = JSON.parse(decodeURIComponent(String(ck)));
       } catch {}
@@ -231,7 +242,6 @@ const parseCarried = (req) => {
 /**
  * Resolve an accurate, sanitized device descriptor for storage/UI.
  * Precedence: X-Device-Info header -> UA Client Hints -> mm_device_info cookie -> UA string.
- * (Hints outrank the cookie so a stale sync-seed cookie can never mislabel Brave as Chrome.)
  */
 export const parseDevice = (req) => {
   const ua = String(req?.headers?.["user-agent"] || "").substring(
@@ -261,7 +271,7 @@ export const parseDevice = (req) => {
         : base.os !== "Unknown"
         ? base.os
         : "Unknown",
-    osVersion: carried?.osVersion || base.osVersion || "", // hints low-entropy has no version; cookie/UA fill it
+    osVersion: carried?.osVersion || base.osVersion || "",
     deviceType:
       carried?.deviceType && carried.deviceType !== "unknown"
         ? carried.deviceType

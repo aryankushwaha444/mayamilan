@@ -1,3 +1,4 @@
+import mongoose from "mongoose"; // ✅ NEW: ObjectId validation before any DB call
 import {
   verifyAccessToken,
   constantTimeCompare,
@@ -13,14 +14,8 @@ import crypto from "crypto";
 // ═══════════════════════════════════════════
 const ADMIN_ROLES = ["admin", "superadmin"];
 const SUPERADMIN_ROLE = "superadmin";
-
-// NOTE: the old IP-keyed `failedAttempts` brute-force gate was REMOVED.
-// It locked out every user sharing an IP (NAT / localhost) on 5 ordinary
-// expired-token 401s and never self-healed on a successful OAuth login.
-// Credential brute-force is still enforced per-EMAIL by trackLoginAttempt
-// (auth.controller.js) and per-(IP+email) by the rate limiters, neither of
-// which punishes a co-tenant on the same network.
 const SESSION_CACHE_TTL = 60 * 1000; // 1 minute cache
+const SESSION_CACHE_MAX = 50000; // ✅ OOM guard: cap the in-memory cache
 
 const ERROR_CODES = {
   NO_TOKEN: "NO_TOKEN",
@@ -42,7 +37,7 @@ const ERROR_CODES = {
 // ═══════════════════════════════════════════
 // SECURITY: In-memory session cache (production should use Redis)
 // ═══════════════════════════════════════════
-const sessionCache = new Map(); // sessionId -> { valid, timestamp }
+const sessionCache = new Map(); // sessionId -> { valid, timestamp, ... }
 
 // Cleanup old session-cache entries every 5 minutes
 setInterval(() => {
@@ -52,7 +47,7 @@ setInterval(() => {
       sessionCache.delete(key);
     }
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref?.();
 
 // ═══════════════════════════════════════════
 // HELPERS
@@ -66,16 +61,34 @@ const safeLogAudit = async (req, action, metadata) => {
   }
 };
 
+// ✅ only cache a NEGATIVE result if the id looks like a real ObjectId; junk/probing ids
+//    would otherwise fill the map (the OOM vector). Positive results always cache.
+const cacheNegative = (sessionId, reason) => {
+  if (sessionCache.size >= SESSION_CACHE_MAX) return; // hard stop under flood
+  if (!/^[a-f\d]{24}$/i.test(String(sessionId))) return; // don't cache garbage ids
+  sessionCache.set(sessionId, { valid: false, reason, timestamp: Date.now() });
+};
+const cachePositive = (sessionId, session) => {
+  if (sessionCache.size >= SESSION_CACHE_MAX) sessionCache.clear(); // reset under extreme flood
+  sessionCache.set(sessionId, { valid: true, session, timestamp: Date.now() });
+};
+
 /**
- * SECURITY: Validate session with caching
+ * SECURITY: Validate session with caching + ObjectId guard + device-binding enforcement.
  */
 const validateSession = async (sessionId, userId, req) => {
+  // ✅ CastError DoS guard: reject malformed ids before touching the DB
+  if (
+    !mongoose.Types.ObjectId.isValid(sessionId) ||
+    !mongoose.Types.ObjectId.isValid(userId)
+  ) {
+    return { valid: false, reason: "session_invalid" };
+  }
+
   // Check cache first
   const cached = sessionCache.get(sessionId);
   if (cached && Date.now() - cached.timestamp < SESSION_CACHE_TTL) {
-    if (!cached.valid) {
-      return { valid: false, reason: cached.reason };
-    }
+    if (!cached.valid) return { valid: false, reason: cached.reason };
     return { valid: true, session: cached.session };
   }
 
@@ -101,31 +114,24 @@ const validateSession = async (sessionId, userId, req) => {
       reason = "session_expired";
     }
 
-    sessionCache.set(sessionId, {
-      valid: false,
-      reason,
-      timestamp: Date.now(),
-    });
+    cacheNegative(sessionId, reason); // ✅ capped + id-shaped
     return { valid: false, reason };
   }
 
   // SECURITY: Device fingerprint validation.
-  // deviceFingerprint() takes a DEVICE ID string, NOT the request — passing `req`
-  // previously hashed "[object Object]" and mismatched every real session (403 wall).
-  if (session.deviceFingerprint && req) {
+  // ✅ BYPASS CLOSED: if the session HAS a fingerprint, a missing/!matching device id must
+  //    FAIL (the old `currentFingerprint && !compare` short-circuited to PASS when the
+  //    attacker stripped the X-Device-Id header). Now the header is REQUIRED.
+  if (session.deviceFingerprint) {
     const currentDeviceId = getDeviceId(req); // header (XHR) -> cookie (OAuth nav)
     const currentFingerprint = currentDeviceId
       ? deviceFingerprint(currentDeviceId)
       : null;
     if (
-      currentFingerprint &&
+      !currentFingerprint ||
       !constantTimeCompare(currentFingerprint, session.deviceFingerprint)
     ) {
-      sessionCache.set(sessionId, {
-        valid: false,
-        reason: "device_mismatch",
-        timestamp: Date.now(),
-      });
+      cacheNegative(sessionId, "device_mismatch");
       return {
         valid: false,
         reason: "device_mismatch",
@@ -136,12 +142,13 @@ const validateSession = async (sessionId, userId, req) => {
 
   // SECURITY: IP change detection (potential session hijacking) — log, don't block
   if (session.lastIp && req.ip && session.lastIp !== req.ip) {
-    const sessionIpParts = session.lastIp.split(".");
-    const currentIpParts = req.ip.split(".");
-
+    const sessionIpParts = String(session.lastIp).split(".");
+    const currentIpParts = String(req.ip).split(".");
+    // For IPv4 compare first two octets; for IPv6 the split yields one part so [0] differs
+    // on any change (stricter logging, not a block).
     if (
       sessionIpParts[0] !== currentIpParts[0] ||
-      sessionIpParts[1] !== currentIpParts[1]
+      (sessionIpParts[1] && sessionIpParts[1] !== currentIpParts[1])
     ) {
       console.warn(
         `⚠️ Potential session hijacking: IP changed from ${session.lastIp} to ${req.ip}`
@@ -155,14 +162,14 @@ const validateSession = async (sessionId, userId, req) => {
     }
   }
 
-  sessionCache.set(sessionId, { valid: true, session, timestamp: Date.now() });
+  cachePositive(sessionId, session);
   return { valid: true, session };
 };
 
 const handleTokenError = (error, req) => {
   const message = error.message || "";
-
-  if (message.includes("expired") || error.name === "TokenExpiredError") {
+  // ✅ name-first (robust), message as fallback
+  if (error.name === "TokenExpiredError" || message.includes("expired")) {
     return {
       status: 401,
       code: ERROR_CODES.TOKEN_EXPIRED,
@@ -170,8 +177,7 @@ const handleTokenError = (error, req) => {
       shouldRefresh: true,
     };
   }
-
-  if (message.includes("invalid") || error.name === "JsonWebTokenError") {
+  if (error.name === "JsonWebTokenError" || message.includes("invalid")) {
     return {
       status: 401,
       code: ERROR_CODES.INVALID_TOKEN,
@@ -179,7 +185,6 @@ const handleTokenError = (error, req) => {
       shouldRefresh: false,
     };
   }
-
   if (message.includes("signature")) {
     return {
       status: 401,
@@ -188,7 +193,6 @@ const handleTokenError = (error, req) => {
       shouldRefresh: false,
     };
   }
-
   return {
     status: 401,
     code: ERROR_CODES.AUTH_FAILED,
@@ -206,82 +210,78 @@ export const protect = async (req, res, next) => {
   req.requestStartTime = Date.now();
 
   try {
-    // STEP 1: Extract and validate token
     const authHeader = req.headers.authorization;
-
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       await safeLogAudit(req, "auth_failed", {
         reason: "no_token",
         ip: req.ip,
         requestId: req.requestId,
       });
-
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required",
-        code: ERROR_CODES.NO_TOKEN,
-        requestId: req.requestId,
-      });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "Authentication required",
+          code: ERROR_CODES.NO_TOKEN,
+          requestId: req.requestId,
+        });
     }
 
     const token = authHeader.split(" ")[1];
-
     if (!token || token.trim() === "") {
       await safeLogAudit(req, "auth_failed", {
         reason: "empty_token",
         ip: req.ip,
         requestId: req.requestId,
       });
-
-      return res.status(401).json({
-        success: false,
-        message: "Token is required",
-        code: ERROR_CODES.EMPTY_TOKEN,
-        requestId: req.requestId,
-      });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "Token is required",
+          code: ERROR_CODES.EMPTY_TOKEN,
+          requestId: req.requestId,
+        });
     }
-
-    // SECURITY: Token length validation (prevent DoS with huge tokens)
     if (token.length > 2048) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid token",
-        code: ERROR_CODES.INVALID_TOKEN,
-        requestId: req.requestId,
-      });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "Invalid token",
+          code: ERROR_CODES.INVALID_TOKEN,
+          requestId: req.requestId,
+        });
     }
 
-    // STEP 2: Verify token
     let decoded;
     try {
       decoded = verifyAccessToken(token);
     } catch (error) {
       const tokenError = handleTokenError(error, req);
-
       await safeLogAudit(req, "auth_failed", {
         reason: tokenError.code,
         ip: req.ip,
         userAgent: req.get("user-agent")?.substring(0, 100),
         requestId: req.requestId,
       });
-
-      return res.status(tokenError.status).json({
-        success: false,
-        message: tokenError.message,
-        code: tokenError.code,
-        shouldRefresh: tokenError.shouldRefresh,
-        requestId: req.requestId,
-      });
+      return res
+        .status(tokenError.status)
+        .json({
+          success: false,
+          message: tokenError.message,
+          code: tokenError.code,
+          shouldRefresh: tokenError.shouldRefresh,
+          requestId: req.requestId,
+        });
     }
 
-    // STEP 3: Validate session
     if (decoded.sessionId) {
       const sessionValidation = await validateSession(
         decoded.sessionId,
         decoded.userId,
         req
       );
-
       if (!sessionValidation.valid) {
         await safeLogAudit(req, "auth_failed", {
           reason: sessionValidation.reason,
@@ -290,7 +290,6 @@ export const protect = async (req, res, next) => {
           ip: req.ip,
           requestId: req.requestId,
         });
-
         const statusCode =
           sessionValidation.reason === "device_mismatch" ? 403 : 401;
         const errorCode =
@@ -301,7 +300,6 @@ export const protect = async (req, res, next) => {
             : sessionValidation.reason === "device_mismatch"
             ? ERROR_CODES.DEVICE_MISMATCH
             : ERROR_CODES.SESSION_MISMATCH;
-
         return res.status(statusCode).json({
           success: false,
           message:
@@ -315,11 +313,26 @@ export const protect = async (req, res, next) => {
           requestId: req.requestId,
         });
       }
-
       req.session = sessionValidation.session;
     }
 
-    // STEP 4: Fetch user (single optimized query)
+    // ✅ ObjectId guard on the JWT's userId before User.findById
+    if (!mongoose.Types.ObjectId.isValid(decoded.userId)) {
+      await safeLogAudit(req, "auth_failed", {
+        reason: "bad_user_id",
+        ip: req.ip,
+        requestId: req.requestId,
+      });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "Invalid token subject",
+          code: ERROR_CODES.INVALID_TOKEN,
+          requestId: req.requestId,
+        });
+    }
+
     const user = await User.findById(decoded.userId)
       .select("-password -refreshToken -twoFactorSecret -twoFactorBackupCodes")
       .lean();
@@ -331,15 +344,15 @@ export const protect = async (req, res, next) => {
         ip: req.ip,
         requestId: req.requestId,
       });
-
-      return res.status(401).json({
-        success: false,
-        message: "User no longer exists",
-        code: ERROR_CODES.USER_NOT_FOUND,
-        requestId: req.requestId,
-      });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "User no longer exists",
+          code: ERROR_CODES.USER_NOT_FOUND,
+          requestId: req.requestId,
+        });
     }
-
     if (!user.isActive || user.deletedAt) {
       await safeLogAudit(req, "auth_failed", {
         reason: "account_inactive",
@@ -348,16 +361,16 @@ export const protect = async (req, res, next) => {
         ip: req.ip,
         requestId: req.requestId,
       });
-
-      return res.status(403).json({
-        success: false,
-        message: "Your account is inactive or has been deleted",
-        code: ERROR_CODES.ACCOUNT_INACTIVE,
-        requestId: req.requestId,
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "Your account is inactive or has been deleted",
+          code: ERROR_CODES.ACCOUNT_INACTIVE,
+          requestId: req.requestId,
+        });
     }
 
-    // STEP 5: Attach user and context
     req.user = user;
     req.isAuthenticated = true;
     req.authContext = {
@@ -369,41 +382,39 @@ export const protect = async (req, res, next) => {
       sessionId: decoded.sessionId,
       requestId: req.requestId,
     };
-
     next();
   } catch (error) {
-    if (process.env.NODE_ENV === "development") {
+    if (process.env.NODE_ENV === "development")
       console.error(`Auth middleware error [${req.requestId}]:`, error.message);
-    }
-
     await safeLogAudit(req, "auth_middleware_error", {
       error: error.name,
       ip: req.ip,
       requestId: req.requestId,
     });
-
-    return res.status(401).json({
-      success: false,
-      message: "Authentication failed",
-      code: ERROR_CODES.AUTH_FAILED,
-      requestId: req.requestId,
-    });
+    return res
+      .status(401)
+      .json({
+        success: false,
+        message: "Authentication failed",
+        code: ERROR_CODES.AUTH_FAILED,
+        requestId: req.requestId,
+      });
   }
 };
 
 // ═══════════════════════════════════════════
-// ADMIN MIDDLEWARE
+// ADMIN / SUPERADMIN / VERIFIED / OPTIONAL
 // ═══════════════════════════════════════════
 
 export const adminOnly = async (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({
-      success: false,
-      message: "Authentication required",
-      code: ERROR_CODES.NO_USER,
-    });
-  }
-
+  if (!req.user)
+    return res
+      .status(401)
+      .json({
+        success: false,
+        message: "Authentication required",
+        code: ERROR_CODES.NO_USER,
+      });
   if (!ADMIN_ROLES.includes(req.user.role)) {
     await safeLogAudit(req, "admin_access_denied", {
       userId: req.user._id,
@@ -413,26 +424,26 @@ export const adminOnly = async (req, res, next) => {
       method: req.method,
       ip: req.ip,
     });
-
-    return res.status(403).json({
-      success: false,
-      message: "Admin access required",
-      code: ERROR_CODES.FORBIDDEN,
-    });
+    return res
+      .status(403)
+      .json({
+        success: false,
+        message: "Admin access required",
+        code: ERROR_CODES.FORBIDDEN,
+      });
   }
-
   next();
 };
 
 export const superadminOnly = async (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({
-      success: false,
-      message: "Authentication required",
-      code: ERROR_CODES.NO_USER,
-    });
-  }
-
+  if (!req.user)
+    return res
+      .status(401)
+      .json({
+        success: false,
+        message: "Authentication required",
+        code: ERROR_CODES.NO_USER,
+      });
   if (req.user.role !== SUPERADMIN_ROLE) {
     await safeLogAudit(req, "superadmin_access_denied", {
       userId: req.user._id,
@@ -442,26 +453,26 @@ export const superadminOnly = async (req, res, next) => {
       method: req.method,
       ip: req.ip,
     });
-
-    return res.status(403).json({
-      success: false,
-      message: "Superadmin access required",
-      code: ERROR_CODES.FORBIDDEN,
-    });
+    return res
+      .status(403)
+      .json({
+        success: false,
+        message: "Superadmin access required",
+        code: ERROR_CODES.FORBIDDEN,
+      });
   }
-
   next();
 };
 
 export const requireVerified = async (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({
-      success: false,
-      message: "Authentication required",
-      code: ERROR_CODES.NO_USER,
-    });
-  }
-
+  if (!req.user)
+    return res
+      .status(401)
+      .json({
+        success: false,
+        message: "Authentication required",
+        code: ERROR_CODES.NO_USER,
+      });
   if (!req.user.isVerified) {
     await safeLogAudit(req, "unverified_access_attempt", {
       userId: req.user._id,
@@ -470,65 +481,57 @@ export const requireVerified = async (req, res, next) => {
       method: req.method,
       ip: req.ip,
     });
-
-    return res.status(403).json({
-      success: false,
-      message: "Email verification required",
-      code: ERROR_CODES.EMAIL_NOT_VERIFIED,
-      requiresVerification: true,
-    });
+    return res
+      .status(403)
+      .json({
+        success: false,
+        message: "Email verification required",
+        code: ERROR_CODES.EMAIL_NOT_VERIFIED,
+        requiresVerification: true,
+      });
   }
-
   next();
 };
 
 export const optionalAuth = async (req, res, next) => {
   req.requestId = crypto.randomUUID();
-
   const authHeader = req.headers.authorization;
-
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     req.isAuthenticated = false;
     return next();
   }
-
   const token = authHeader.split(" ")[1];
-
   if (!token || token.trim() === "" || token.length > 2048) {
     req.isAuthenticated = false;
     return next();
   }
-
   try {
     const decoded = verifyAccessToken(token);
-
     if (decoded.sessionId) {
       const sessionValidation = await validateSession(
         decoded.sessionId,
         decoded.userId,
         req
       );
-
       if (!sessionValidation.valid) {
         req.isAuthenticated = false;
         return next();
       }
     }
-
+    if (!mongoose.Types.ObjectId.isValid(decoded.userId)) {
+      req.isAuthenticated = false;
+      return next();
+    } // ✅ guard
     const user = await User.findById(decoded.userId)
       .select("-password -refreshToken -twoFactorSecret -twoFactorBackupCodes")
       .lean();
-
     if (user && user.isActive && !user.deletedAt) {
       req.user = user;
       req.isAuthenticated = true;
-    } else {
-      req.isAuthenticated = false;
-    }
+    } else req.isAuthenticated = false;
   } catch {
     req.isAuthenticated = false;
   }
-
   next();
 };
 

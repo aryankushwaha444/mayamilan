@@ -5,12 +5,15 @@ import {
   useState,
   useCallback,
   useMemo,
-} from "react"; // ✅ SCROLL-FIX: +useLayoutEffect
+} from "react";
 import ChatInputBar from "./ChatInputBar.jsx";
 import MessageBubble from "./MessageBubble.jsx";
 import PhotoLightbox from "./PhotoLightbox.jsx";
 import { avatarImg } from "../utils/cloudinary";
 import { useAlert } from "../context/AlertContext";
+import { useNavigate } from "react-router-dom";
+import { getBlockStatus, toggleBlockUser } from "../services/userService.js";
+import { useCallContext } from "../context/CallContext.jsx"; // ✅ real call engine
 import {
   getMessages,
   sendMessage,
@@ -23,10 +26,9 @@ import { useSocket } from "../hooks/useSocket.js";
 
 const MESSAGES_PER_PAGE = 50;
 const MAX_TEXT = 2000;
-const BOTTOM_THRESHOLD = 120; // ✅ SCROLL-FIX: px-from-bottom treated as "pinned to newest"
+const BOTTOM_THRESHOLD = 120;
 
-// Defence-in-depth: even though the server normalises URLs, never render a
-// javascript:/data:/non-allow-listed host from a socket/HTTP payload.
+// Defence-in-depth: never render javascript:/data:/non-allow-listed hosts.
 const MEDIA_HOSTS = [
   /([a-z0-9-]+\.)?cloudinary\.com$/i,
   /^media\.giphy\.com$/i,
@@ -35,6 +37,7 @@ const MEDIA_HOSTS = [
   /^media\d*\.tenor\.com$/i,
   /([a-z0-9-]+\.)?tenor\.googleusercontent\.com$/i,
 ];
+
 const isSafeUrl = (u) => {
   if (typeof u !== "string" || !u) return false;
   try {
@@ -48,8 +51,7 @@ const isSafeUrl = (u) => {
   }
 };
 
-// Whitelist message fields coming from socket/HTTP → drops unknown keys
-// (anti mass-assignment / anti prototype-propagation into React state).
+// Whitelist message fields coming from socket/HTTP.
 const pickMessage = (m) => {
   if (!m || typeof m !== "object") return m;
   const out = {
@@ -101,6 +103,8 @@ const pickMessage = (m) => {
 function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const { socket } = useSocket();
   const toast = useAlert();
+  const navigate = useNavigate();
+  const call = useCallContext();
 
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -112,18 +116,23 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [typingUsers, setTypingUsers] = useState(new Set());
 
+  // ✅ block state for the chat header (call gating + hamburger label)
+  const [blockStatus, setBlockStatus] = useState({
+    iBlocked: false,
+    blockedMe: false,
+  });
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+  const menuBtnRef = useRef(null);
+
   const scrollRef = useRef(null);
-  // ✅ SCROLL-FIX: replace the old `isInitialLoad` ref with three precise signals.
-  const innerRef = useRef(null); //          ResizeObserver target -> catches late image/height growth
-  const isAtBottomRef = useRef(true); //      user-position truth, written ONLY by real scroll events
-  const prevTailRef = useRef({ id: null, len: 0 }); // append-detection baseline (vs prepend vs receipt tick)
+  const innerRef = useRef(null);
+  const isAtBottomRef = useRef(true);
+  const prevTailRef = useRef({ id: null, len: 0 });
   const readRequestedRef = useRef(new Set());
   const typingTimeoutRef = useRef(null);
   const sendingRef = useRef(false);
 
-  // ✅ SCROLL-FIX: instant pin to newest. The scrollTop SETTER bypasses the container's
-  // CSS `scroll-behavior:smooth`; the previous smooth scrollTo() was the root of the
-  // "lagging / not stable under rapid sends" symptom (cause #1).
   const snapToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -153,7 +162,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
 
   useEffect(() => {
     if (!conversationId) return;
-    // ✅ SCROLL-FIX: a fresh thread starts pinned to newest and resets the append baseline.
     isAtBottomRef.current = true;
     prevTailRef.current = { id: null, len: 0 };
     setMessages([]);
@@ -168,10 +176,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     return () => sessionStorage.removeItem("activeChatId");
   }, [conversationId]);
 
-  // ✅ SCROLL-FIX (replaces the old [messages] useEffect): run BEFORE paint (useLayoutEffect),
-  // act ONLY on genuine bottom-appends, decide follow from isAtBottomRef (NOT a post-append
-  // measurement, cause #2), and use an instant snap. Prepends (older history) and receipt
-  // ticks (causes #3) are ignored so they can no longer yank or jitter the view.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el || messages.length === 0) return;
@@ -186,19 +190,13 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     const tailChanged = tailId !== prev.id;
 
     if (grew && tailChanged) {
-      // something was appended AT THE BOTTOM (own send or incoming message)
       if (isAtBottomRef.current) {
-        el.scrollTop = el.scrollHeight; // instant, defeats CSS smooth
+        el.scrollTop = el.scrollHeight;
         setShowScrollButton(false);
       } else {
-        setShowScrollButton(true); // user is reading history -> don't steal their place
+        setShowScrollButton(true);
       }
     }
-    // grew && !tailChanged  => PREPEND (older page loaded at top) => native scroll
-    //   anchoring preserves position; do nothing.
-    // !grew                 => status-only update (delivered/read/reaction) or an
-    //   in-place temp->real swap => do nothing here; the ResizeObserver below re-pins
-    //   if that swap changed the bottom bubble's height (e.g. an image appeared).
     prevTailRef.current = { id: tailId, len: messages.length };
   }, [messages]);
 
@@ -206,18 +204,12 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     const el = scrollRef.current;
     if (!el) return;
     const { scrollTop, scrollHeight, clientHeight } = el;
-    // ✅ SCROLL-FIX: maintain the at-bottom truth from REAL scroll events only, so a tall
-    // appended bubble can never be misread as "user scrolled away" (cause #2).
     const atBottom = scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD;
     isAtBottomRef.current = atBottom;
     setShowScrollButton(!atBottom);
     if (scrollTop < 50 && hasMore && !loadingMore) loadMessages(page + 1, true);
   }, [hasMore, loadingMore, page, loadMessages]);
 
-  // ✅ SCROLL-FIX (new): observe the inner wrapper so ANY post-paint height growth — a
-  // res.cloudinary.com image finishing its load, the temp->real bubble swap, the typing
-  // indicator appearing — re-pins to newest while the user is at the bottom (cause #4),
-  // WITHOUT needing to edit MessageBubble.jsx.
   useEffect(() => {
     const el = innerRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
@@ -228,13 +220,12 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [conversationId, loading]); // re-attach once the inner list mounts after each load
+  }, [conversationId, loading]);
 
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     const onResize = () => {
-      // ✅ SCROLL-FIX: on keyboard open/rotate, follow only if the user was pinned to newest.
       if (isAtBottomRef.current) snapToBottom();
     };
     vv.addEventListener("resize", onResize);
@@ -245,13 +236,105 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
     readRequestedRef.current = new Set();
   }, [conversationId]);
 
-  // ✅ clear typing timer on unmount (was a leak before)
   useEffect(
     () => () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     },
     []
   );
+
+  // ✅ block status fetch (cancelled-flag pattern)
+  useEffect(() => {
+    let cancelled = false;
+    if (!otherUser?._id) {
+      setBlockStatus({ iBlocked: false, blockedMe: false });
+      return;
+    }
+    getBlockStatus(otherUser._id)
+      .then((res) => {
+        if (cancelled) return;
+        const bs = res?.data ?? res;
+        setBlockStatus({
+          iBlocked: !!bs?.iBlocked,
+          blockedMe: !!bs?.blockedMe,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setBlockStatus({ iBlocked: false, blockedMe: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [otherUser?._id]);
+
+  // ✅ outside-click + Escape for the hamburger
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e) => {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(e.target) &&
+        menuBtnRef.current &&
+        !menuBtnRef.current.contains(e.target)
+      )
+        setMenuOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  // ✅ close menu when switching conversation
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [conversationId]);
+
+  const isCallBlocked = blockStatus.iBlocked || blockStatus.blockedMe;
+  const callPhase = call?.phase || "idle";
+  const canCall = !isCallBlocked && callPhase === "idle" && !!call;
+
+  // ✅ real call start (server re-validates match/block/rate)
+  const startCall = (mediaType) => {
+    if (!canCall || !otherUser?._id) return;
+    call.startCall(otherUser._id, mediaType, conversationId);
+  };
+
+  const handleToggleBlock = async () => {
+    if (!otherUser?._id) return;
+    try {
+      const res = await toggleBlockUser(otherUser._id);
+      const blocked = res?.blocked ?? res?.data?.blocked;
+      setBlockStatus((p) => ({ ...p, iBlocked: !!blocked }));
+      setMenuOpen(false);
+
+      if (blocked) {
+        // ✅ If currently in a call with this peer, end it client-side too.
+        // Server-side authoritative teardown happens in user.controller.toggleBlock.
+        if (
+          call &&
+          callPhase !== "idle" &&
+          String(call.peer?._id) === String(otherUser._id)
+        ) {
+          call.endCall("blocked");
+        }
+        toast.warning(`${otherUser.name} blocked 🚫`, "Blocked", 3000);
+      } else {
+        toast.success(`${otherUser.name} unblocked`, "Unblocked", 3000);
+      }
+    } catch (e) {
+      toast.error(
+        e.response?.data?.message || "Failed to update block",
+        "Error",
+        4000
+      );
+    }
+  };
 
   useEffect(() => {
     if (!socket || !conversationId || messages.length === 0) return;
@@ -270,7 +353,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       const id = typeof m._id === "string" ? m._id : m._id?.toString?.();
       if (readRequestedRef.current.has(id)) return;
       readRequestedRef.current.add(id);
-      markMessageAsRead(id).catch(() => {}); // REST only; server broadcasts cumulative read
+      markMessageAsRead(id).catch(() => {});
     });
     if (pending.length)
       window.dispatchEvent(new CustomEvent("chat:messages-read"));
@@ -428,7 +511,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       if (file) {
         const up = await uploadChatAttachment(file, conversationId);
         att = up.attachment;
-      } // server-trusted duration/url
+      }
       const response = await sendMessage(conversationId, {
         text,
         type,
@@ -449,7 +532,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         };
         return p
           .filter((m) => m._id !== tempId && m._id !== rid)
-          .concat(finalMsg); // dedupe temp + socket twin
+          .concat(finalMsg);
       });
     } catch (e) {
       console.error("Send error:", e);
@@ -528,13 +611,11 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   };
   const scrollToBottom = () => {
     if (scrollRef.current) {
-      // user-initiated jump: smooth is fine HERE (it's a single deliberate action, not a
-      // per-message follow). Re-arm the at-bottom flag so subsequent sends follow again.
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
         behavior: "smooth",
       });
-      isAtBottomRef.current = true; // ✅ SCROLL-FIX
+      isAtBottomRef.current = true;
       setShowScrollButton(false);
     }
   };
@@ -609,6 +690,139 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
             </small>
           </div>
         </div>
+
+        <div
+          className="chat-header-actions"
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <button
+            type="button"
+            className="chat-header-icon-btn"
+            onClick={() => startCall("video")}
+            disabled={!canCall}
+            title={
+              isCallBlocked
+                ? "Calling blocked"
+                : callPhase !== "idle"
+                ? "Already in a call"
+                : "Video call"
+            }
+            aria-label={
+              isCallBlocked
+                ? "Video call unavailable (blocked)"
+                : "Start video call"
+            }
+            style={{ opacity: canCall ? 1 : 0.4 }}
+          >
+            <i className="bi bi-camera-video" aria-hidden="true"></i>
+          </button>
+          <button
+            type="button"
+            className="chat-header-icon-btn"
+            onClick={() => startCall("audio")}
+            disabled={!canCall}
+            title={
+              isCallBlocked
+                ? "Calling blocked"
+                : callPhase !== "idle"
+                ? "Already in a call"
+                : "Voice call"
+            }
+            aria-label={
+              isCallBlocked
+                ? "Voice call unavailable (blocked)"
+                : "Start voice call"
+            }
+            style={{ opacity: canCall ? 1 : 0.4 }}
+          >
+            <i className="bi bi-telephone" aria-hidden="true"></i>
+          </button>
+
+          <div
+            className="chat-header-menu"
+            ref={menuRef}
+            style={{ position: "relative" }}
+          >
+            <button
+              type="button"
+              ref={menuBtnRef}
+              className="chat-header-icon-btn"
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-haspopup="true"
+              aria-expanded={menuOpen}
+              aria-label="Conversation options"
+              title="More options"
+            >
+              <i className="bi bi-three-dots-vertical" aria-hidden="true"></i>
+            </button>
+            {menuOpen && (
+              <div
+                className="chat-header-dropdown"
+                role="menu"
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "100%",
+                  zIndex: 30,
+                  minWidth: 180,
+                  background: "#fff",
+                  borderRadius: 12,
+                  boxShadow: "0 8px 30px rgba(0,0,0,.12)",
+                  padding: 6,
+                }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="chat-header-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    navigate(`/users/${otherUser?._id}`);
+                  }}
+                >
+                  <i className="bi bi-person" aria-hidden="true"></i> View
+                  profile
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="chat-header-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    navigate(`/users/${otherUser?._id}?report=1`);
+                  }}
+                >
+                  <i className="bi bi-flag" aria-hidden="true"></i> Report
+                </button>
+                <div
+                  style={{ height: 1, background: "#eee", margin: "4px 0" }}
+                />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="chat-header-menu-item"
+                  style={{
+                    color: blockStatus.iBlocked ? "#16a34a" : "#dc2626",
+                  }}
+                  onClick={handleToggleBlock}
+                >
+                  <i
+                    className={`bi ${
+                      blockStatus.iBlocked ? "bi-unlock" : "bi-slash-circle"
+                    }`}
+                    aria-hidden="true"
+                  ></i>
+                  {blockStatus.iBlocked ? "Unblock" : "Block"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       <div
@@ -633,10 +847,6 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
             </p>
           </div>
         ) : (
-          // ✅ SCROLL-FIX: wrap the live list in an observed inner box. It replicates the
-          // column/flex/gap the bubbles had as direct children of .chat-messages, so the
-          // visual layout is identical; its height == the scroll content height, so the
-          // ResizeObserver above fires the instant an image/late layout grows the thread.
           <div
             ref={innerRef}
             style={{

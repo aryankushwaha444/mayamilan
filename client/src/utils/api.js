@@ -1,9 +1,11 @@
 import axios from "axios";
-import { signRequest } from "./signRequest.js";
+import { signRequest, setSigningKey, clearSigningKey } from "./signRequest.js";
 import { getDeviceId, getDeviceInfo } from "./deviceId";
-import.meta.env.VITE_API_SECRET
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+
+const isSigningKey = (key) =>
+  typeof key === "string" && key.length >= 16 && key.length <= 256;
 
 // ═══════════════════════════════════════════
 // MAIN API CLIENT
@@ -21,23 +23,36 @@ const refreshClient = axios.create({
   timeout: 10000, // Refresh should respond quickly
 });
 
+const buildDeviceHeaders = () => {
+  const headers = {
+    "X-Device-Id": getDeviceId(),
+  };
+
+  const info = getDeviceInfo();
+  if (info) {
+    const compact = {
+      b: String(info.browser || "").slice(0, 40),
+      bv: String(info.browserVersion || "").slice(0, 20),
+      o: String(info.os || "").slice(0, 40),
+      ov: String(info.osVersion || "").slice(0, 20),
+      dt: String(info.deviceType || "unknown").slice(0, 20),
+    };
+
+    const encoded = encodeURIComponent(JSON.stringify(compact));
+    headers["X-Device-Info"] = encoded.slice(0, 800);
+  }
+
+  return headers;
+};
+
 // ✅ Device headers on refresh too: the refresh handler enforces device-mismatch, but
 // refreshClient bypasses the main interceptor, so without this the stored fingerprint
 // was never compared (device binding recorded-at-login but never-checked-on-refresh).
 refreshClient.interceptors.request.use((config) => {
-  config.headers["X-Device-Id"] = getDeviceId();
-  const info = getDeviceInfo();
-  if (info) {
-    config.headers["X-Device-Info"] = encodeURIComponent(
-      JSON.stringify({
-        b: info.browser,
-        bv: info.browserVersion,
-        o: info.os,
-        ov: info.osVersion,
-        dt: info.deviceType,
-      })
-    ).slice(0, 800);
-  }
+  const deviceHeaders = buildDeviceHeaders();
+  Object.entries(deviceHeaders).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) config.headers[k] = v;
+  });
   return config;
 });
 
@@ -54,8 +69,7 @@ const MAX_RETRIES = 2; // ✅ Prevent infinite retry loops
 const SKIP_REFRESH_URLS = [
   "/auth/login",
   "/auth/login/2fa",
-  "/auth/oauth/2fa", // ✅ was missing -> the OAuth-2FA 401 leaked into the interceptor
-  //                         and surfaced a misleading "Refresh token missing"
+  "/auth/oauth/2fa",
   "/auth/register",
   "/auth/refresh",
   "/auth/logout",
@@ -78,10 +92,21 @@ const processQueue = (error, token = null) => {
 // HELPERS
 // ═══════════════════════════════════════════
 
+const base64UrlDecode = (input) => {
+  const pad = input.length % 4;
+  const base64 =
+    input.replace(/-/g, "+").replace(/_/g, "/") +
+    (pad ? "=".repeat(4 - pad) : "");
+  return atob(base64);
+};
+
 /** Check if JWT is expiring within bufferSeconds */
 const isTokenExpiringSoon = (token, bufferSeconds = 60) => {
   try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
+    const parts = String(token).split(".");
+    if (parts.length < 2) return false;
+
+    const payload = JSON.parse(base64UrlDecode(parts[1]));
     const expiresAt = payload.exp * 1000;
     return expiresAt - Date.now() < bufferSeconds * 1000;
   } catch {
@@ -95,9 +120,16 @@ const shouldSkipRefresh = (url) => {
   return SKIP_REFRESH_URLS.some((skip) => url.includes(skip));
 };
 
+const sanitizeReason = (reason) =>
+  String(reason || "")
+    .replace(/[^a-z0-9_-]/gi, "")
+    .slice(0, 40);
+
 /** Navigate without full page reload to preserve React state */
 const navigateToLogin = (reason = "") => {
-  const path = reason ? `/login?reason=${reason}` : "/login";
+  const safeReason = sanitizeReason(reason);
+  const path = safeReason ? `/login?reason=${safeReason}` : "/login";
+
   try {
     window.history.replaceState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
@@ -106,11 +138,13 @@ const navigateToLogin = (reason = "") => {
   }
 };
 
-/** Force logout: clear storage + notify app + navigate */
+/** Force logout: clear storage + signing key + notify app + navigate */
 const forceLogout = (reason = "") => {
+  clearSigningKey();
   localStorage.removeItem("accessToken");
   localStorage.removeItem("user");
   window.dispatchEvent(new Event("auth:logout"));
+
   if (!window.location.pathname.includes("/login")) {
     navigateToLogin(reason);
   }
@@ -122,22 +156,33 @@ const performRefresh = async () => {
   if (now - lastRefreshTime < REFRESH_COOLDOWN) {
     const existing = localStorage.getItem("accessToken");
     if (existing) return existing;
+
     await new Promise((r) =>
       setTimeout(r, REFRESH_COOLDOWN - (now - lastRefreshTime))
     );
   }
 
   const response = await refreshClient.post("/auth/refresh");
-  const newToken = response.data.accessToken;
+  const newToken = response?.data?.accessToken;
+  const newSigningKey = response?.data?.signingKey;
 
   if (!newToken) throw new Error("No access token returned from refresh");
+
+  if (isSigningKey(newSigningKey)) {
+    setSigningKey(newSigningKey);
+  } else {
+    clearSigningKey();
+  }
 
   localStorage.setItem("accessToken", newToken);
   lastRefreshTime = Date.now();
 
   window.dispatchEvent(
     new CustomEvent("auth:token-refreshed", {
-      detail: { accessToken: newToken },
+      detail: {
+        accessToken: newToken,
+        signingKey: isSigningKey(newSigningKey) ? newSigningKey : null,
+      },
     })
   );
 
@@ -152,24 +197,16 @@ api.interceptors.request.use(
     // ✅ Device headers ALWAYS (were gated on accessToken, so the FIRST login and the
     // 2FA-verify requests — which have no token yet — created device-less sessions,
     // defeating device binding on exactly the requests that establish the session).
-    config.headers["X-Device-Id"] = getDeviceId();
-    const info = getDeviceInfo();
-    if (info) {
-      config.headers["X-Device-Info"] = encodeURIComponent(
-        JSON.stringify({
-          b: info.browser,
-          bv: info.browserVersion,
-          o: info.os,
-          ov: info.osVersion,
-          dt: info.deviceType,
-        })
-      ).slice(0, 800);
-    }
+    const deviceHeaders = buildDeviceHeaders();
+    Object.entries(deviceHeaders).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) config.headers[k] = v;
+    });
 
     const accessToken = localStorage.getItem("accessToken");
 
     if (accessToken) {
       config.headers.Authorization = `Bearer ${accessToken}`;
+
       // Proactive refresh: refresh 60s before expiry
       if (
         isTokenExpiringSoon(accessToken, 60) &&
@@ -217,42 +254,74 @@ api.interceptors.request.use(
 // RESPONSE INTERCEPTOR
 // ═══════════════════════════════════════════
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // ✅ Capture signing key from any auth response that carries one.
+    const key = response?.data?.signingKey;
+    if (isSigningKey(key)) {
+      setSigningKey(key);
+      try {
+        window.dispatchEvent(
+          new CustomEvent("auth:signing-key", {
+            detail: { signingKey: key },
+          })
+        );
+      } catch {}
+    }
+    return response;
+  },
 
   async (error) => {
     const originalRequest = error.config;
 
     if (!error.response) return Promise.reject(error);
+    if (!originalRequest) return Promise.reject(error);
 
     const data = error.response.data || {};
+    const code = typeof data.code === "string" ? data.code : "";
 
     // ── 1. SIGNATURE ERRORS ──────────────────────────────
-    if (
-      data.signatureInvalid ||
-      data.signatureMissing ||
-      data.signatureExpired
-    ) {
-      if (data.signatureExpired) {
-        window.location.reload();
-        return Promise.reject(error);
+    const isSignatureError =
+      code.startsWith("SIGNATURE_") ||
+      data.signatureInvalid === true ||
+      data.signatureMissing === true ||
+      data.signatureExpired === true;
+
+    if (isSignatureError) {
+      const isExpired =
+        code === "SIGNATURE_EXPIRED" || data.signatureExpired === true;
+
+      // Expired timestamp may be transient clock skew / network delay.
+      // Invalid / missing / no-key means tampering or stale session key.
+      if (!isExpired) {
+        forceLogout("security_violation");
       }
 
-      // Tampering detected — force logout
-      // ✅ Use event-based notification instead of alert()
-      forceLogout("security_violation");
       window.dispatchEvent(
         new CustomEvent("auth:security-alert", {
           detail: {
+            code,
+            expired: isExpired,
             message: data.message || "Request blocked due to security concern",
           },
         })
       );
+
       return Promise.reject(error);
     }
 
-    // ── 2. SESSION REVOKED ───────────────────────────────
-    if (data.code === "DEVICE_MISMATCH" || data.code === "SESSION_MISMATCH") {
-      forceLogout("device_changed");
+    // ── 2. SESSION REVOKED / DEVICE MISMATCH ─────────────
+    const sessionRevokedCodes = [
+      "DEVICE_MISMATCH",
+      "SESSION_MISMATCH",
+      "SESSION_REVOKED",
+      "SESSION_EXPIRED",
+      "TOKEN_REPLAY_DETECTED",
+    ];
+
+    if (data.sessionRevoked === true || sessionRevokedCodes.includes(code)) {
+      forceLogout(
+        code === "DEVICE_MISMATCH" ? "device_changed" : "session_revoked"
+      );
       return Promise.reject(error);
     }
 
@@ -263,12 +332,23 @@ api.interceptors.response.use(
     if (shouldSkipRefresh(requestUrl)) return Promise.reject(error);
 
     const errorMessage = (data.message || "").toLowerCase();
+    const tokenErrorCodes = [
+      "NO_TOKEN",
+      "EMPTY_TOKEN",
+      "INVALID_TOKEN",
+      "TOKEN_EXPIRED",
+      "AUTH_FAILED",
+      "USER_NOT_FOUND",
+      "ACCOUNT_INACTIVE",
+    ];
+
     const isTokenError =
       errorMessage.includes("token") ||
       errorMessage.includes("expired") ||
       errorMessage.includes("authentication") ||
       errorMessage.includes("invalid") ||
-      errorMessage.includes("no refresh");
+      errorMessage.includes("no refresh") ||
+      tokenErrorCodes.includes(code);
 
     if (!isTokenError) return Promise.reject(error);
 

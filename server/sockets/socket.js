@@ -1,5 +1,6 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose"; // ✅ needed for ObjectId validation
 import User from "../models/User.js";
 import Match from "../models/Match.js";
 import Conversation from "../models/Conversation.js";
@@ -7,6 +8,7 @@ import RefreshToken from "../models/RefreshToken.js";
 import { logAudit } from "../utils/auditLogger.js";
 import registerChatSocket from "./chat.socket.js";
 import registerNotificationSocket from "./notification.socket.js";
+import registerCallSocket from "./call.socket.js";
 import Post from "../models/Post.js";
 
 let io;
@@ -22,7 +24,16 @@ const CONFIG = {
   maxRoomsPerUser: parseInt(process.env.MAX_ROOMS_PER_USER || "50", 10),
   messageRateLimit: parseInt(process.env.SOCKET_MESSAGE_RATE_LIMIT || "30", 10),
   typingRateLimit: parseInt(process.env.SOCKET_TYPING_RATE_LIMIT || "60", 10),
-  maxPayloadSize: parseInt(process.env.SOCKET_MAX_PAYLOAD || "10000", 10),
+  maxPayloadSize: parseInt(process.env.SOCKET_MAX_PAYLOAD || "10000", 10), // non-call events stay 10KB
+  callSignalMaxPayload: parseInt(
+    process.env.SOCKET_CALL_MAX_PAYLOAD || "131072",
+    10
+  ), // 128KB, only for call:signal SDP
+  callSignalRate: parseInt(process.env.SOCKET_CALL_FRAME_RATE || "600", 10), // call frames/min ceiling
+  maxAuthFailuresPerIp: parseInt(
+    process.env.SOCKET_MAX_AUTH_FAILURES_PER_IP || "30",
+    10
+  ),
   disconnectGracePeriod: parseInt(
     process.env.SOCKET_DISCONNECT_GRACE_MS || "5000",
     10
@@ -33,6 +44,8 @@ const CONFIG = {
 const userConnections = new Map();
 const messageRateTracker = new Map();
 const typingRateTracker = new Map();
+const callFrameTracker = new Map(); // ✅ NEW
+const authFailureTracker = new Map(); // ✅ NEW
 
 // Cleanup old rate tracking every minute
 setInterval(() => {
@@ -47,7 +60,17 @@ setInterval(() => {
       typingRateTracker.delete(userId);
     }
   }
-}, 60 * 1000);
+  for (const [userId, data] of callFrameTracker.entries()) {
+    if (now - data.windowStart > 60000) {
+      callFrameTracker.delete(userId);
+    }
+  }
+  for (const [ip, data] of authFailureTracker.entries()) {
+    if (now - data.windowStart > 60000) {
+      authFailureTracker.delete(ip);
+    }
+  }
+}, 60 * 1000).unref?.();
 
 const safeLogAudit = async (req, action, metadata) => {
   try {
@@ -55,6 +78,26 @@ const safeLogAudit = async (req, action, metadata) => {
   } catch {
     // Silent failure
   }
+};
+
+const getHandshakeIp = (socket) =>
+  socket.handshake?.address || socket.conn?.remoteAddress || "unknown";
+
+const registerAuthFailure = (ip) => {
+  const now = Date.now();
+  const tracker = authFailureTracker.get(ip) || { count: 0, windowStart: now };
+  if (now - tracker.windowStart > 60000) {
+    tracker.count = 1;
+    tracker.windowStart = now;
+  } else {
+    tracker.count++;
+  }
+  authFailureTracker.set(ip, tracker);
+};
+
+const isAuthFailureLimited = (ip) => {
+  const tracker = authFailureTracker.get(ip);
+  return !!tracker && tracker.count > CONFIG.maxAuthFailuresPerIp;
 };
 
 const checkMessageRate = (userId) => {
@@ -106,6 +149,25 @@ const checkTypingRate = (userId) => {
   return { allowed: true };
 };
 
+const checkCallFrameRate = (userId) => {
+  const now = Date.now();
+  const tracker = callFrameTracker.get(userId) || {
+    count: 0,
+    windowStart: now,
+  };
+
+  if (now - tracker.windowStart > 60000) {
+    tracker.count = 1;
+    tracker.windowStart = now;
+  } else {
+    tracker.count++;
+  }
+
+  callFrameTracker.set(userId, tracker);
+
+  return tracker.count <= CONFIG.callSignalRate;
+};
+
 export const getIO = () => {
   if (!io) throw new Error("Socket.io not initialized!");
   return io;
@@ -114,20 +176,18 @@ export const getIO = () => {
 // ✅ ADDED: Validate room name format
 const isValidRoomName = (room) => {
   if (typeof room !== "string") return false;
-  // Only allow alphanumeric, colons, underscores, hyphens
   return /^[a-zA-Z0-9:_-]+$/.test(room);
 };
 
 // ✅ ADDED: Check if user can join a specific room
 const canJoinRoom = async (userId, room) => {
-  // User can always join their own user room
   if (room === `user:${userId}`) return true;
 
-  // Check if it's a conversation room
   if (room.startsWith("conversation:")) {
     const conversationId = room.replace("conversation:", "");
+    // ✅ NEW: reject invalid ObjectId before querying
+    if (!mongoose.Types.ObjectId.isValid(conversationId)) return false;
 
-    // Verify user is a participant
     const conversation = await Conversation.findOne({
       _id: conversationId,
       participants: userId,
@@ -137,9 +197,6 @@ const canJoinRoom = async (userId, room) => {
     return !!conversation;
   }
 
-  // Check if it's a post room (for comments)
-  // Post rooms: only users who can actually SEE the post may join, so blocked
-  // outsiders can't eavesdrop live new_comment / new_reply / comment_deleted.
   if (room.startsWith("post:")) {
     const postId = room.slice("post:".length);
     if (!/^[a-f\d]{24}$/i.test(postId)) return false;
@@ -164,7 +221,6 @@ const canJoinRoom = async (userId, room) => {
     return !blockedByAuthor && !authorBlockedByViewer;
   }
 
-  // Block all other room types by default
   return false;
 };
 
@@ -182,7 +238,7 @@ const initializeSocket = (server) => {
     transports: ["websocket", "polling"],
     pingTimeout: 60000,
     pingInterval: 25000,
-    maxHttpBufferSize: CONFIG.maxPayloadSize,
+    maxHttpBufferSize: CONFIG.callSignalMaxPayload, // ✅ transport must fit video SDP
     connectTimeout: 45000,
   });
 
@@ -190,15 +246,27 @@ const initializeSocket = (server) => {
   // SOCKET AUTHENTICATION MIDDLEWARE
   // ═══════════════════════════════════════════
   io.use(async (socket, next) => {
+    const ip = getHandshakeIp(socket);
+
+    // ✅ NEW: throttle repeated auth failures per IP
+    if (isAuthFailureLimited(ip)) {
+      return next(new Error("Too many authentication attempts"));
+    }
+
+    const deny = (msg) => {
+      registerAuthFailure(ip);
+      return next(new Error(msg));
+    };
+
     try {
       const token = socket.handshake.auth?.token;
 
       if (!token) {
-        return next(new Error("Authentication required"));
+        return deny("Authentication required");
       }
 
       if (token.length > 2048) {
-        return next(new Error("Invalid token"));
+        return deny("Invalid token");
       }
 
       const decoded = jwt.verify(
@@ -208,7 +276,7 @@ const initializeSocket = (server) => {
       );
 
       if (decoded.type && decoded.type !== "access") {
-        return next(new Error("Invalid token type"));
+        return deny("Invalid token type");
       }
 
       if (decoded.sessionId) {
@@ -217,31 +285,31 @@ const initializeSocket = (server) => {
           revokedAt: null,
         });
         if (!session) {
-          return next(new Error("Session revoked"));
+          return deny("Session revoked");
         }
       }
 
       const user = await User.findById(decoded.userId)
-        .select("_id name photos isActive isOnline lastSeen")
+        .select("_id name photos isActive isOnline lastSeen deletedAt") // ✅ NEW: include deletedAt
         .lean();
 
       if (!user) {
-        return next(new Error("User not found"));
+        return deny("User not found");
       }
       if (!user.isActive || user.deletedAt) {
-        return next(new Error("Account inactive or deleted"));
+        return deny("Account inactive or deleted");
       }
 
       socket.user = user;
       next();
     } catch (error) {
       if (error.name === "TokenExpiredError") {
-        return next(new Error("Token expired"));
+        return deny("Token expired");
       }
       if (error.name === "JsonWebTokenError") {
-        return next(new Error("Invalid token"));
+        return deny("Invalid token");
       }
-      next(new Error("Authentication failed"));
+      return deny("Authentication failed");
     }
   });
 
@@ -288,9 +356,8 @@ const initializeSocket = (server) => {
       $set: { isOnline: true, lastSeen: new Date() },
     });
 
-    // ✅ FIXED: Limit matched user notifications to prevent performance issues
     const matchedUserIds = await getMatchedUserIds(userId);
-    const limitedMatches = matchedUserIds.slice(0, 100); // Max 100 notifications
+    const limitedMatches = matchedUserIds.slice(0, 100);
 
     limitedMatches.forEach((matchId) => {
       io.to(`user:${matchId}`).emit("user_online", { userId });
@@ -298,12 +365,15 @@ const initializeSocket = (server) => {
 
     registerChatSocket(io, socket);
     registerNotificationSocket(io, socket);
+    registerCallSocket(io, socket); // ✅ NEW
 
     // ═══════════════════════════════════════════
     // SECURITY: Global message rate limiting
     // ═══════════════════════════════════════════
     socket.use((packet, next) => {
-      if (packet[0] === "send_message" || packet[0] === "message") {
+      const ev = packet[0];
+
+      if (ev === "send_message" || ev === "message") {
         const rateCheck = checkMessageRate(userId);
         if (!rateCheck.allowed) {
           socket.emit("rate_limit", {
@@ -314,10 +384,9 @@ const initializeSocket = (server) => {
         }
       }
 
-      if (packet[0] === "typing") {
+      if (ev === "typing") {
         const rateCheck = checkTypingRate(userId);
         if (!rateCheck.allowed) {
-          // ✅ FIXED: Notify client instead of just throwing error
           socket.emit("typing_rate_limit", {
             message: "Too many typing events. Please slow down.",
           });
@@ -325,10 +394,37 @@ const initializeSocket = (server) => {
         }
       }
 
-      const payload = JSON.stringify(packet);
-      if (payload.length > CONFIG.maxPayloadSize) {
+      // ✅ NEW: type-aware payload cap + call frame rate limit
+      const isCallSignal = ev === "call:signal";
+      const isCallSetup =
+        ev === "call:start" ||
+        ev === "call:accept" ||
+        ev === "call:reject" ||
+        ev === "call:end" ||
+        ev === "call:connected";
+
+      const sizeCap = isCallSignal
+        ? CONFIG.callSignalMaxPayload
+        : CONFIG.maxPayloadSize;
+
+      let payload;
+      try {
+        payload = JSON.stringify(packet);
+      } catch {
+        socket.emit("error", { message: "Invalid payload" });
+        return next(new Error("Invalid payload"));
+      }
+
+      if (payload.length > sizeCap) {
         socket.emit("error", { message: "Message too large" });
         return next(new Error("Payload too large"));
+      }
+
+      if ((isCallSignal || isCallSetup) && !checkCallFrameRate(userId)) {
+        socket.emit("rate_limit", {
+          message: "Too many call packets. Please slow down.",
+        });
+        return next(new Error("Call rate limit exceeded"));
       }
 
       next();
@@ -339,13 +435,12 @@ const initializeSocket = (server) => {
     // ═══════════════════════════════════════════
     const originalJoin = socket.join.bind(socket);
     socket.join = async function (room) {
-      // ✅ ADDED: Validate room name format
       if (!isValidRoomName(room)) {
         console.warn(`⚠️ Invalid room name rejected: ${room}`);
         await safeLogAudit(
           { ip: socket.handshake.address, user: userId },
           "socket_invalid_room_join",
-          { room: room.substring(0, 50) } // Truncate for logging
+          { room: room.substring(0, 50) }
         );
         return;
       }
@@ -360,7 +455,6 @@ const initializeSocket = (server) => {
         return;
       }
 
-      // ✅ ADDED: Verify user can join this room
       const canJoin = await canJoinRoom(userId, room);
       if (!canJoin) {
         console.warn(
@@ -384,7 +478,6 @@ const initializeSocket = (server) => {
     socket.on("leave_room", (room) => {
       if (!isValidRoomName(room)) return;
 
-      // User can only leave rooms they're in
       if (socket.rooms.has(room)) {
         socket.leave(room);
       }
@@ -442,15 +535,13 @@ const initializeSocket = (server) => {
         await User.findByIdAndUpdate(userId, {
           $set: { isOnline: false, lastSeen: new Date() },
         });
-        const matchedUserIds = await getMatchedUserIds(userId);
-        const limitedMatches = matchedUserIds.slice(0, 100);
 
-        limitedMatches.forEach((matchId) => {
-          io.to(`user:${matchId}`).emit("user_offline", {
-            userId,
-            lastSeen: new Date(),
-          });
-        });
+        // ✅ NEW: disconnect all sockets for this user to keep presence consistent
+        const socketIds = Array.from(userConnections.get(userId) || []);
+        for (const sid of socketIds) {
+          const s = io.sockets.sockets.get(sid);
+          if (s) s.disconnect(true);
+        }
       } catch (error) {
         console.error("Go offline error:", error);
       }
@@ -463,6 +554,8 @@ const initializeSocket = (server) => {
     userConnections.clear();
     messageRateTracker.clear();
     typingRateTracker.clear();
+    callFrameTracker.clear(); // ✅ NEW
+    authFailureTracker.clear(); // ✅ NEW
   };
 
   process.on("SIGTERM", cleanup);

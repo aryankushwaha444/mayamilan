@@ -1,6 +1,6 @@
 import express from "express";
 import passport from "passport";
-import crypto from "crypto"; // ✅ Added for familyId generation
+import crypto from "crypto";
 import { logAudit } from "../utils/auditLogger.js";
 import { checkIpReputationMiddleware } from "../middleware/ipReputation.middleware.js";
 import { jsonLimit } from "../middleware/bodyLimit.js";
@@ -23,16 +23,17 @@ import {
   revokeAllOtherSessions,
   reactivateAccount,
   completeOAuth2FA,
-  upsertSessionForUser, // ← google logins now dedup + get a structured label
+  upsertSessionForUser,
 } from "../controllers/auth.controller.js";
 
 import {
-  generateAccessToken,
   generateReactivationToken,
-  generateTempToken, // ✅ pending 2FA token (correct claims; no more bare jwt.sign)
+  generateTempToken,
+  constantTimeCompare,
 } from "../utils/generateToken.js";
 
 import { protect } from "../middleware/auth.middleware.js";
+import { verifySignature } from "../middleware/verifySignature.js";
 
 import {
   loginLimiter,
@@ -48,29 +49,70 @@ import {
 
 const router = express.Router();
 
-// Validate CLIENT_URL at startup to prevent open redirects
-const CLIENT_URL = process.env.CLIENT_URL;
-if (!CLIENT_URL) {
+const NODE_ENV = process.env.NODE_ENV || "development";
+const IS_PRODUCTION = NODE_ENV === "production";
+
+const debugLog = (...args) => {
+  if (!IS_PRODUCTION) console.log(...args);
+};
+
+// ✅ CLIENT_URL may be comma-separated. Parse to trusted origins.
+const CLIENT_RAW = process.env.CLIENT_URL;
+if (!CLIENT_RAW) {
   throw new Error("CLIENT_URL environment variable is required");
 }
 
-// ✅ FIX: Secure redirect helper using the URL API to prevent Open Redirect attacks
+const TRUSTED_ORIGINS = new Set(
+  CLIENT_RAW.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      try {
+        return new URL(s).origin;
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+);
+
+const PRIMARY_ORIGIN =
+  [...TRUSTED_ORIGINS][0] || CLIENT_RAW.split(",")[0].trim();
+
+if (TRUSTED_ORIGINS.size === 0) {
+  throw new Error("CLIENT_URL contains no valid origin");
+}
+
+const OAUTH_STATE_COOKIE = "mm_oauth_state";
+const oauthStateOpts = {
+  httpOnly: true,
+  secure: IS_PRODUCTION,
+  sameSite: IS_PRODUCTION ? "none" : "lax",
+  maxAge: 10 * 60 * 1000,
+  path: "/",
+};
+
+const REACTIVATE_COOKIE = {
+  httpOnly: true,
+  secure: IS_PRODUCTION,
+  sameSite: IS_PRODUCTION ? "none" : "lax",
+  maxAge: 10 * 60 * 1000,
+  path: "/",
+};
+
+// ✅ Open-redirect safe: only redirect to a path on a trusted origin.
 const safeRedirect = (res, path) => {
   try {
-    // Ensure path starts with a single slash to prevent protocol-relative URLs
-    const cleanPath = path.startsWith("/") ? path : `/${path}`;
-    const targetUrl = new URL(cleanPath, CLIENT_URL);
-    const trustedOrigin = new URL(CLIENT_URL).origin;
+    const cleanPath = String(path).startsWith("/") ? String(path) : `/${path}`;
+    const target = new URL(cleanPath, PRIMARY_ORIGIN);
 
-    // STRICT ORIGIN CHECK: Prevents `https://myapp.com@evil.com` bypass
-    if (targetUrl.origin !== trustedOrigin) {
-      return res.redirect(CLIENT_URL);
+    if (!TRUSTED_ORIGINS.has(target.origin)) {
+      return res.redirect(PRIMARY_ORIGIN);
     }
 
-    return res.redirect(targetUrl.toString());
-  } catch (err) {
-    // Fallback to base URL if URL parsing fails
-    return res.redirect(CLIENT_URL);
+    return res.redirect(target.toString());
+  } catch {
+    return res.redirect(PRIMARY_ORIGIN);
   }
 };
 
@@ -105,14 +147,39 @@ router.post(
   reactivateAccount
 );
 
-// Note: logout is intentionally NOT protected so users with expired access tokens can still clear their cookies
 router.post("/logout", jsonLimit("1kb"), logout);
 
 router.post("/refresh", refreshLimiter, jsonLimit("1kb"), refreshAccessToken);
 
 router.get("/me", protect, getMe);
 
-router.put("/change-password", protect, jsonLimit("1kb"), changePassword);
+// ✅ Authenticated JSON mutations: protect -> body limit -> verifySignature -> controller.
+router.put(
+  "/change-password",
+  protect,
+  jsonLimit("1kb"),
+  verifySignature,
+  changePassword
+);
+
+router.get("/sessions", protect, verifySignature, getSessions);
+
+router.delete(
+  "/sessions/:sessionId",
+  protect,
+  sessionManagementLimiter,
+  verifySignature,
+  revokeSession
+);
+
+router.post(
+  "/sessions/revoke-others",
+  protect,
+  jsonLimit("1kb"),
+  sessionManagementLimiter,
+  verifySignature,
+  revokeAllOtherSessions
+);
 
 // ========================================
 // OTP & PASSWORD RESET
@@ -139,40 +206,20 @@ router.post(
 );
 
 // ========================================
-// SESSION MANAGEMENT
+// GOOGLE OAUTH (state-bound, no token in URL)
 // ========================================
 
-router.get("/sessions", protect, getSessions);
+router.get("/google", oauthLimiter, (req, res, next) => {
+  // Per-browser anti-substitution nonce: cookie + passed to Google.
+  const state = crypto.randomBytes(24).toString("base64url");
+  res.cookie(OAUTH_STATE_COOKIE, state, oauthStateOpts);
 
-router.delete(
-  "/sessions/:sessionId",
-  protect,
-  sessionManagementLimiter,
-  jsonLimit("1kb"),
-  revokeSession
-);
-
-router.post(
-  "/sessions/revoke-others",
-  protect,
-  sessionManagementLimiter,
-  jsonLimit("1kb"),
-  revokeAllOtherSessions
-);
-
-// ========================================
-// GOOGLE OAUTH (✅ RATE LIMITED)
-// ========================================
-
-router.get(
-  "/google",
-  oauthLimiter,
-  passport.authenticate("google", {
+  return passport.authenticate("google", {
     scope: ["profile", "email"],
     session: false,
-    state: false,
-  })
-);
+    state,
+  })(req, res, next);
+});
 
 router.get(
   "/google/callback",
@@ -180,39 +227,45 @@ router.get(
   passport.authenticate("google", {
     session: false,
     state: false,
-    failureRedirect: `${CLIENT_URL}/login?error=google_failed`,
+    failureRedirect: `${PRIMARY_ORIGIN}/login?error=google_failed`,
   }),
   async (req, res) => {
-    console.log("🔵 OAuth callback STARTED");
-
     try {
-      const user = req.user;
-      console.log("🔵 User from Passport:", user ? user.email : "NULL");
+      // ✅ Substitution guard: returned state MUST equal this browser's cookie.
+      const cookieState = req.cookies?.[OAUTH_STATE_COOKIE];
+      const queryState = req.query?.state;
+      res.clearCookie(OAUTH_STATE_COOKIE, oauthStateOpts);
 
+      if (
+        !cookieState ||
+        !queryState ||
+        !constantTimeCompare(String(cookieState), String(queryState))
+      ) {
+        await logAudit(req, "oauth_state_mismatch", { ip: req.ip });
+        return safeRedirect(res, "/login?error=oauth_state");
+      }
+
+      const user = req.user;
       if (!user) {
-        console.log("❌ No user - redirecting to /login?error=no_user");
         return safeRedirect(res, "/login?error=no_user");
+      }
+
+      if (!user.isActive) {
+        return safeRedirect(res, "/login?error=account_inactive");
       }
 
       // ── Deactivated account ──────────
       if (user.deletedAt) {
-        console.log("🔵 User is DEACTIVATED");
         const now = new Date();
 
         if (
           !user.scheduledDeletionAt ||
           now > new Date(user.scheduledDeletionAt)
         ) {
-          console.log("❌ Grace period expired");
           return safeRedirect(res, "/login?error=account_permanently_deleted");
         }
 
-        console.log(
-          "🔵 Checking reactivation attempts:",
-          user.reactivationAttempts
-        );
         if ((user.reactivationAttempts || 0) >= 3) {
-          console.log("❌ Too many attempts");
           return safeRedirect(res, "/login?error=too_many_attempts");
         }
 
@@ -224,97 +277,66 @@ router.get(
         );
         const attemptsRemaining = 3 - (user.reactivationAttempts || 0);
 
-        console.log("🔵 Incrementing reactivation attempts");
         await User.updateOne(
           { _id: user._id },
           { $inc: { reactivationAttempts: 1 } }
         );
 
-        console.log("🔵 Generating reactivation token");
-        const reactivationToken = generateReactivationToken(
-          user._id.toString()
+        // ✅ Reactivation token in httpOnly cookie, NOT URL.
+        res.cookie(
+          "reactivatePending",
+          generateReactivationToken(user._id.toString()),
+          REACTIVATE_COOKIE
         );
 
-        const params = new URLSearchParams({
-          reactivate: "1",
-          token: reactivationToken,
-          days: String(daysRemaining),
-          attempts: String(attemptsRemaining),
-        });
-
-        const redirectUrl = `/login?${params.toString()}`;
-        console.log(
-          "✅ Redirecting to:",
-          redirectUrl.substring(0, 100) + "..."
+        return safeRedirect(
+          res,
+          `/login?reactivate=1&days=${daysRemaining}&attempts=${attemptsRemaining}`
         );
-        return safeRedirect(res, redirectUrl);
       }
 
       // ── Email blocked ──────────
       if (user.emailBlockedUntil && user.emailBlockedUntil > new Date()) {
-        console.log("❌ Email blocked");
         return safeRedirect(res, "/login?error=email_blocked");
       }
 
       // ── 2FA ──────────
       if (user.twoFactorEnabled) {
-        console.log("🔵 2FA enabled");
-        // ✅ Pending token in an httpOnly cookie (NOT the redirect URL). The token
-        // previously rode in ?tempToken=... -> leaked to history/Referer/JS. Now the
-        // URL carries only the flag; the verify XHR sends the cookie automatically.
-        const tempToken = generateTempToken(
-          user._id.toString(),
-          "oauth-2fa-pending"
+        res.cookie(
+          "oauth2faPending",
+          generateTempToken(user._id.toString(), "oauth-2fa-pending"),
+          {
+            httpOnly: true,
+            secure: IS_PRODUCTION,
+            sameSite: IS_PRODUCTION ? "none" : "lax",
+            maxAge: 5 * 60 * 1000,
+            path: "/",
+          }
         );
-        res.cookie("oauth2faPending", tempToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-          maxAge: 5 * 60 * 1000,
-          path: "/",
-        });
         return safeRedirect(res, "/login?oauth2fa=1");
       }
 
       // ── Normal flow ──────────
-      console.log("🔵 Normal login flow");
-      const { session, refreshToken } = await upsertSessionForUser(user, req, {
+      // ✅ Set refresh cookie only. Redirect clean. SPA obtains access token via /auth/refresh.
+      const { refreshToken } = await upsertSessionForUser(user, req, {
         familyId: crypto.randomUUID(),
       });
 
       res.cookie("refreshToken", refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        secure: IS_PRODUCTION,
+        sameSite: IS_PRODUCTION ? "none" : "lax",
         maxAge: 30 * 24 * 60 * 60 * 1000,
         path: "/",
       });
 
-      const accessToken = generateAccessToken(user._id.toString(), session._id);
-
-      const userB64 = Buffer.from(
-        JSON.stringify({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          oauthProvider: user.oauthProvider,
-          isVerified: user.isVerified,
-          role: user.role,
-        })
-      ).toString("base64");
-
-      console.log("✅ Success - redirecting to /oauth-success");
-      return safeRedirect(
-        res,
-        `/oauth-success?token=${encodeURIComponent(
-          accessToken
-        )}&user=${encodeURIComponent(userB64)}`
-      );
+      return safeRedirect(res, "/oauth-success");
     } catch (error) {
-      console.error("❌ CRASH in OAuth callback:");
-      console.error("Error name:", error.name);
-      console.error("Error message:", error.message);
-      console.error("Error stack:", error.stack);
+      debugLog("OAuth callback error:", error?.message || String(error));
+      await logAudit(req, "oauth_callback_error", {
+        ip: req.ip,
+        name: error?.name || "Error",
+      });
       return safeRedirect(res, "/login?error=server_error");
     }
   }

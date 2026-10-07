@@ -2034,3 +2034,249 @@
     display: flex;
   }
 }
+
+/* ============================================================
+   CHAT HEADER ACTIONS (call icons + hamburger)  — appended
+   ============================================================ */
+.chat-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.chat-header-icon-btn {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #db2777;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+.chat-header-icon-btn:hover:not(:disabled) {
+  background: #fce7f3;
+}
+.chat-header-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-header-menu {
+  position: relative;
+}
+.chat-header-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 184px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.16);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-header-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: none;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+.chat-header-menu-item:hover {
+  background: #f8fafc;
+}
+.chat-header-menu-item i {
+  width: 18px;
+  text-align: center;
+  color: #94a3b8;
+}
+.chat-header-menu-sep {
+  height: 1px;
+  background: #eef2f7;
+  margin: 4px 6px;
+}
+
+/* inner scroll wrapper (replaces the inline style from the scroll fix) */
+.chat-messages-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+/* ============================================================
+      IN-CALL OVERLAY  — appended
+      ============================================================ */
+.incall-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: #0b0f1a;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.incall-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.incall-remote {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #0b0f1a;
+}
+.incall-hidden-audio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.incall-audio-avatar {
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+  color: #fff;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+}
+.incall-audio-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.incall-pip {
+  position: absolute;
+  right: 16px;
+  bottom: 110px;
+  width: 120px;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  background: #111827;
+}
+.incall-info {
+  position: absolute;
+  top: 24px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+}
+.incall-info strong {
+  font-size: 20px;
+}
+.incall-info span {
+  font-size: 14px;
+  opacity: 0.85;
+}
+.incall-controls {
+  position: absolute;
+  bottom: 32px;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  align-items: center;
+}
+.incall-btn {
+  width: 56px;
+  height: 56px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: background 0.15s, transform 0.1s;
+}
+.incall-btn:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+.incall-btn:active {
+  transform: scale(0.94);
+}
+.incall-btn.active {
+  background: #fff;
+  color: #0b0f1a;
+}
+.incall-accept {
+  background: #22c55e;
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+}
+.incall-accept:hover {
+  background: #16a34a;
+}
+.incall-reject,
+.incall-end {
+  background: #ef4444;
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+}
+.incall-reject:hover,
+.incall-end:hover {
+  background: #dc2626;
+}
+@media (max-width: 480px) {
+  .incall-pip {
+    width: 88px;
+    height: 120px;
+    bottom: 96px;
+    right: 12px;
+  }
+  .incall-btn {
+    width: 50px;
+    height: 50px;
+    font-size: 20px;
+  }
+  .incall-accept,
+  .incall-reject,
+  .incall-end {
+    width: 58px;
+    height: 58px;
+  }
+}

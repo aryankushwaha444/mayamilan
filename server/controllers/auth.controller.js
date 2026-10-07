@@ -33,7 +33,7 @@ import {
 import {
   generateAccessToken,
   generateRefreshToken,
-  generateTempToken, // ✅ pending 2FA token (correct claims)
+  generateTempToken,
   hashToken,
   generateReactivationToken,
   verifyRefreshToken,
@@ -42,6 +42,7 @@ import {
   constantTimeCompare,
 } from "../utils/generateToken.js";
 import redis from "../utils/cache.js";
+import { sanitize } from "../utils/sanitize.js";
 
 // ═══════════════════════════════════════════
 // CONSTANTS
@@ -59,8 +60,31 @@ const MAX_SESSIONS_PER_USER = parseInt(
   10
 );
 
-// ✅ Pending 2FA cookie: httpOnly (invisible to JS/XSS, never in the URL), mirrors the
-// proven refreshToken flags so it survives the 302->XHR hop in every environment.
+const SIGNATURE_ENFORCE = process.env.SIGNATURE_ENFORCE === "1";
+const API_SECRET = process.env.API_SECRET;
+
+if (SIGNATURE_ENFORCE && (!API_SECRET || String(API_SECRET).length < 32)) {
+  throw new Error(
+    "API_SECRET must be at least 32 characters when SIGNATURE_ENFORCE=1"
+  );
+}
+
+const debugLog = (...args) => {
+  if (!IS_PRODUCTION) console.log(...args);
+};
+
+// ✅ Enumeration timing equalizer:
+// A syntactically valid argon2 hash used on the “user not found” path so that
+// path costs approximately the same as a real password verification.
+let DUMMY_HASH = null;
+argon2
+  .hash("dummy-" + crypto.randomBytes(16).toString("hex"))
+  .then((h) => {
+    DUMMY_HASH = h;
+  })
+  .catch(() => {});
+
+// ✅ Pending 2FA cookie: httpOnly, never in URL, mirrors refreshToken flags.
 const PENDING_2FA_COOKIE = {
   httpOnly: true,
   secure: IS_PRODUCTION,
@@ -69,10 +93,16 @@ const PENDING_2FA_COOKIE = {
   path: "/",
 };
 
-// ✅ Per-user lockout for the 2FA *verify* step (login). A 6-digit TOTP is 10^6;
-// without this a leaked password + IP rotation brute-forces each 5m pending token.
-// Redis when present, else the User fields added for the manage flow (works on a
-// standalone). Login-scoped keys so it can't be unlocked independently of setup.
+// ✅ Reactivation cookie for OAuth deactivated path (token no longer in URL).
+const REACTIVATE_COOKIE = {
+  httpOnly: true,
+  secure: IS_PRODUCTION,
+  sameSite: IS_PRODUCTION ? "none" : "lax",
+  maxAge: 10 * 60 * 1000,
+  path: "/",
+};
+
+// ✅ Per-user lockout for the 2FA verify step.
 const TWOFA_MAX_FAILED = 5;
 const TWOFA_LOCKOUT_MIN = 15;
 const twofaLockoutKey = (id) => `2fa_login_lockout:${id}`;
@@ -88,6 +118,7 @@ const checkTwofaLockout = async (userId) => {
     }
     return { locked: false };
   }
+
   const u = await User.findById(userId).select("+twoFactorLockoutUntil").lean();
   const until = u?.twoFactorLockoutUntil;
   if (until && until.getTime() > Date.now())
@@ -95,6 +126,7 @@ const checkTwofaLockout = async (userId) => {
       locked: true,
       remainingMinutes: Math.ceil((until.getTime() - Date.now()) / 60000),
     };
+
   return { locked: false };
 };
 
@@ -114,17 +146,21 @@ const handleTwofaFailed = async (userId) => {
     }
     return;
   }
+
   const u = await User.findById(userId)
     .select("+twoFactorFailedAttempts +twoFactorLockoutUntil")
     .lean();
+
   const attempts = (u?.twoFactorFailedAttempts || 0) + 1;
   const set = { twoFactorFailedAttempts: attempts };
+
   if (attempts >= TWOFA_MAX_FAILED) {
     set.twoFactorLockoutUntil = new Date(
       Date.now() + TWOFA_LOCKOUT_MIN * 60 * 1000
     );
     set.twoFactorFailedAttempts = 0;
   }
+
   await User.updateOne({ _id: userId }, { $set: set });
 };
 
@@ -134,16 +170,16 @@ const clearTwofaFailed = async (userId) => {
     await redis.del(twofaAttemptsKey(userId));
     return;
   }
+
   await User.updateOne(
     { _id: userId },
     { $set: { twoFactorFailedAttempts: 0, twoFactorLockoutUntil: null } }
   );
 };
 
-// SECURITY: Login attempt tracking
-const loginAttempts = new Map(); // email -> { count, lastAttempt, lockedUntil }
+// SECURITY: Login attempt tracking (login map only; register must not touch this).
+const loginAttempts = new Map();
 
-// Cleanup old login attempts every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [email, data] of loginAttempts.entries()) {
@@ -151,7 +187,7 @@ setInterval(() => {
       loginAttempts.delete(email);
     }
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref?.();
 
 // ═══════════════════════════════════════════
 // HELPERS
@@ -159,7 +195,7 @@ setInterval(() => {
 
 const maskEmail = (email) => {
   try {
-    const [local, domain] = email.split("@");
+    const [local, domain] = String(email || "").split("@");
     if (!local || !domain) return "****@****";
     if (local.length <= 4) return `${local[0]}****@${domain}`;
     return `${local.slice(0, 2)}****${local.slice(-2)}@${domain}`;
@@ -173,20 +209,19 @@ const calculateAge = (dateOfBirth) => {
   const birthDate = new Date(dateOfBirth);
   let age = today.getFullYear() - birthDate.getFullYear();
   const monthDiff = today.getMonth() - birthDate.getMonth();
+
   if (
     monthDiff < 0 ||
     (monthDiff === 0 && today.getDate() < birthDate.getDate())
   ) {
     age--;
   }
+
   return age;
 };
 
-/**
- * SECURITY: Track login attempts with exponential backoff
- */
 const trackLoginAttempt = (email, success) => {
-  const key = email.toLowerCase();
+  const key = String(email).toLowerCase();
   const attempts = loginAttempts.get(key) || {
     count: 0,
     lastAttempt: Date.now(),
@@ -201,11 +236,10 @@ const trackLoginAttempt = (email, success) => {
   attempts.count++;
   attempts.lastAttempt = Date.now();
 
-  // SECURITY: Exponential backoff
   if (attempts.count >= 5) {
     const lockoutDuration = Math.min(
-      Math.pow(2, attempts.count - 5) * 60 * 1000, // Exponential: 1min, 2min, 4min, 8min...
-      24 * 60 * 60 * 1000 // Max 24 hours
+      Math.pow(2, attempts.count - 5) * 60 * 1000,
+      24 * 60 * 60 * 1000
     );
     attempts.lockedUntil = Date.now() + lockoutDuration;
   }
@@ -221,7 +255,7 @@ const trackLoginAttempt = (email, success) => {
 };
 
 const checkHoneypot = async (req, action) => {
-  if (req.body.website && req.body.website.trim() !== "") {
+  if (req.body.website && String(req.body.website).trim() !== "") {
     await logAudit(req, "honeypot_triggered", {
       action,
       ip: req.ip,
@@ -247,44 +281,58 @@ const checkHoneypot = async (req, action) => {
   return false;
 };
 
+// ✅ Guarded telemetry: a geo/email/save failure must never 500 a successful login.
 const detectSuspiciousLogin = async (req, user) => {
-  const currentIp = req.ip;
-  const geo = lookupIp(currentIp);
-  const previousCountry = user.lastLoginCountry;
-  const currentCountry = geo.country;
+  try {
+    const currentIp = req.ip;
+    const geo = lookupIp(currentIp) || {};
+    const previousCountry = user.lastLoginCountry;
+    const currentCountry = geo.country;
 
-  if (
-    previousCountry &&
-    currentCountry &&
-    previousCountry !== "Unknown" &&
-    currentCountry !== "Unknown" &&
-    previousCountry !== currentCountry
-  ) {
-    sendSuspiciousLoginEmail(user.email, {
-      name: user.name,
-      ip: currentIp,
-      city: geo.city,
-      country: geo.country,
-      userAgent: req.get("user-agent") || "Unknown",
-    }).catch(() => {});
+    if (
+      previousCountry &&
+      currentCountry &&
+      previousCountry !== "Unknown" &&
+      currentCountry !== "Unknown" &&
+      previousCountry !== currentCountry
+    ) {
+      sendSuspiciousLoginEmail(user.email, {
+        name: user.name,
+        ip: currentIp,
+        city: geo.city,
+        country: geo.country,
+        userAgent: req.get("user-agent") || "Unknown",
+      }).catch(() => {});
 
-    await logAudit(req, "suspicious_login", {
-      email: user.email,
-      userId: user._id,
-      fromIp: currentIp,
-      fromCity: geo.city,
-      fromCountry: currentCountry,
-      previousCountry,
-    });
+      await logAudit(req, "suspicious_login", {
+        email: user.email,
+        userId: user._id,
+        fromIp: currentIp,
+        fromCity: geo.city,
+        fromCountry: currentCountry,
+        previousCountry,
+      });
+    }
+
+    user.lastLoginIp = currentIp;
+    user.lastLoginCountry = currentCountry;
+    user.lastLoginCity = geo.city;
+    user.lastSeen = new Date();
+    await user.save();
+
+    return { currentIp, currentCountry, geo };
+  } catch (e) {
+    debugLog("detectSuspiciousLogin non-fatal:", e?.message || String(e));
+    return { currentIp: req.ip, currentCountry: null, geo: {} };
   }
+};
 
-  user.lastLoginIp = currentIp;
-  user.lastLoginCountry = currentCountry;
-  user.lastLoginCity = geo.city;
-  user.lastSeen = new Date();
-  await user.save();
-
-  return { currentIp, currentCountry, geo };
+const deriveSigningKey = (sessionId) => {
+  if (!API_SECRET || !sessionId) return null;
+  return crypto
+    .createHmac("sha256", API_SECRET)
+    .update(`maya-milan:signing:v1:${String(sessionId)}`)
+    .digest("hex");
 };
 
 const createSessionAndTokens = async (user, req, res) => {
@@ -302,10 +350,12 @@ const createSessionAndTokens = async (user, req, res) => {
       .sort({ lastUsedAt: 1 })
       .limit(activeSessions - MAX_SESSIONS_PER_USER + 1)
       .select("_id");
+
     await RefreshToken.updateMany(
       { _id: { $in: oldestSessions.map((s) => s._id) } },
       { revokedAt: new Date(), revokeReason: "manual_logout" }
     );
+
     await logAudit(req, "session_limit_exceeded", {
       userId: user._id,
       sessionsRevoked: oldestSessions.length,
@@ -313,7 +363,10 @@ const createSessionAndTokens = async (user, req, res) => {
     });
   }
 
-  const { session, refreshToken } = await upsertSessionForUser(user, req);
+  const { session, refreshToken, signingKey } = await upsertSessionForUser(
+    user,
+    req
+  );
 
   res.cookie("refreshToken", refreshToken, {
     httpOnly: true,
@@ -324,7 +377,7 @@ const createSessionAndTokens = async (user, req, res) => {
   });
 
   const accessToken = generateAccessToken(user._id.toString(), session._id);
-  return { accessToken, session, refreshToken };
+  return { accessToken, session, refreshToken, signingKey };
 };
 
 const clearRefreshTokenCookie = (res) => {
@@ -336,7 +389,9 @@ const clearRefreshTokenCookie = (res) => {
   });
 };
 
+// ✅ Emit both _id and id so client shape is stable across login/refresh/OAuth/me.
 const formatUserResponse = (user) => ({
+  _id: user._id,
   id: user._id,
   name: user.name,
   email: user.email,
@@ -349,11 +404,7 @@ const formatUserResponse = (user) => ({
   oauthProvider: user.oauthProvider,
 });
 
-/**
- * SECURITY: Constant-time password comparison with timing protection
- */
 const verifyPassword = async (hash, password) => {
-  // Add random delay to prevent timing attacks (50-150ms)
   const delay = Math.floor(Math.random() * 100) + 50;
   await new Promise((resolve) => setTimeout(resolve, delay));
 
@@ -364,8 +415,18 @@ const verifyPassword = async (hash, password) => {
   }
 };
 
+const dummyVerify = async (password) => {
+  if (DUMMY_HASH) {
+    try {
+      await argon2.verify(DUMMY_HASH, String(password));
+    } catch {}
+  } else {
+    await new Promise((r) => setTimeout(r, 80));
+  }
+};
+
 // ═══════════════════════════════════════════
-// REGISTER (Enhanced)
+// REGISTER
 // ═══════════════════════════════════════════
 
 export const register = async (req, res, next) => {
@@ -416,16 +477,7 @@ export const register = async (req, res, next) => {
       });
     }
 
-    // SECURITY: Check login attempts for this email
-    const loginCheck = trackLoginAttempt(email, false);
-    if (loginCheck.blocked) {
-      return res.status(429).json({
-        success: false,
-        message: "Too many registration attempts. Please try again later.",
-        retryAfter: loginCheck.retryAfter,
-      });
-    }
-
+    // ✅ Do NOT touch loginAttempts here. registerLimiter already protects this route.
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       if (
@@ -445,7 +497,6 @@ export const register = async (req, res, next) => {
         });
       }
 
-      // SECURITY: Don't reveal if email exists
       await logAudit(req, "registration_failed", {
         email,
         reason: "email_exists",
@@ -490,10 +541,11 @@ export const register = async (req, res, next) => {
       await redis?.del(emailVerifiedKey);
     }
 
-    // Clear login attempts on success
-    trackLoginAttempt(email, true);
-
-    const { accessToken } = await createSessionAndTokens(user, req, res);
+    const { accessToken, signingKey } = await createSessionAndTokens(
+      user,
+      req,
+      res
+    );
 
     await logAudit(req, "account_created", {
       userId: user._id,
@@ -505,6 +557,7 @@ export const register = async (req, res, next) => {
       success: true,
       message: "Account created successfully",
       accessToken,
+      signingKey,
       user: formatUserResponse(user),
     });
   } catch (error) {
@@ -513,7 +566,7 @@ export const register = async (req, res, next) => {
 };
 
 // ═══════════════════════════════════════════
-// LOGIN (Enhanced with anti-enumeration)
+// LOGIN
 // ═══════════════════════════════════════════
 
 export const login = async (req, res, next) => {
@@ -549,7 +602,6 @@ export const login = async (req, res, next) => {
 
     const { email, password } = validation.data;
 
-    // SECURITY: Check login attempts with exponential backoff
     const loginCheck = trackLoginAttempt(email, false);
     if (loginCheck.blocked) {
       await logAudit(req, "login_blocked", {
@@ -567,7 +619,8 @@ export const login = async (req, res, next) => {
     const user = await User.findOne({ email }).select("+password");
 
     if (!user) {
-      // SECURITY: Don't reveal if email exists - return generic error
+      // ✅ Equalize timing before returning generic error.
+      await dummyVerify(password);
       await logAudit(req, "login_failed", { email, reason: "user_not_found" });
       return res
         .status(401)
@@ -623,7 +676,6 @@ export const login = async (req, res, next) => {
         });
       }
 
-      // SECURITY: Use constant-time password verification
       const passwordValid = await verifyPassword(user.password, password);
       if (!passwordValid) {
         await logAudit(req, "login_failed", {
@@ -670,7 +722,6 @@ export const login = async (req, res, next) => {
         .json({ success: false, message: "Your account is inactive" });
     }
 
-    // SECURITY: Use constant-time password verification
     const passwordValid = await verifyPassword(user.password, password);
     if (!passwordValid) {
       await logAudit(req, "login_failed", {
@@ -683,12 +734,9 @@ export const login = async (req, res, next) => {
         .json({ success: false, message: "Invalid email or password" });
     }
 
-    // Clear login attempts on success
     trackLoginAttempt(email, true);
 
     if (user.twoFactorEnabled) {
-      // ✅ Pending token now in an httpOnly cookie (NOT the response body, NOT a URL),
-      // signed with the claims verifyTempToken requires. Body keeps only requires2FA.
       const tempToken = generateTempToken(user._id.toString(), "2fa-pending");
       res.cookie("login2faPending", tempToken, PENDING_2FA_COOKIE);
 
@@ -704,7 +752,11 @@ export const login = async (req, res, next) => {
       });
     }
 
-    const { accessToken } = await createSessionAndTokens(user, req, res);
+    const { accessToken, signingKey } = await createSessionAndTokens(
+      user,
+      req,
+      res
+    );
     const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
       req,
       user
@@ -722,6 +774,7 @@ export const login = async (req, res, next) => {
       success: true,
       message: "Login successful",
       accessToken,
+      signingKey,
       user: formatUserResponse(user),
     });
   } catch (error) {
@@ -738,7 +791,7 @@ export const getMe = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════
-// LOGOUT (Enhanced)
+// LOGOUT
 // ═══════════════════════════════════════════
 
 export const logout = async (req, res, next) => {
@@ -747,7 +800,6 @@ export const logout = async (req, res, next) => {
     if (refreshToken) {
       const tokenHash = hashToken(refreshToken);
 
-      // SECURITY: Use constant-time comparison
       const storedToken = await RefreshToken.findOne({
         tokenHash,
         revokedAt: null,
@@ -767,6 +819,11 @@ export const logout = async (req, res, next) => {
     }
 
     clearRefreshTokenCookie(res);
+
+    // ✅ Clear pending half-flow cookies so they cannot be resumed.
+    res.clearCookie("login2faPending", PENDING_2FA_COOKIE);
+    res.clearCookie("oauth2faPending", PENDING_2FA_COOKIE);
+    res.clearCookie("reactivatePending", REACTIVATE_COOKIE);
 
     res.status(200).json({ success: true, message: "Logged out successfully" });
   } catch (error) {
@@ -799,13 +856,12 @@ export const refreshAccessToken = async (req, res, next) => {
       revokedAt: null,
     });
 
-    // Replay detection: a token already rotated away survives in previousTokenHash.
-    // (Rotation is now in-place, so there are no tombstone rows to scan.)
     if (!storedToken) {
       const replay = await RefreshToken.findOne({
         user: decoded.userId,
         previousTokenHash: tokenHash,
       });
+
       if (replay) {
         await RefreshToken.updateMany(
           { user: decoded.userId, revokedAt: null },
@@ -821,6 +877,7 @@ export const refreshAccessToken = async (req, res, next) => {
           sessionRevoked: true,
         });
       }
+
       return res.status(401).json({
         success: false,
         message: "Session has been revoked. Please login again.",
@@ -839,13 +896,14 @@ export const refreshAccessToken = async (req, res, next) => {
     }
 
     const user = await User.findById(decoded.userId);
-    if (!user || !user.isActive) {
+
+    // ✅ Also reject soft-deleted accounts at refresh.
+    if (!user || !user.isActive || user.deletedAt) {
       return res
         .status(401)
         .json({ success: false, message: "Account unavailable" });
     }
 
-    // Enabling 2FA after a session was issued forces a re-login on that session.
     if (
       user.twoFactorEnabled &&
       user.twoFactorEnabledAt &&
@@ -862,45 +920,71 @@ export const refreshAccessToken = async (req, res, next) => {
       });
     }
 
-    // Device binding: a refresh token presented from a different device kills ALL sessions.
+    // ✅ Device binding: require fingerprint when session has one or has a deviceId.
     const deviceId = getDeviceId(req);
     const currentFingerprint = deviceId ? deviceFingerprint(deviceId) : null;
-    if (
-      storedToken.deviceFingerprint &&
-      currentFingerprint &&
-      !constantTimeCompare(currentFingerprint, storedToken.deviceFingerprint)
-    ) {
-      await RefreshToken.updateMany(
-        { user: decoded.userId, revokedAt: null },
-        { revokedAt: new Date(), revokeReason: "device_mismatch" }
-      );
-      await logAudit(req, "device_mismatch_detected", {
-        userId: decoded.userId,
-        expectedDevice: storedToken.deviceInfo,
-        actualDevice: describeDevice(req),
-        action: "all_sessions_revoked",
-      });
-      return res.status(401).json({
-        success: false,
-        message:
-          "Unrecognized device detected. All sessions revoked for your safety.",
-        sessionRevoked: true,
-      });
+
+    if (storedToken.deviceFingerprint || storedToken.deviceId) {
+      if (!currentFingerprint) {
+        await RefreshToken.updateMany(
+          { user: decoded.userId, revokedAt: null },
+          { revokedAt: new Date(), revokeReason: "device_mismatch" }
+        );
+        await logAudit(req, "device_mismatch_detected", {
+          userId: decoded.userId,
+          expectedDevice: storedToken.deviceInfo,
+          actualDevice: describeDevice(req),
+          action: "all_sessions_revoked",
+          reason: "missing_device_header",
+        });
+        return res.status(401).json({
+          success: false,
+          message:
+            "Unrecognized device detected. All sessions revoked for your safety.",
+          sessionRevoked: true,
+        });
+      }
+
+      if (
+        storedToken.deviceFingerprint &&
+        !constantTimeCompare(currentFingerprint, storedToken.deviceFingerprint)
+      ) {
+        await RefreshToken.updateMany(
+          { user: decoded.userId, revokedAt: null },
+          { revokedAt: new Date(), revokeReason: "device_mismatch" }
+        );
+        await logAudit(req, "device_mismatch_detected", {
+          userId: decoded.userId,
+          expectedDevice: storedToken.deviceInfo,
+          actualDevice: describeDevice(req),
+          action: "all_sessions_revoked",
+        });
+        return res.status(401).json({
+          success: false,
+          message:
+            "Unrecognized device detected. All sessions revoked for your safety.",
+          sessionRevoked: true,
+        });
+      }
+
+      if (!storedToken.deviceFingerprint) {
+        storedToken.deviceFingerprint = currentFingerprint;
+      }
     }
 
-    // Rotate IN PLACE on the same device row → no duplicate rows, deviceId preserved.
     const newRefreshToken = generateRefreshToken(user._id.toString());
     const rawDeviceId = currentRawDeviceId(req) || storedToken.deviceId || null;
+
     storedToken.previousTokenHash = storedToken.tokenHash;
     storedToken.tokenHash = hashToken(newRefreshToken);
     storedToken.expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS);
     storedToken.deviceId = rawDeviceId;
-    storedToken.deviceFingerprint =
-      currentFingerprint || storedToken.deviceFingerprint;
     storedToken.deviceInfo = parseDevice(req);
     storedToken.lastUsedAt = new Date();
     storedToken.lastIp = req.ip;
     await storedToken.save();
+
+    const signingKey = deriveSigningKey(storedToken._id.toString());
 
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
@@ -914,21 +998,21 @@ export const refreshAccessToken = async (req, res, next) => {
       user._id.toString(),
       storedToken._id
     );
-    res.status(200).json({ success: true, accessToken: newAccessToken });
+
+    res.status(200).json({
+      success: true,
+      accessToken: newAccessToken,
+      signingKey,
+    });
   } catch (error) {
     next(error);
   }
 };
 
 /**
- * Grace‑layer repair: when a user reactivates, any Match that went INACTIVE during
- * soft‑delete (because the old deleteAccount over‑cascaded) but whose two like rows
- * still mutually exist is reactivated, its archived conversation revived, and both
- * feeds notified — so the partner sees the match again with NO re‑like. Guards:
- * mutual‑like required (never resurrect from a one‑sided like), two‑way block checked,
- * the *other* side must still be active/not deleted, notifications deduped, ids
- * normalized to ObjectId so conversation $all dedupe actually matches stored rows.
- * No‑op when deleteAccount is already correct (finds zero such matches).
+ * Grace-layer repair: when a user reactivates, any Match that went INACTIVE during
+ * soft-delete but whose two like rows still mutually exist is reactivated, its
+ * archived conversation revived, and both feeds notified.
  */
 const restoreMatchesForReactivatedUser = async (userId, req) => {
   const me = new mongoose.Types.ObjectId(userId.toString());
@@ -938,103 +1022,135 @@ const restoreMatchesForReactivatedUser = async (userId, req) => {
 
   let restored = 0;
   for (const m of inactive) {
-    const otherRaw = (m.users || []).find(
-      (u) => u && u.toString() !== meStr
-    );
+    const otherRaw = (m.users || []).find((u) => u && u.toString() !== meStr);
     if (!otherRaw) continue;
+
     const other = new mongoose.Types.ObjectId(otherRaw.toString());
     const otherStr = other.toString();
 
-    // mutual likes still present? (don't rebuild a match from a purged side)
     const [ab, ba] = await Promise.all([
       Like.exists({ from: me, to: other }),
       Like.exists({ from: other, to: me }),
     ]);
     if (!ab || !ba) continue;
 
-    // two‑way block + other‑side liveness guard
     const [um, uo] = await Promise.all([
       User.findById(me).select("blockedUsers").lean(),
       User.findById(other).select("blockedUsers isActive deletedAt").lean(),
     ]);
+
     const blocked =
       (um?.blockedUsers || []).some((id) => id.toString() === otherStr) ||
       (uo?.blockedUsers || []).some((id) => id.toString() === meStr);
     if (blocked) continue;
     if (!uo || uo.isActive === false || uo.deletedAt) continue;
 
-    // reactivate the match row
     await Match.updateOne(
       { _id: m._id },
       { $set: { isActive: true, unmatchedAt: null, unmatchedBy: null } }
     );
 
-    // revive the archived conversation (normalized ObjectId participants)
     const participants = [me, other].sort((x, y) =>
       x.toString().localeCompare(y.toString())
     );
+
     const conv = await Conversation.findOne({
       participants: { $all: participants, $size: 2 },
     });
+
     if (conv) {
       let changed = false;
-      if (conv.isActive !== true) { conv.isActive = true; changed = true; }
-      if (!conv.match || conv.match.toString() !== m._id.toString()) {
-        conv.match = m._id; changed = true;
+
+      if (conv.isActive !== true) {
+        conv.isActive = true;
+        changed = true;
       }
+
+      if (!conv.match || conv.match.toString() !== m._id.toString()) {
+        conv.match = m._id;
+        changed = true;
+      }
+
       if (
         Array.isArray(conv.hiddenBy) &&
-        conv.hiddenBy.some((id) => id.toString() === meStr || id.toString() === otherStr)
+        conv.hiddenBy.some(
+          (id) => id.toString() === meStr || id.toString() === otherStr
+        )
       ) {
         conv.hiddenBy = conv.hiddenBy.filter(
           (id) => id.toString() !== meStr && id.toString() !== otherStr
         );
         changed = true;
       }
+
       if (changed) await conv.save();
-      if (!m.conversation || m.conversation.toString() !== conv._id.toString()) {
-        await Match.updateOne({ _id: m._id }, { $set: { conversation: conv._id } });
+
+      if (
+        !m.conversation ||
+        m.conversation.toString() !== conv._id.toString()
+      ) {
+        await Match.updateOne(
+          { _id: m._id },
+          { $set: { conversation: conv._id } }
+        );
       }
     }
 
-    // idempotent match notifications (so a re‑restore can't double‑notify)
     const already = await Notification.exists({
       $or: [
         { recipient: me, sender: other, type: "match" },
         { recipient: other, sender: me, type: "match" },
       ],
     });
+
     if (!already) {
       await Notification.insertMany([
-        { recipient: me, sender: other, type: "match", message: "You matched!", isRead: false },
-        { recipient: other, sender: me, type: "match", message: "You matched!", isRead: false },
+        {
+          recipient: me,
+          sender: other,
+          type: "match",
+          message: "You matched!",
+          isRead: false,
+        },
+        {
+          recipient: other,
+          sender: me,
+          type: "match",
+          message: "You matched!",
+          isRead: false,
+        },
       ]).catch(() => {});
     }
 
     const io = getIO();
     if (io) {
       io.to(`user:${me}`).emit("new_match", {
-        matchId: m._id, conversationId: conv?._id, matchedUserId: otherStr,
+        matchId: m._id,
+        conversationId: conv?._id,
+        matchedUserId: otherStr,
       });
       io.to(`user:${other}`).emit("new_match", {
-        matchId: m._id, conversationId: conv?._id, matchedUserId: meStr,
+        matchId: m._id,
+        conversationId: conv?._id,
+        matchedUserId: meStr,
       });
     }
+
     restored++;
   }
+
   return restored;
 };
 
-
-
 export const reactivateAccount = async (req, res, next) => {
   try {
-    const { reactivationToken } = req.body;
+    // ✅ Prefer httpOnly cookie (OAuth path); fall back to body (local path).
+    const reactivationToken =
+      req.cookies?.reactivatePending || req.body?.reactivationToken;
 
-    console.log("🔑 Reactivation attempt received");
+    debugLog("🔑 Reactivation attempt received");
 
     if (!reactivationToken) {
-      console.log("❌ No reactivation token provided");
       return res
         .status(400)
         .json({ success: false, message: "Reactivation token required" });
@@ -1043,9 +1159,8 @@ export const reactivateAccount = async (req, res, next) => {
     let decoded;
     try {
       decoded = verifyReactivationToken(reactivationToken);
-      console.log("✅ Token decoded successfully for user:", decoded.userId);
-    } catch (err) {
-      console.log("❌ Token verification failed:", err.message);
+    } catch {
+      res.clearCookie("reactivatePending", REACTIVATE_COOKIE);
       return res.status(401).json({
         success: false,
         message: "Reactivation link expired or invalid. Please login again.",
@@ -1054,14 +1169,12 @@ export const reactivateAccount = async (req, res, next) => {
 
     const user = await User.findById(decoded.userId);
     if (!user) {
-      console.log("❌ User not found:", decoded.userId);
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
     }
 
     if (!user.deletedAt) {
-      console.log("⚠️ Account is not deactivated");
       return res
         .status(400)
         .json({ success: false, message: "Account is not deactivated" });
@@ -1069,7 +1182,7 @@ export const reactivateAccount = async (req, res, next) => {
 
     const now = new Date();
     if (now > user.scheduledDeletionAt) {
-      console.log("❌ Grace period expired");
+      res.clearCookie("reactivatePending", REACTIVATE_COOKIE);
       return res.status(410).json({
         success: false,
         message: "Grace period expired. Account has been permanently deleted.",
@@ -1090,20 +1203,22 @@ export const reactivateAccount = async (req, res, next) => {
     );
 
     if (result.modifiedCount === 0) {
-      console.log("❌ Account state changed, modification failed");
+      res.clearCookie("reactivatePending", REACTIVATE_COOKIE);
       return res.status(409).json({
         success: false,
         message: "Account state changed. Please login again.",
       });
     }
 
-    console.log("✅ Account reactivated successfully:", user.email);
+    res.clearCookie("reactivatePending", REACTIVATE_COOKIE);
+    debugLog("✅ Account reactivated:", user._id.toString());
 
-    const { accessToken } = await createSessionAndTokens(user, req, res);
+    const { accessToken, signingKey } = await createSessionAndTokens(
+      user,
+      req,
+      res
+    );
 
-    // ✅ grace‑layer repair: bring back any match that the old soft‑delete cascade
-    // deactivated, so the partner sees it again with NO re‑like. No‑op if
-    // deleteAccount is already correct. Response shape intentionally unchanged.
     try {
       const restored = await restoreMatchesForReactivatedUser(user._id, req);
       if (restored > 0) {
@@ -1111,11 +1226,12 @@ export const reactivateAccount = async (req, res, next) => {
           userId: user._id,
           restored,
         });
-        console.log(`♻️ Restored ${restored} match(es) on reactivation`);
       }
     } catch (restoreErr) {
-      // never fail a reactivation because of the repair step
-      console.error("Match restore on reactivation failed:", restoreErr.message);
+      debugLog(
+        "Match restore on reactivation failed:",
+        restoreErr?.message || String(restoreErr)
+      );
     }
 
     await logAudit(req, "account_reactivated", {
@@ -1127,16 +1243,17 @@ export const reactivateAccount = async (req, res, next) => {
       success: true,
       message: "Welcome back! Your account has been reactivated.",
       accessToken,
+      signingKey,
       user: formatUserResponse(user),
     });
   } catch (error) {
-    console.error("❌ Reactivation error:", error);
+    debugLog("❌ Reactivation error:", error?.message || String(error));
     next(error);
   }
 };
 
 // ═══════════════════════════════════════════
-// CHANGE PASSWORD (Enhanced with re-authentication)
+// CHANGE PASSWORD
 // ═══════════════════════════════════════════
 
 export const changePassword = async (req, res, next) => {
@@ -1180,7 +1297,6 @@ export const changePassword = async (req, res, next) => {
       });
     }
 
-    // SECURITY: Use constant-time password verification
     const isMatch = await verifyPassword(user.password, currentPassword);
     if (!isMatch) {
       await logAudit(req, "password_change_failed", {
@@ -1223,6 +1339,7 @@ export const changePassword = async (req, res, next) => {
       { user: user._id, revokedAt: null },
       { revokedAt: new Date() }
     );
+
     await logAudit(req, "password_changed", {
       userId: user._id,
       allSessionsRevoked: true,
@@ -1241,7 +1358,7 @@ export const changePassword = async (req, res, next) => {
 };
 
 // ═══════════════════════════════════════════
-// SEND OTP (Enhanced with rate limiting)
+// SEND OTP
 // ═══════════════════════════════════════════
 
 export const sendOTPCode = async (req, res, next) => {
@@ -1259,9 +1376,6 @@ export const sendOTPCode = async (req, res, next) => {
         .json({ success: false, message: "Email and name are required" });
     }
 
-    // ═══════════════════════════════════════════
-    // ✅ NEW: Check OTP rate limit (Max 3 requests per 60 minutes)
-    // ═══════════════════════════════════════════
     const isRateLimited = await checkOtpRequestLimit(email, 3, 60);
     if (isRateLimited) {
       await logAudit(req, "otp_rate_limited", {
@@ -1289,13 +1403,14 @@ export const sendOTPCode = async (req, res, next) => {
 
     const otp = generateOTP();
     await saveOTP(email, otp);
-    await sendOTP(email, otp, name);
+
+    // ✅ Sanitize attacker-controlled name before it reaches email template/headers.
+    await sendOTP(email, otp, sanitize(String(name)).slice(0, 80));
 
     await logAudit(req, "otp_sent", { email, type: "registration" });
 
-    // ✅ Only log the actual OTP in development mode
-    if (process.env.NODE_ENV === "development") {
-      console.log(`📧 DEV OTP for ${email}: ${otp}`);
+    if (NODE_ENV === "development") {
+      debugLog(`📧 DEV OTP for ${maskEmail(email)}: ${otp}`);
     }
 
     res.status(200).json({ success: true, message: "OTP sent to your email" });
@@ -1359,15 +1474,18 @@ export const verifyOTPCode = async (req, res, next) => {
 };
 
 // ═══════════════════════════════════════════
-// FORGOT PASSWORD (Enhanced - don't reveal if email exists)
+// FORGOT PASSWORD
 // ═══════════════════════════════════════════
 
 export const forgotPassword = async (req, res, next) => {
   try {
+    const genericMessage =
+      "If an account exists, a password reset OTP has been sent.";
+
     if (await checkHoneypot(req, "forgot_password")) {
       return res.status(200).json({
         success: true,
-        message: "Password reset OTP sent to your email",
+        message: genericMessage,
       });
     }
 
@@ -1378,19 +1496,15 @@ export const forgotPassword = async (req, res, next) => {
         .json({ success: false, message: "Email is required" });
     }
 
-    // ═══════════════════════════════════════════
-    // ✅ NEW: Check OTP rate limit
-    // ═══════════════════════════════════════════
     const isRateLimited = await checkOtpRequestLimit(email, 3, 60);
     if (isRateLimited) {
       await logAudit(req, "otp_rate_limited", {
         email,
         reason: "too_many_requests",
       });
-      // Return 200 to prevent email enumeration
       return res.status(200).json({
         success: true,
-        message: "If an account exists, a password reset OTP has been sent.",
+        message: genericMessage,
       });
     }
 
@@ -1403,43 +1517,40 @@ export const forgotPassword = async (req, res, next) => {
       });
       return res.status(200).json({
         success: true,
-        message: "Password reset OTP sent to your email",
+        message: genericMessage,
       });
     }
 
     if (user.oauthProvider && user.oauthProvider !== "local") {
+      // ✅ Do not reveal OAuth-ness. Identical generic response, send nothing.
       await logAudit(req, "password_reset_blocked", {
         email,
         userId: user._id,
         reason: "oauth_user",
         provider: user.oauthProvider,
       });
-      return res.status(400).json({
-        success: false,
-        message: `This account uses ${
-          user.oauthProvider === "google" ? "Google" : user.oauthProvider
-        } sign-in. Password reset is not available.`,
-        oauthUser: true,
+      return res.status(200).json({
+        success: true,
+        message: genericMessage,
       });
     }
 
     const otp = generateOTP();
     await saveOTP(email, otp);
-    await sendOTP(email, otp, user.name);
+    await sendOTP(email, otp, sanitize(String(user.name)).slice(0, 80));
 
     await logAudit(req, "password_reset_requested", {
       email,
       userId: user._id,
     });
 
-    // ✅ Only log the actual OTP in development mode
-    if (process.env.NODE_ENV === "development") {
-      console.log(`📧 DEV RESET OTP for ${email}: ${otp}`);
+    if (NODE_ENV === "development") {
+      debugLog(`📧 DEV RESET OTP for ${maskEmail(email)}: ${otp}`);
     }
 
     res.status(200).json({
       success: true,
-      message: "Password reset OTP sent to your email",
+      message: genericMessage,
     });
   } catch (error) {
     next(error);
@@ -1452,6 +1563,8 @@ export const forgotPassword = async (req, res, next) => {
 
 export const resetPassword = async (req, res, next) => {
   try {
+    const genericMessage = "Invalid or expired OTP";
+
     if (await checkHoneypot(req, "reset_password")) {
       return res
         .status(200)
@@ -1459,46 +1572,24 @@ export const resetPassword = async (req, res, next) => {
     }
 
     const { email, otp, newPassword } = req.body;
+
     if (!email || !otp || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        message: "Email, OTP and new password are required",
-      });
+      return res.status(400).json({ success: false, message: genericMessage });
     }
 
     if (newPassword.length < MIN_PASSWORD_LENGTH) {
-      return res.status(400).json({
-        success: false,
-        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
-      });
+      return res.status(400).json({ success: false, message: genericMessage });
+    }
+
+    // ✅ Verify OTP first so missing/oauth accounts are indistinguishable from bad OTP.
+    const result = await verifyOTP(email, otp);
+    if (!result.valid) {
+      return res.status(400).json({ success: false, message: genericMessage });
     }
 
     const user = await User.findOne({ email });
-    if (!user) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    if (user.oauthProvider && user.oauthProvider !== "local") {
-      await logAudit(req, "password_reset_blocked", {
-        email,
-        userId: user._id,
-        reason: "oauth_user",
-        provider: user.oauthProvider,
-      });
-      return res.status(403).json({
-        success: false,
-        message: `This account uses ${
-          user.oauthProvider === "google" ? "Google" : user.oauthProvider
-        } sign-in. Password reset is not available.`,
-        oauthUser: true,
-      });
-    }
-
-    const result = await verifyOTP(email, otp);
-    if (!result.valid) {
-      return res.status(400).json({ success: false, message: result.message });
+    if (!user || (user.oauthProvider && user.oauthProvider !== "local")) {
+      return res.status(400).json({ success: false, message: genericMessage });
     }
 
     const breachResult = await checkPasswordBreach(newPassword);
@@ -1526,6 +1617,7 @@ export const resetPassword = async (req, res, next) => {
       { user: user._id, revokedAt: null },
       { revokedAt: new Date() }
     );
+
     await logAudit(req, "password_reset_success", {
       email,
       userId: user._id,
@@ -1571,11 +1663,19 @@ export const getSessions = async (req, res, next) => {
 
 export const revokeSession = async (req, res, next) => {
   try {
+    // ✅ ObjectId guard before findOne.
+    if (!mongoose.Types.ObjectId.isValid(req.params.sessionId)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid session id" });
+    }
+
     const rawDeviceId = currentRawDeviceId(req);
     const token = await RefreshToken.findOne({
       _id: req.params.sessionId,
       user: req.user._id,
     });
+
     if (!token)
       return res
         .status(404)
@@ -1641,9 +1741,9 @@ export const revokeAllOtherSessions = async (req, res, next) => {
 
 export const loginWith2FA = async (req, res, next) => {
   try {
-    // ✅ token from httpOnly cookie (preferred) OR body (backward-compat / half-deploy)
     const tempToken = req.cookies?.login2faPending || req.body?.tempToken;
     const { totpCode } = req.body;
+
     if (!tempToken || !totpCode) {
       return res
         .status(400)
@@ -1654,7 +1754,6 @@ export const loginWith2FA = async (req, res, next) => {
     try {
       decoded = verifyTempToken(tempToken, "2fa-pending");
     } catch {
-      // No verified userId here -> do NOT touch the lockout (nothing to brute-force).
       return res.status(401).json({
         success: false,
         message: "Session expired or invalid. Please login again.",
@@ -1664,13 +1763,13 @@ export const loginWith2FA = async (req, res, next) => {
     const user = await User.findById(decoded.userId).select(
       "+twoFactorSecret +twoFactorBackupCodes"
     );
+
     if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
       return res
         .status(401)
         .json({ success: false, message: "2FA not configured" });
     }
 
-    // ✅ per-user lockout on the verify step (bounds TOTP brute force)
     const lo = await checkTwofaLockout(user._id);
     if (lo.locked) {
       return res.status(429).json({
@@ -1711,9 +1810,13 @@ export const loginWith2FA = async (req, res, next) => {
     }
 
     await clearTwofaFailed(user._id);
-    res.clearCookie("login2faPending", PENDING_2FA_COOKIE); // consume pending token
+    res.clearCookie("login2faPending", PENDING_2FA_COOKIE);
 
-    const { accessToken } = await createSessionAndTokens(user, req, res);
+    const { accessToken, signingKey } = await createSessionAndTokens(
+      user,
+      req,
+      res
+    );
     const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
       req,
       user
@@ -1732,6 +1835,7 @@ export const loginWith2FA = async (req, res, next) => {
       success: true,
       message: "Login successful",
       accessToken,
+      signingKey,
       user: formatUserResponse(user),
     });
   } catch (error) {
@@ -1741,9 +1845,9 @@ export const loginWith2FA = async (req, res, next) => {
 
 export const completeOAuth2FA = async (req, res, next) => {
   try {
-    // ✅ token from httpOnly cookie (preferred) OR body (backward-compat / half-deploy)
     const tempToken = req.cookies?.oauth2faPending || req.body?.tempToken;
     const { totpCode } = req.body;
+
     if (!tempToken || !totpCode) {
       return res
         .status(400)
@@ -1763,6 +1867,7 @@ export const completeOAuth2FA = async (req, res, next) => {
     const user = await User.findById(decoded.userId).select(
       "+twoFactorSecret +twoFactorBackupCodes"
     );
+
     if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
       return res.status(401).json({
         success: false,
@@ -1770,7 +1875,6 @@ export const completeOAuth2FA = async (req, res, next) => {
       });
     }
 
-    // ✅ per-user lockout on the verify step (bounds TOTP brute force)
     const lo = await checkTwofaLockout(user._id);
     if (lo.locked) {
       return res.status(429).json({
@@ -1811,9 +1915,13 @@ export const completeOAuth2FA = async (req, res, next) => {
     }
 
     await clearTwofaFailed(user._id);
-    res.clearCookie("oauth2faPending", PENDING_2FA_COOKIE); // consume pending token
+    res.clearCookie("oauth2faPending", PENDING_2FA_COOKIE);
 
-    const { accessToken } = await createSessionAndTokens(user, req, res);
+    const { accessToken, signingKey } = await createSessionAndTokens(
+      user,
+      req,
+      res
+    );
     const { currentIp, currentCountry, geo } = await detectSuspiciousLogin(
       req,
       user
@@ -1833,6 +1941,7 @@ export const completeOAuth2FA = async (req, res, next) => {
       success: true,
       message: "Login successful",
       accessToken,
+      signingKey,
       user: formatUserResponse(user),
     });
   } catch (error) {
@@ -1872,10 +1981,11 @@ export const upsertSessionForUser = async (user, req, opts = {}) => {
   const refreshToken = generateRefreshToken(user._id.toString());
   const rawDeviceId = currentRawDeviceId(req);
   const info = parseDevice(req);
-  const fp = deviceFingerprint(getDeviceId(req)); // keep existing device-binding source
+  const fp = deviceFingerprint(getDeviceId(req));
   const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS);
 
   let session = null;
+
   if (rawDeviceId) {
     session = await RefreshToken.findOne({
       user: user._id,
@@ -1883,6 +1993,7 @@ export const upsertSessionForUser = async (user, req, opts = {}) => {
       revokedAt: null,
       expiresAt: { $gt: new Date() },
     });
+
     if (session) {
       session.previousTokenHash = session.tokenHash;
       session.tokenHash = hashToken(refreshToken);
@@ -1897,6 +2008,7 @@ export const upsertSessionForUser = async (user, req, opts = {}) => {
       await session.save();
     }
   }
+
   if (!session) {
     session = await RefreshToken.create({
       user: user._id,
@@ -1910,5 +2022,7 @@ export const upsertSessionForUser = async (user, req, opts = {}) => {
       lastIp: req.ip,
     });
   }
-  return { session, refreshToken };
+
+  const signingKey = deriveSigningKey(session._id.toString());
+  return { session, refreshToken, signingKey };
 };

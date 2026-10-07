@@ -5,16 +5,14 @@ import { logAudit } from "../utils/auditLogger.js";
 // CONFIGURATION
 // ═══════════════════════════════════════════
 const API_SECRET = process.env.API_SECRET;
+const ENFORCE = process.env.SIGNATURE_ENFORCE === "1";
 const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000; // 5 minutes
-const NODE_ENV = process.env.NODE_ENV || "development";
+const CANONICAL_VERSION = "v1";
 
 // ═══════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════
 
-/**
- * Safe audit logging (fire-and-forget)
- */
 const safeLogAudit = async (req, action, metadata) => {
   try {
     await logAudit(req, action, metadata);
@@ -25,16 +23,14 @@ const safeLogAudit = async (req, action, metadata) => {
 
 /**
  * Canonical JSON stringifier.
- * MUST perfectly match JSON.stringify behavior for objects/arrays to prevent
- * client/server mismatch bugs, but with sorted keys for determinism.
+ * SOURCE OF TRUTH: client signRequest.js MUST produce byte-identical output.
  */
 const stableStringify = (obj) => {
   if (obj === null) return "null";
-  if (obj === undefined) return undefined; // JSON.stringify drops undefined
+  if (obj === undefined) return undefined;
 
   if (typeof obj === "string") return JSON.stringify(obj);
   if (typeof obj === "number") {
-    // Match JSON.stringify behavior for NaN/Infinity
     if (!Number.isFinite(obj)) return "null";
     return String(obj);
   }
@@ -51,7 +47,6 @@ const stableStringify = (obj) => {
     const pairs = [];
     for (const k of keys) {
       const v = stableStringify(obj[k]);
-      // Drop undefined values, exactly like JSON.stringify does
       if (v !== undefined) {
         pairs.push(`${JSON.stringify(k)}:${v}`);
       }
@@ -62,11 +57,16 @@ const stableStringify = (obj) => {
   return "";
 };
 
-/**
- * Validate hex string safely
- */
 const isValidHex = (str) => {
   return typeof str === "string" && /^[a-fA-F0-9]+$/.test(str);
+};
+
+const deriveSigningKey = (sessionId) => {
+  if (!API_SECRET || !sessionId) return null;
+  return crypto
+    .createHmac("sha256", API_SECRET)
+    .update(`maya-milan:signing:v1:${String(sessionId)}`)
+    .digest("hex");
 };
 
 // ═══════════════════════════════════════════
@@ -76,9 +76,35 @@ const isValidHex = (str) => {
 export const verifySignature = async (req, res, next) => {
   const requestId = req.requestId || req.id;
 
-  // 1. Fail closed if secret missing
-  if (!API_SECRET || API_SECRET.length < 32) {
-    // Never log the secret or stack trace
+  // GET/HEAD and multipart are authenticated by JWT+device alone.
+  if (
+    req.method === "GET" ||
+    req.method === "HEAD" ||
+    req.is("multipart/form-data")
+  ) {
+    return next();
+  }
+
+  const fail = async (status, code, message, action, meta = {}) => {
+    await safeLogAudit(req, action, {
+      path: req.path,
+      method: req.method,
+      requestId,
+      ...meta,
+    });
+
+    // ✅ Shadow mode: log but allow, so deploying before client mirror is safe.
+    if (!ENFORCE) return next();
+
+    return res.status(status).json({
+      success: false,
+      message,
+      code,
+      requestId,
+    });
+  };
+
+  if (ENFORCE && (!API_SECRET || String(API_SECRET).length < 32)) {
     return res.status(500).json({
       success: false,
       message: "Server configuration error",
@@ -89,75 +115,80 @@ export const verifySignature = async (req, res, next) => {
 
   const signature = req.headers["x-signature"];
   const timestamp = req.headers["x-timestamp"];
+  const clientRequestId = req.headers["x-request-id"];
 
-  // 2. Check headers present
   if (!signature || !timestamp) {
-    await safeLogAudit(req, "signature_missing", {
-      path: req.path,
-      method: req.method,
-      requestId,
-    });
-
-    return res.status(401).json({
-      success: false,
-      message: "Request signature required",
-      code: "SIGNATURE_MISSING",
-      requestId,
-    });
+    return fail(
+      401,
+      "SIGNATURE_MISSING",
+      "Request signature required",
+      "signature_missing"
+    );
   }
 
-  // 3. Validate signature format
   if (!isValidHex(signature)) {
-    return res.status(401).json({
-      success: false,
-      message: "Invalid signature format",
-      code: "SIGNATURE_INVALID_FORMAT",
-      requestId,
-    });
+    return fail(
+      401,
+      "SIGNATURE_INVALID_FORMAT",
+      "Invalid signature format",
+      "signature_invalid_format"
+    );
   }
 
-  // 4. Check timestamp freshness (prevent replay attacks)
   const ts = parseInt(timestamp, 10);
   if (isNaN(ts) || Math.abs(Date.now() - ts) > TIMESTAMP_TOLERANCE_MS) {
-    await safeLogAudit(req, "signature_expired", {
-      path: req.path,
-      method: req.method,
-      requestId,
-    });
-
-    return res.status(401).json({
-      success: false,
-      message: "Request timestamp expired",
-      code: "SIGNATURE_EXPIRED",
-      requestId,
-    });
+    return fail(
+      401,
+      "SIGNATURE_EXPIRED",
+      "Request timestamp expired",
+      "signature_expired"
+    );
   }
 
-  // 5. Calculate payload based on content type
-  let payloadString;
-
-  if (req.is("multipart/form-data")) {
-    // ✅ FIX: Do NOT skip verification for multipart.
-    // Sign the method, path, and timestamp instead of the body stream.
-    // The client MUST use this exact same payload format for file uploads.
-    payloadString = `multipart|${req.method}|${req.path}|${timestamp}`;
-  } else {
-    // For JSON/urlencoded, sign the canonical body
-    const bodyString =
-      req.body && Object.keys(req.body).length > 0
-        ? stableStringify(req.body)
-        : "";
-    // Add protocol prefix to prevent cross-protocol replay attacks
-    payloadString = `json|${bodyString}|${timestamp}`;
+  const sessionId = req.authContext?.sessionId;
+  if (!sessionId) {
+    return fail(
+      401,
+      "SIGNATURE_NO_SESSION",
+      "No session context for signature",
+      "signature_no_session"
+    );
   }
 
-  // 6. Calculate expected signature
+  const key = deriveSigningKey(sessionId);
+  if (!key) {
+    return fail(
+      401,
+      "SIGNATURE_NO_KEY",
+      "Signing key unavailable for session",
+      "signature_no_key"
+    );
+  }
+
+  const rid = String(clientRequestId || requestId || "").slice(0, 128);
+  if (!rid) {
+    return fail(
+      401,
+      "SIGNATURE_NO_REQUEST_ID",
+      "Request id required for signature",
+      "signature_no_request_id"
+    );
+  }
+
+  const bodyString =
+    req.body && Object.keys(req.body).length > 0
+      ? stableStringify(req.body)
+      : "";
+
+  // Canonical payload:
+  // v1|timestamp|requestId|canonicalBody
+  const payloadString = `${CANONICAL_VERSION}|${timestamp}|${rid}|${bodyString}`;
+
   const expectedSignature = crypto
-    .createHmac("sha256", API_SECRET)
+    .createHmac("sha256", key)
     .update(payloadString)
     .digest("hex");
 
-  // 7. Timing-safe comparison
   let valid = false;
   try {
     if (signature.length === expectedSignature.length) {
@@ -171,20 +202,15 @@ export const verifySignature = async (req, res, next) => {
   }
 
   if (!valid) {
-    await safeLogAudit(req, "signature_invalid", {
-      path: req.path,
-      method: req.method,
-      // ✅ FIX: Never log the expected signature (helps attackers)
-      providedPrefix: signature.substring(0, 8),
-      requestId,
-    });
-
-    return res.status(401).json({
-      success: false,
-      message: "Invalid request signature",
-      code: "SIGNATURE_INVALID",
-      requestId,
-    });
+    return fail(
+      401,
+      "SIGNATURE_INVALID",
+      "Invalid request signature",
+      "signature_invalid",
+      {
+        providedPrefix: signature.substring(0, 8),
+      }
+    );
   }
 
   next();

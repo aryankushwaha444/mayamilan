@@ -11,7 +11,8 @@ import { useAuth } from "./hooks/useAuth";
 import Loader from "./components/Loader.jsx";
 import Footer from "./components/Footer.jsx";
 import Navbar from "./components/Navbar.jsx";
-import ScrollToTop from "./components/ScrollToTop";
+import CallProvider from "./context/CallContext.jsx"; // ✅ USED NOW
+import ScrollToTop from "./components/ScrollToTop.jsx";
 
 // ═══════════════════════════════════════════
 // EAGER IMPORTS — only public pages needed on first load
@@ -35,7 +36,7 @@ const Blog = lazy(() => import("./pages/Blog.jsx"));
 const BlogPost = lazy(() => import("./pages/BlogPost.jsx"));
 const SecurityPolicy = lazy(() => import("./pages/SecurityPolicy"));
 
-// Protected (lazy — ✅ moved from eager)
+// Protected (lazy)
 const Profile = lazy(() => import("./pages/Profile"));
 const EditProfile = lazy(() => import("./pages/EditProfile"));
 const Discover = lazy(() => import("./pages/Discover"));
@@ -78,7 +79,6 @@ function ProtectedRoute({ children, adminOnly = false }) {
   }
 
   if (!isAuthenticated) {
-    // ✅ Preserve full path + query params for post-login redirect
     return (
       <Navigate
         to="/login"
@@ -101,7 +101,10 @@ function ProtectedRoute({ children, adminOnly = false }) {
 function App() {
   return (
     <BrowserRouter>
-      <AppContent />
+      {/* ✅ CallProvider must wrap the app so incoming calls ring on ANY page */}
+      <CallProvider>
+        <AppContent />
+      </CallProvider>
     </BrowserRouter>
   );
 }
@@ -115,7 +118,6 @@ function AppContent() {
       <ScrollToTop />
       <Navbar />
 
-      {/* ✅ Semantic main landmark wrapping all route content */}
       <Suspense
         fallback={
           <Loader
@@ -250,12 +252,18 @@ function AppContent() {
           />
 
           {/* ── ADMIN (lazy) ───────────────────────── */}
-          <Route element={<AdminRoutes />}>
+          {/* ✅ Defense-in-depth: App-level admin guard + AdminRoutes internal guard */}
+          <Route
+            element={
+              <ProtectedRoute adminOnly>
+                <AdminRoutes />
+              </ProtectedRoute>
+            }
+          >
             <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/admin/users" element={<Users />} />
             <Route path="/admin/users/:userId" element={<UserDetails />} />
             <Route path="/admin/reports" element={<AdminReports />} />
-            {/* ✅ Removed redundant ProtectedRoute — AdminRoutes already guards */}
             <Route path="/admin/suggestions" element={<AdminSuggestions />} />
           </Route>
 

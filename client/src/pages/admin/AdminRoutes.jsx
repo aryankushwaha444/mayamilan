@@ -11,60 +11,63 @@ function AdminRoutes() {
 
   const [status, setStatus] = useState("checking"); // checking | admin | denied | unauth
   const verifiedRef = useRef(false); // ✅ Cache: skip re-verification within session
+  const toastedRef = useRef(false); // ✅ fire the denial toast at most once per denial
 
   useEffect(() => {
     if (loading) return;
 
-    // Not authenticated → redirect to login
     if (!isAuthenticated || !user) {
       setStatus("unauth");
       return;
     }
-
-    // ✅ Already verified as admin this session → skip API call
     if (verifiedRef.current && user.role === "admin") {
       setStatus("admin");
       return;
     }
-
-    // Client-side role check first (fast path)
     if (user.role !== "admin") {
       setStatus("denied");
       return;
     }
 
     let active = true;
-
     const verify = async () => {
       try {
         const data = await getCurrentUser();
         if (!active) return;
-
         if (data?.user?.role === "admin") {
-          verifiedRef.current = true; // ✅ Cache successful verification
+          verifiedRef.current = true;
           setStatus("admin");
-        } else {
-          setStatus("denied");
-        }
+        } else setStatus("denied");
       } catch (error) {
         if (!active) return;
         setStatus(error?.response?.status === 401 ? "unauth" : "denied");
       }
     };
-
     verify();
-
     return () => {
       active = false;
     };
   }, [loading, isAuthenticated, user]);
 
-  // ✅ Reset cache on logout so next login re-verifies
+  // ✅ Reset cache + toast guard on logout so next login re-verifies / re-toasts
   useEffect(() => {
     if (!isAuthenticated) {
       verifiedRef.current = false;
+      toastedRef.current = false;
     }
   }, [isAuthenticated]);
+
+  // ✅ SIDE-EFFECT OUT OF RENDER (was toast.error() inside the `if (status==="denied")` body)
+  useEffect(() => {
+    if (status === "denied" && !toastedRef.current) {
+      toastedRef.current = true;
+      toast.error(
+        "Access denied. Admin privileges required.",
+        "Unauthorized",
+        5000
+      );
+    }
+  }, [status, toast]);
 
   if (loading || status === "checking") {
     return (
@@ -77,21 +80,9 @@ function AdminRoutes() {
       </div>
     );
   }
-
-  if (status === "unauth") {
+  if (status === "unauth")
     return <Navigate to="/login" replace state={{ from: location }} />;
-  }
-
-  if (status === "denied") {
-    // ✅ Show explanation before redirecting
-    toast.error(
-      "Access denied. Admin privileges required.",
-      "Unauthorized",
-      5000
-    );
-    return <Navigate to="/discover" replace />;
-  }
-
+  if (status === "denied") return <Navigate to="/discover" replace />;
   return <Outlet />;
 }
 

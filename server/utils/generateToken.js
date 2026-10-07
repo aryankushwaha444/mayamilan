@@ -15,18 +15,32 @@ const REFRESH_SECRET_PREVIOUS = process.env.JWT_REFRESH_SECRET_PREVIOUS;
 const TOKEN_ISSUER = process.env.TOKEN_ISSUER || "mayamilan-api";
 const TOKEN_AUDIENCE = process.env.TOKEN_AUDIENCE || "mayamilan-client";
 
-// Validate secrets
+// Clock skew tolerance for the "issued in the future" guard (seconds).
+const CLOCK_SKEW_SEC = 30;
+
+// Validate secrets (fail closed at boot — a weak/missing secret must never run).
 if (!ACCESS_SECRET_CURRENT || ACCESS_SECRET_CURRENT.length < 64) {
   throw new Error(
     "JWT_ACCESS_SECRET_CURRENT must be at least 64 characters. Generate with:\n" +
       "node -e \"console.log(require('crypto').randomBytes(48).toString('hex'))\""
   );
 }
-
 if (!REFRESH_SECRET_CURRENT || REFRESH_SECRET_CURRENT.length < 64) {
   throw new Error(
     "JWT_REFRESH_SECRET_CURRENT must be at least 64 characters. Generate with:\n" +
       "node -e \"console.log(require('crypto').randomBytes(48).toString('hex'))\""
+  );
+}
+// ✅ rotation secrets, if present, must be equally strong (a weak PREVIOUS secret is
+//    an attacker foothold during a rotation window).
+if (ACCESS_SECRET_PREVIOUS && ACCESS_SECRET_PREVIOUS.length < 64) {
+  throw new Error(
+    "JWT_ACCESS_SECRET_PREVIOUS, if set, must be at least 64 characters."
+  );
+}
+if (REFRESH_SECRET_PREVIOUS && REFRESH_SECRET_PREVIOUS.length < 64) {
+  throw new Error(
+    "JWT_REFRESH_SECRET_PREVIOUS, if set, must be at least 64 characters."
   );
 }
 
@@ -44,19 +58,24 @@ const REFRESH_SECRETS = [
 
 export const generateAccessToken = (userId, sessionId) => {
   if (!userId) throw new Error("userId is required");
+  // ✅ #2: an access token MUST bind to a revocable session. A sessionless access token
+  //    silently skips session+device validation in the auth middleware and can NEVER be
+  //    revoked -> fail closed at the source rather than mint an unrevocable credential.
+  //    (Pre‑session flows use generateTempToken, not this.)
+  if (!sessionId)
+    throw new Error(
+      "sessionId is required for an access token (unrevocable otherwise)"
+    );
 
   const payload = {
     userId,
     type: "access",
-    jti: crypto.randomUUID(), // SECURITY: Unique token ID for revocation
-    iss: TOKEN_ISSUER, // SECURITY: Issuer claim
-    aud: TOKEN_AUDIENCE, // SECURITY: Audience claim
+    jti: crypto.randomUUID(), // unique id (session-based revocation is the operative control)
+    iss: TOKEN_ISSUER,
+    aud: TOKEN_AUDIENCE,
     iat: Math.floor(Date.now() / 1000),
+    sessionId: sessionId.toString(),
   };
-
-  if (sessionId) {
-    payload.sessionId = sessionId.toString();
-  }
 
   return jwt.sign(payload, ACCESS_SECRET_CURRENT, {
     expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
@@ -104,12 +123,9 @@ export const generateReactivationToken = (userId) => {
   );
 };
 
-// ✅ NEW: short-lived pending token for 2FA login (local + oauth). MUST carry the
-// same iss/aud/jti/iat/algorithm claims that verifyTempToken -> verifyWithFallback
-// requires, otherwise jwt.verify throws "jwt issuer invalid" and the 2FA step 401s
-// before the code is ever checked (the exact bug this fixes). Always signed with
-// ACCESS_SECRET_CURRENT (the first entry of ACCESS_SECRETS) so verify hits it on the
-// first iteration — never a stray JWT_ACCESS_SECRET fallback that isn't in the list.
+// short-lived pending token for 2FA login (local + oauth). Carries the same
+// iss/aud/jti/iat/algorithm claims verifyTempToken -> verifyWithFallback requires.
+// Signed with ACCESS_SECRET_CURRENT (first entry of ACCESS_SECRETS) so verify hits it first.
 export const generateTempToken = (userId, type, expires = "5m") => {
   if (!userId) throw new Error("userId is required");
   if (!type) throw new Error("type is required");
@@ -147,9 +163,13 @@ const verifyWithFallback = (token, secrets, expectedType) => {
         throw new Error("Invalid token type");
       }
 
-      // SECURITY: Verify token was issued recently (prevent replay attacks)
+      // SECURITY: reject tokens from the future, but tolerate small clock skew (#8),
+      // and require a numeric iat so a missing-iat payload can't slip the check.
+      if (typeof decoded.iat !== "number") {
+        throw new Error("Invalid token (missing iat)");
+      }
       const tokenAge = Math.floor(Date.now() / 1000) - decoded.iat;
-      if (tokenAge < 0) {
+      if (tokenAge < -CLOCK_SKEW_SEC) {
         throw new Error("Token issued in the future");
       }
 
@@ -157,20 +177,24 @@ const verifyWithFallback = (token, secrets, expectedType) => {
     } catch (error) {
       lastError = error;
 
+      // Payload-level failures are secret-independent -> no point trying the next secret.
       if (
         error.name === "TokenExpiredError" ||
         error.name === "NotBeforeError"
       ) {
         throw error;
       }
-
       if (
         error.message.includes("Invalid token type") ||
         error.message.includes("jwt issuer invalid") ||
-        error.message.includes("jwt audience invalid")
+        error.message.includes("jwt audience invalid") ||
+        error.message.includes("issued in the future") ||
+        error.message.includes("missing iat")
       ) {
         throw error;
       }
+      // else: signature-level failure under THIS secret -> fall through to try the next
+      // (rotation) secret. JsonWebTokenError does NOT short-circuit the loop.
     }
   }
 
@@ -181,53 +205,37 @@ const verifyWithFallback = (token, secrets, expectedType) => {
   throw lastError || new Error("Token verification failed");
 };
 
-export const verifyAccessToken = (token) => {
-  return verifyWithFallback(token, ACCESS_SECRETS, "access");
-};
-
-export const verifyRefreshToken = (token) => {
-  return verifyWithFallback(token, REFRESH_SECRETS, "refresh");
-};
-
-export const verifyReactivationToken = (token) => {
-  return verifyWithFallback(token, REFRESH_SECRETS, "reactivation");
-};
-
-export const verifyTempToken = (token, expectedType) => {
-  return verifyWithFallback(token, ACCESS_SECRETS, expectedType);
-};
+export const verifyAccessToken = (token) =>
+  verifyWithFallback(token, ACCESS_SECRETS, "access");
+export const verifyRefreshToken = (token) =>
+  verifyWithFallback(token, REFRESH_SECRETS, "refresh");
+export const verifyReactivationToken = (token) =>
+  verifyWithFallback(token, REFRESH_SECRETS, "reactivation");
+export const verifyTempToken = (token, expectedType) =>
+  verifyWithFallback(token, ACCESS_SECRETS, expectedType);
 
 // ═══════════════════════════════════════════
 // 4. UTILITIES
 // ═══════════════════════════════════════════
 
-/**
- * SECURITY: Constant-time hash comparison to prevent timing attacks
- */
 export const hashToken = (token) => {
-  if (!token || typeof token !== "string") {
+  if (!token || typeof token !== "string")
     throw new Error("Token must be a non-empty string");
-  }
   return crypto.createHash("sha256").update(token).digest("hex");
 };
 
 /**
- * SECURITY: Constant-time string comparison
+ * SECURITY: constant-time comparison (#7). Hash both inputs to a fixed length first so
+ * the comparison never early-returns on a length mismatch (which leaks the expected
+ * length via timing) and is safe for differing-length inputs. For the 64-hex device
+ * fingerprints used in auth this is behaviour-preserving; it just removes the side channel.
  */
 export const constantTimeCompare = (a, b) => {
-  if (!a || !b) return false;
-  if (a.length !== b.length) return false;
-
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return result === 0;
+  if (typeof a !== "string" || typeof b !== "string" || !a || !b) return false;
+  const ha = crypto.createHash("sha256").update(a).digest();
+  const hb = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(ha, hb); // both 32 bytes -> equal length guaranteed
 };
 
-/**
- * SECURITY: Generate cryptographically secure random string
- */
-export const generateSecureRandom = (length = 32) => {
-  return crypto.randomBytes(length).toString("hex");
-};
+export const generateSecureRandom = (length = 32) =>
+  crypto.randomBytes(length).toString("hex");

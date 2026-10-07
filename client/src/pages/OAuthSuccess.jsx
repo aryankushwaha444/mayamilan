@@ -1,73 +1,91 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import Loader from "../components/Loader.jsx";
 import SEO from "../components/SEO";
+import api from "../utils/api.js";
+import { setSigningKey, clearSigningKey } from "../utils/signRequest";
 
 function OAuthSuccess() {
-  const [params] = useSearchParams();
   const [failed, setFailed] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
+    const fail = (msg) => {
+      if (!cancelled) {
+        setErrorMessage(msg);
+        setFailed(true);
+      }
+    };
+
     const processOAuth = async () => {
-      const token = params.get("token");
-      const userB64 = params.get("user");
+      // ✅ Scrub any legacy query params immediately. The modern server flow
+      // redirects to clean /oauth-success with NO token/user in the URL.
+      try {
+        window.history.replaceState({}, "", "/oauth-success");
+      } catch {}
 
-      // Validate required params
-      if (!token || !userB64) {
-        if (!cancelled) {
-          setErrorMessage(
-            "Missing authentication data. Please try signing in again."
-          );
-          setFailed(true);
-        }
-        return;
-      }
-
-      // Basic token format validation (JWT-like or opaque token)
-      if (typeof token !== "string" || token.length < 10) {
-        if (!cancelled) {
-          setErrorMessage("Invalid authentication token. Please try again.");
-          setFailed(true);
-        }
-        return;
-      }
+      // ✅ Never trust URL token/user. Clear stale client state first.
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("user");
+      clearSigningKey();
 
       try {
-        // Decode and validate user data
-        const userJson = atob(userB64);
-        const user = JSON.parse(userJson);
+        // ✅ Obtain access token + signing key from httpOnly refresh cookie.
+        const refreshRes = await api.post("/auth/refresh");
+        const accessToken = refreshRes?.data?.accessToken;
+        const signingKey = refreshRes?.data?.signingKey;
 
-        // Validate user object has required fields
-        if (!user || typeof user !== "object" || !user._id || !user.email) {
-          throw new Error("Invalid user data structure");
+        if (!accessToken || typeof accessToken !== "string") {
+          throw new Error("No access token returned");
         }
 
-        // Save credentials
-        localStorage.setItem("accessToken", token);
+        if (signingKey) {
+          setSigningKey(signingKey);
+        } else {
+          clearSigningKey();
+        }
+
+        localStorage.setItem("accessToken", accessToken);
+
+        // ✅ Fetch authoritative user/role from server.
+        const meRes = await api.get("/auth/me");
+        const rawUser = meRes?.data?.user ?? meRes?.user;
+
+        if (!rawUser || typeof rawUser !== "object") {
+          throw new Error("No user returned");
+        }
+
+        const userId = rawUser._id || rawUser.id;
+        if (!userId) throw new Error("User id missing");
+
+        const user = {
+          ...rawUser,
+          _id: userId,
+          id: userId,
+        };
+
+        if (cancelled) return;
+
         localStorage.setItem("user", JSON.stringify(user));
 
-        // Notify AuthContext
+        // Notify AuthContext that a session is now active in this tab.
         window.dispatchEvent(new Event("auth:login"));
 
-        // Redirect based on role
-        const destination = user.role === "admin" ? "/admin" : "/discover";
+        // Route by fetched server role, never by URL-provided data.
+        const destination =
+          user.role === "admin" || user.role === "superadmin"
+            ? "/admin"
+            : "/discover";
 
-        // Small delay to ensure AuthContext processes the event
-        if (!cancelled) {
-          setTimeout(() => {
-            if (!cancelled) {
-              window.location.replace(destination);
-            }
-          }, 800);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setErrorMessage("Unable to complete sign-in. Please try again.");
-          setFailed(true);
-        }
+        setTimeout(() => {
+          if (!cancelled) window.location.replace(destination);
+        }, 600);
+      } catch {
+        localStorage.removeItem("accessToken");
+        localStorage.removeItem("user");
+        clearSigningKey();
+        fail("Unable to complete sign-in. Please try again.");
       }
     };
 
@@ -76,17 +94,20 @@ function OAuthSuccess() {
     return () => {
       cancelled = true;
     };
-  }, [params]);
+  }, []);
 
-  // Failed state — show error, then redirect
+  // ✅ UNCONDITIONAL effect (no Rules-of-Hooks violation).
+  useEffect(() => {
+    if (!failed) return;
+
+    const timer = setTimeout(() => {
+      window.location.replace("/login");
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, [failed]);
+
   if (failed) {
-    useEffect(() => {
-      const timer = setTimeout(() => {
-        window.location.replace("/register");
-      }, 3000);
-      return () => clearTimeout(timer);
-    }, []);
-
     return (
       <>
         <SEO title="Sign-In Failed" path="/oauth-success" noIndex />
@@ -110,7 +131,6 @@ function OAuthSuccess() {
     );
   }
 
-  // Success/loading state
   return (
     <>
       <SEO title="Signing In..." path="/oauth-success" noIndex />
