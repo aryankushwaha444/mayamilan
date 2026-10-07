@@ -1,8 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCallContext } from "../context/CallContext.jsx";
 import { avatarImg } from "../utils/cloudinary";
+import {
+  useIncomingCallSound,
+  useOutgoingRingback,
+  stopIncomingRingtone,
+  stopOutgoingRingback,
+} from "../utils/callSounds.js";
 
-// Same defence-in-depth as ChatWindow: never load an arbitrary host from socket data.
+const ALLOW_HTTP_MEDIA = (() => {
+  try {
+    return import.meta.env?.DEV === true;
+  } catch {
+    return false;
+  }
+})();
+
 const MEDIA_HOSTS = [
   /([a-z0-9-]+\.)?cloudinary\.com$/i,
   /^media\.giphy\.com$/i,
@@ -11,12 +24,19 @@ const MEDIA_HOSTS = [
   /^media\d*\.tenor\.com$/i,
   /([a-z0-9-]+\.)?tenor\.googleusercontent\.com$/i,
 ];
+
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
+
 const isSafeUrl = (u) => {
   if (typeof u !== "string" || !u) return false;
   try {
     const p = new URL(u);
+    const allowedProtocol =
+      p.protocol === "https:" || (ALLOW_HTTP_MEDIA && p.protocol === "http:");
+    const noCredentials = !p.username && !p.password;
     return (
-      (p.protocol === "https:" || p.protocol === "http:") &&
+      allowedProtocol &&
+      noCredentials &&
       MEDIA_HOSTS.some((r) => r.test(p.hostname))
     );
   } catch {
@@ -24,39 +44,83 @@ const isSafeUrl = (u) => {
   }
 };
 
+const safeImage = (raw) => {
+  if (!isSafeUrl(raw)) return null;
+  try {
+    const t = avatarImg(raw);
+    return isSafeUrl(t) ? t : null;
+  } catch {
+    return null;
+  }
+};
+
+const safeText = (v, fallback = "") => {
+  if (typeof v !== "string") return fallback;
+  const c = v.replace(CONTROL_CHARS_RE, "").replace(/\s+/g, " ").trim();
+  return c.slice(0, 80) || fallback;
+};
+
 export default function InCallOverlay() {
   const call = useCallContext();
+
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const localVideoRef = useRef(null);
+
   const [sinkIds, setSinkIds] = useState([]);
   const [speakerOn, setSpeakerOn] = useState(true);
+  const [mediaBlocked, setMediaBlocked] = useState(false);
 
   const isVideo = call.mediaType === "video";
+  const isIncoming = call.phase === "incoming";
+  const isOutgoing = call.phase === "outgoing";
 
-  // bind remote stream to EXACTLY ONE element by mode (kills the double-audio bug);
-  // null the other so a mode flip can't leave two consumers of the same MediaStream.
-  useEffect(() => {
-    const v = remoteVideoRef.current,
-      a = remoteAudioRef.current;
-    if (isVideo) {
-      if (v) {
-        v.srcObject = call.remoteStream;
-        v.play?.().catch(() => {});
-      }
-      if (a) a.srcObject = null;
+  const { blocked: ringBlocked, enable: enableRingtone } =
+    useIncomingCallSound(isIncoming);
+  const { blocked: rbBlocked, enable: enableRingback } =
+    useOutgoingRingback(isOutgoing);
+
+  const bindRemote = useCallback(() => {
+    const el = isVideo ? remoteVideoRef.current : remoteAudioRef.current;
+    if (!el) return;
+    el.srcObject = call.remoteStream || null;
+    if (!call.remoteStream) {
+      setMediaBlocked(false);
+      return;
+    }
+    const p = el.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(() => {
+        if (isVideo) {
+          el.muted = true;
+          el.play().catch(() => {});
+        }
+        setMediaBlocked(true);
+      });
     } else {
-      if (a) {
-        a.srcObject = call.remoteStream;
-        a.play?.().catch(() => {});
-      }
-      if (v) v.srcObject = null;
+      setMediaBlocked(false);
     }
   }, [isVideo, call.remoteStream]);
 
   useEffect(() => {
-    if (localVideoRef.current)
+    bindRemote();
+  }, [bindRemote]);
+
+  useEffect(() => {
+    const v = remoteVideoRef.current,
+      a = remoteAudioRef.current;
+    if (isVideo) {
+      if (a) a.srcObject = null;
+    } else {
+      if (v) v.srcObject = null;
+    }
+  }, [isVideo]);
+
+  useEffect(() => {
+    if (localVideoRef.current) {
       localVideoRef.current.srcObject = call.localStream;
+      localVideoRef.current.play?.().catch(() => {});
+    }
   }, [call.localStream]);
 
   useEffect(() => {
@@ -74,25 +138,67 @@ export default function InCallOverlay() {
       .catch(() => {});
   }, [call.supportsSpeaker]);
 
+  useEffect(
+    () => () => {
+      try {
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+        if (localVideoRef.current) localVideoRef.current.srcObject = null;
+      } catch {}
+      stopIncomingRingtone();
+      stopOutgoingRingback();
+    },
+    []
+  );
+
+  const enableAllSound = useCallback(async () => {
+    if (isIncoming) await enableRingtone();
+    else if (isOutgoing) await enableRingback();
+    const el = isVideo ? remoteVideoRef.current : remoteAudioRef.current;
+    if (el) {
+      el.muted = false;
+      try {
+        await el.play();
+      } catch {}
+    }
+    setMediaBlocked(false);
+  }, [isIncoming, isOutgoing, enableRingtone, enableRingback, isVideo]);
+
   const toggleSpeaker = async () => {
     if (!call.supportsSpeaker) return;
-    const el = isVideo ? remoteVideoRef.current : remoteAudioRef.current; // the bound element
+    const el = isVideo ? remoteVideoRef.current : remoteAudioRef.current;
     if (!el || typeof el.setSinkId !== "function") return;
     const next = !speakerOn;
     try {
       await el.setSinkId(next ? sinkIds[0]?.deviceId || "default" : "default");
       setSpeakerOn(next);
-    } catch {
-      /* setSinkId can reject pre-permission */
-    }
+    } catch {}
   };
 
-  // Esc: reject while ringing, end while in call (stable deps -> no per-render resubscribe)
+  const onAccept = useCallback(async () => {
+    stopIncomingRingtone();
+    await call.acceptCall();
+  }, [call]);
+  const onReject = useCallback(() => {
+    stopIncomingRingtone();
+    call.rejectCall();
+  }, [call]);
+  const onEnd = useCallback(
+    (reason = "hangup") => {
+      stopIncomingRingtone();
+      stopOutgoingRingback();
+      call.endCall(reason);
+    },
+    [call]
+  );
+
   const { phase, rejectCall, endCall } = call;
   useEffect(() => {
     if (phase === "idle") return;
     const onKey = (e) => {
       if (e.key === "Escape") {
+        stopIncomingRingtone();
+        stopOutgoingRingback();
         if (phase === "incoming") rejectCall();
         else endCall("hangup");
       }
@@ -103,10 +209,9 @@ export default function InCallOverlay() {
 
   if (phase === "idle") return null;
 
-  const ringing = phase === "incoming" || phase === "outgoing";
-  const safePhoto = isSafeUrl(call.peer?.photo)
-    ? avatarImg(call.peer.photo)
-    : null;
+  const ringing = isIncoming || isOutgoing;
+  const safePhoto = safeImage(call.peer?.photo);
+  const safeName = safeText(call.peer?.name, "Calling…");
   const mmss = `${String(Math.floor(call.durationSec / 60)).padStart(
     2,
     "0"
@@ -122,6 +227,10 @@ export default function InCallOverlay() {
       ? "Reconnecting…"
       : mmss;
 
+  const showSoundButton = ringBlocked || rbBlocked || mediaBlocked;
+  const hasLocalVideo =
+    isVideo && call.localStream && call.localStream.getVideoTracks().length > 0;
+
   return (
     <div
       className="incall-overlay"
@@ -136,42 +245,57 @@ export default function InCallOverlay() {
             className="incall-remote"
             autoPlay
             playsInline
+            controls={false}
             muted={false}
           />
         ) : (
           <div className="incall-audio-avatar" aria-hidden="true">
             {safePhoto ? (
-              <img src={safePhoto} alt="" />
+              <img src={safePhoto} alt="" referrerPolicy="no-referrer" />
             ) : (
               <i className="bi bi-person-circle" />
             )}
           </div>
         )}
-        {/* audio sink used in AUDIO mode (and as the setSinkId target); bound by the effect above */}
+
         <audio
           ref={remoteAudioRef}
           autoPlay
           playsInline
+          controls={false}
           className="incall-hidden-audio"
         />
 
-        {isVideo && call.localStream && (
+        {hasLocalVideo && (
           <video
             ref={localVideoRef}
             className="incall-pip"
             autoPlay
             playsInline
+            controls={false}
             muted
           />
         )}
 
         <div className="incall-info">
-          <strong>{call.peer?.name || "Calling…"}</strong>
-          <span>
+          <strong>{safeName}</strong>
+          <span aria-live="polite">
             {statusText}
             {call.screenSharing ? " · sharing screen" : ""}
           </span>
         </div>
+
+        {showSoundButton && (
+          <button
+            type="button"
+            className="incall-enable-sound"
+            onClick={enableAllSound}
+            aria-label="Enable call sound"
+          >
+            <i className="bi bi-volume-up" aria-hidden="true" /> Tap to enable
+            sound
+          </button>
+        )}
       </div>
 
       <div className="incall-controls">
@@ -180,14 +304,14 @@ export default function InCallOverlay() {
             <>
               <button
                 className="incall-btn incall-reject"
-                onClick={rejectCall}
+                onClick={onReject}
                 aria-label="Decline"
               >
                 <i className="bi bi-telephone-x-fill" />
               </button>
               <button
                 className="incall-btn incall-accept"
-                onClick={call.acceptCall}
+                onClick={onAccept}
                 aria-label="Accept"
               >
                 <i className="bi bi-telephone-fill" />
@@ -196,7 +320,7 @@ export default function InCallOverlay() {
           ) : (
             <button
               className="incall-btn incall-reject"
-              onClick={() => endCall("hangup")}
+              onClick={() => onEnd("hangup")}
               aria-label="Cancel"
             >
               <i className="bi bi-x-lg" />
@@ -220,12 +344,24 @@ export default function InCallOverlay() {
               <button
                 className={`incall-btn ${call.videoOff ? "active" : ""}`}
                 onClick={call.toggleVideo}
-                aria-label={call.videoOff ? "Camera on" : "Camera off"}
+                disabled={call.cameraUnavailable}
+                aria-label={
+                  call.cameraUnavailable
+                    ? "Camera unavailable"
+                    : call.videoOff
+                    ? "Camera on"
+                    : "Camera off"
+                }
                 aria-pressed={call.videoOff}
+                title={
+                  call.cameraUnavailable
+                    ? "Another app or tab is using the camera"
+                    : undefined
+                }
               >
                 <i
                   className={`bi ${
-                    call.videoOff
+                    call.cameraUnavailable || call.videoOff
                       ? "bi-camera-video-off-fill"
                       : "bi-camera-video-fill"
                   }`}
@@ -236,6 +372,7 @@ export default function InCallOverlay() {
               <button
                 className="incall-btn"
                 onClick={call.switchCamera}
+                disabled={call.cameraUnavailable}
                 aria-label="Switch camera"
               >
                 <i className="bi bi-arrow-repeat" />
@@ -267,7 +404,7 @@ export default function InCallOverlay() {
             )}
             <button
               className="incall-btn incall-end"
-              onClick={() => endCall("hangup")}
+              onClick={() => onEnd("hangup")}
               aria-label="End call"
             >
               <i className="bi bi-telephone-x-fill" />

@@ -1,0 +1,146 @@
+.incall-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+
+.incall-stage {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+.incall-remote,
+.incall-pip {
+  background: #000;
+}
+
+.incall-remote {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* #12 responsive PiP so it never overlaps the control bar */
+.incall-pip {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  width: clamp(88px, 26vw, 132px);
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  z-index: 2;
+}
+
+.incall-audio-avatar {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.7);
+}
+.incall-audio-avatar img {
+  width: clamp(120px, 40vw, 200px);
+  height: clamp(120px, 40vw, 200px);
+  border-radius: 50%;
+  object-fit: cover;
+}
+.incall-audio-avatar i {
+  font-size: clamp(64px, 22vw, 120px);
+}
+
+.incall-hidden-audio {
+  display: none;
+}
+
+.incall-info {
+  position: absolute;
+  top: max(20px, env(safe-area-inset-top));
+  left: max(20px, env(safe-area-inset-left));
+  z-index: 3;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+.incall-controls {
+  position: absolute;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 0 12px;
+  z-index: 4;
+}
+
+.incall-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.incall-btn.active {
+  background: rgba(255, 255, 255, 0.28);
+}
+.incall-accept {
+  background: #22c55e;
+}
+.incall-reject,
+.incall-end {
+  background: #ef4444;
+}
+
+.incall-enable-sound {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.incall-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .incall-btn,
+  .incall-enable-sound {
+    transition: none;
+  }
+}

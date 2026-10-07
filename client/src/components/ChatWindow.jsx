@@ -51,9 +51,65 @@ const isSafeUrl = (u) => {
   }
 };
 
+// ✅ Call-message detection + normalization (server may name fields several ways).
+// NOTE: bare "voice"/"audio" are NOT call types (voice = a recorded voice message),
+// so we never misclassify a voice note as a call row.
+const CALL_TYPES = new Set(["call", "audio_call", "video_call", "voice_call"]);
+const CONNECTED_STATUSES = new Set([
+  "ended",
+  "completed",
+  "answered",
+  "connected",
+]);
+const CALL_LABEL = {
+  missed: "Missed call",
+  declined: "Declined",
+  canceled: "Canceled",
+  cancelled: "Canceled",
+  failed: "Call failed",
+  busy: "Busy",
+  unreachable: "Unreachable",
+  offline: "Offline",
+  no_answer: "No answer",
+  "no-answer": "No answer",
+  ended: "Call ended",
+  completed: "Call ended",
+  answered: "Call ended",
+  connected: "Call ended",
+};
+
+// Same clock format the bubble/header already use -> guaranteed visual parity.
+const fmtCallTime = (v) => {
+  try {
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+};
+// mm:ss (or h:mm:ss past an hour); 0/invalid -> "".
+const fmtCallDuration = (ms) => {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const total = Math.floor(n / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const p = (x) => String(x).padStart(2, "0");
+  return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+};
+
 // Whitelist message fields coming from socket/HTTP.
 const pickMessage = (m) => {
   if (!m || typeof m !== "object") return m;
+
+  const rawType = typeof m.type === "string" ? m.type.toLowerCase() : "";
+  const isCall =
+    CALL_TYPES.has(rawType) ||
+    m.callStatus != null ||
+    (m.callType != null && m.callType !== "");
+
   const out = {
     _id: m._id,
     conversation: m.conversation,
@@ -72,7 +128,35 @@ const pickMessage = (m) => {
     createdAt: m.createdAt,
     reactions: Array.isArray(m.reactions) ? m.reactions : [],
     post: m.post || null,
+    // ✅ preserved so call rows can render date/time/duration like messages
+    isCall,
   };
+
+  if (isCall) {
+    const ct =
+      (typeof m.callType === "string" && m.callType) ||
+      (typeof m.mediaType === "string" && m.mediaType) ||
+      (rawType.includes("video") ? "video" : "audio");
+    out.callType = ct === "video" ? "video" : "audio";
+
+    const st =
+      (typeof m.callStatus === "string" && m.callStatus) ||
+      (typeof m.status === "string" && m.status) ||
+      (m.missed ? "missed" : m.declined ? "declined" : "ended");
+    out.callStatus = String(st).slice(0, 40).toLowerCase();
+
+    const dnum = Number(
+      m.durationMs ?? m.callDuration ?? m.duration ?? m.lengthMs ?? 0
+    );
+    out.durationMs =
+      Number.isFinite(dnum) && dnum > 0
+        ? Math.min(dnum, 24 * 60 * 60 * 1000) // clamp absurd values
+        : 0;
+
+    out.startedAt = m.startedAt || m.createdAt || null;
+    out.endedAt = m.endedAt || null;
+  }
+
   if (m.attachment && typeof m.attachment === "object") {
     out.attachment = {
       url: isSafeUrl(m.attachment.url) ? m.attachment.url : null,
@@ -99,6 +183,94 @@ const pickMessage = (m) => {
   } else out.attachment = null;
   return out;
 };
+
+// Centered call-log row (rendered by ChatWindow so it never depends on
+// MessageBubble internals). All text flows through JSX => escaped; icon/label
+// come from fixed maps keyed by a normalized status => no socket-string markup.
+function CallRow({ message }) {
+  const isVideo = message.callType === "video";
+  const status = message.callStatus || "ended";
+  const connected = CONNECTED_STATUSES.has(status);
+  const dur = connected ? fmtCallDuration(message.durationMs) : "";
+  const label = CALL_LABEL[status] || (isVideo ? "Video call" : "Voice call");
+  const time = fmtCallTime(message.startedAt || message.createdAt);
+
+  const aria = [label, dur ? `duration ${dur}` : "", time]
+    .filter(Boolean)
+    .join(", ");
+
+  return (
+    <div
+      className="chat-call-row"
+      aria-label={aria}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        margin: "6px auto",
+        padding: "6px 12px",
+        maxWidth: 320,
+        fontSize: 12,
+        color: "#6b7280",
+        background: "rgba(0,0,0,0.04)",
+        border: "1px solid rgba(0,0,0,0.06)",
+        borderRadius: 12,
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          width: 26,
+          height: 26,
+          borderRadius: 999,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#fff",
+          fontSize: 13,
+          flex: "0 0 auto",
+          background: isVideo ? "#6366f1" : "#22c55e",
+        }}
+      >
+        <i
+          className={`bi ${isVideo ? "bi-videocam-fill" : "bi-telephone-fill"}`}
+        />
+      </span>
+      <span
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 1,
+          minWidth: 0,
+        }}
+      >
+        <span style={{ fontWeight: 600, color: "#374151", lineHeight: 1.2 }}>
+          {label}
+        </span>
+        {dur ? (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: 11,
+              color: "#6b7280",
+            }}
+          >
+            <i className="bi bi-clock" aria-hidden="true" /> {dur}
+          </span>
+        ) : null}
+        {time ? (
+          <span style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.2 }}>
+            {time}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
 
 function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
   const { socket } = useSocket();
@@ -346,6 +518,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
       return (
         r === currentUserId &&
         !m.deletedForEveryone &&
+        !m.isCall && // ✅ call logs are not read-receipted (avoids bogus writes)
         (!m.isRead || !m.isDelivered)
       );
     });
@@ -382,7 +555,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         typeof msg.receiver === "string"
           ? msg.receiver
           : msg.receiver?._id?.toString?.();
-      if (r === currentUserId) {
+      if (r === currentUserId && !msg.isCall) {
         const id =
           typeof msg._id === "string" ? msg._id : msg._id?.toString?.();
         if (!readRequestedRef.current.has(id)) {
@@ -502,6 +675,7 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
         isRead: false,
         failed: false,
         sending: true,
+        isCall: false,
       },
     ]);
 
@@ -877,6 +1051,11 @@ function ChatWindow({ conversationId, currentUserId, otherUser, onBack }) {
                       : new Date(it.date).toLocaleDateString()}
                   </span>
                 </div>
+              ) : it.data.isCall ? (
+                // ✅ call log row: same date (separator) + same time format as a
+                //    bubble, plus the call duration. Rendered here so it does not
+                //    depend on MessageBubble's internal call handling.
+                <CallRow key={it.data._id} message={it.data} />
               ) : (
                 <MessageBubble
                   key={it.data._id}

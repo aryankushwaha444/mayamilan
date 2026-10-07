@@ -2,11 +2,37 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSocket } from "./useSocket.js";
 import { useAlert } from "../context/AlertContext";
 
+import {
+  getDefaultPreset,
+  getMediaConstraints,
+  createHighQualityPeerConnection,
+  bindQualityToPeerConnection,
+  applyAllSendersQuality,
+  applyVideoSenderQuality,
+  preferVideoCodec,
+  logLocalMediaSettings,
+  startWebRtcStatsMonitor,
+} from "../utils/videoQuality.js";
+
+import {
+  sanitizeIceServers,
+  sanitizeIceCandidate,
+  sanitizeSdp,
+  sanitizePeer,
+  sanitizeCallId,
+  sanitizeErrorMessage,
+  isWebRtcDebugEnabled,
+  MAX_PENDING_CANDIDATES,
+} from "../utils/webrtcSecurity.js";
+
 const SUPPORTS_SETSINKID =
   typeof window !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 const SUPPORTS_DISPLAYMEDIA =
   typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia;
-const ICE_DISCONNECT_GRACE_MS = 8000; // half-open media -> self-end (availability)
+
+const ICE_DISCONNECT_GRACE_MS = 8000;
+const OUTGOING_NO_ANSWER_MS = 30000;
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 
 export function useCall() {
   const { socket } = useSocket();
@@ -19,13 +45,15 @@ export function useCall() {
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const [muted, setMuted] = useState(false);
-  const [videoOff, setVideoOff] = useState(false);
+  const [videoOff, setVideoOff] = useState(false); // USER intent
+  const [cameraUnavailable, setCameraUnavailable] = useState(false); // SYSTEM
   const [screenSharing, setScreenSharing] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
   const [error, setError] = useState(null);
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteTracksRef = useRef(new Set()); // #6 live remote track set
   const cameraTrackRef = useRef(null);
   const screenTrackRef = useRef(null);
   const videoSenderRef = useRef(null);
@@ -33,16 +61,34 @@ export function useCall() {
   const remoteDescSetRef = useRef(false);
   const durationTimerRef = useRef(null);
   const iceDisconnectTimerRef = useRef(null);
-  const iceServersRef = useRef([]); // ✅ replaces window.__pendingIce
+  const noAnswerTimerRef = useRef(null);
+  const iceServersRef = useRef([]);
   const phaseRef = useRef("idle");
   const callIdRef = useRef(null);
   const mediaTypeRef = useRef("audio");
+
+  const presetRef = useRef(getDefaultPreset());
+  const qualityStopRef = useRef(null);
+  const statsStopRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const socketRef = useRef(socket);
+  const teardownRef = useRef(null);
+
+  // #2 stabilize toast so the socket effect subscribes ONCE per socket.
+  const toastRef = useRef(toast);
+  useEffect(() => {
+    toastRef.current = toast;
+  }, [toast]);
+
+  useEffect(() => {
+    socketRef.current = socket;
+  }, [socket]);
+
   const setPhaseSafe = (p) => {
     phaseRef.current = p;
-    setPhase(p);
+    if (isMountedRef.current) setPhase(p);
   };
 
-  // keep mirror refs fresh (declared up-top so the listener effect below reads live values)
   useEffect(() => {
     callIdRef.current = callId;
   }, [callId]);
@@ -62,109 +108,214 @@ export function useCall() {
       iceDisconnectTimerRef.current = null;
     }
   };
+  const clearNoAnswerTimer = () => {
+    if (noAnswerTimerRef.current) {
+      clearTimeout(noAnswerTimerRef.current);
+      noAnswerTimerRef.current = null;
+    }
+  };
+  const clearQualityBindings = () => {
+    try {
+      qualityStopRef.current?.();
+    } catch {}
+    try {
+      statsStopRef.current?.();
+    } catch {}
+    qualityStopRef.current = null;
+    statsStopRef.current = null;
+  };
+
+  // publish the live remote track set as a fresh MediaStream so React re-renders
+  // correctly when tracks are added AND removed (fixes frozen/placeholder state).
+  const publishRemote = useCallback(() => {
+    const tracks = Array.from(remoteTracksRef.current);
+    if (tracks.length === 0) {
+      if (isMountedRef.current) setRemoteStream(null);
+      return;
+    }
+    const ms = new MediaStream(tracks);
+    if (isMountedRef.current) setRemoteStream(ms);
+  }, []);
 
   const teardown = useCallback(() => {
     clearDurationTimer();
     clearIceDisconnectTimer();
+    clearNoAnswerTimer();
+    clearQualityBindings();
+
     pendingCandidatesRef.current = [];
     remoteDescSetRef.current = false;
     iceServersRef.current = [];
+    remoteTracksRef.current = new Set();
+
     if (pcRef.current) {
       try {
-        pcRef.current.onicecandidate =
-          pcRef.current.ontrack =
-          pcRef.current.onconnectionstatechange =
-            null;
+        pcRef.current._abort?.abort(); // #6 drop ontrack/ended listeners
+        pcRef.current.onicecandidate = null;
+        pcRef.current.ontrack = null;
+        pcRef.current.onconnectionstatechange = null;
         pcRef.current.close();
       } catch {}
       pcRef.current = null;
     }
+    if (cameraTrackRef.current) {
+      try {
+        cameraTrackRef.current.__mayaAc?.abort();
+      } catch {} // #6 unbind cam listeners
+    }
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      try {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+      } catch {}
       localStreamRef.current = null;
     }
     if (screenTrackRef.current) {
-      screenTrackRef.current.stop();
+      try {
+        screenTrackRef.current.stop();
+      } catch {}
       screenTrackRef.current = null;
     }
     cameraTrackRef.current = null;
     videoSenderRef.current = null;
-    setLocalStream(null);
-    setRemoteStream(null);
-    setMuted(false);
-    setVideoOff(false);
-    setScreenSharing(false);
-    setDurationSec(0);
-    setCallId(null);
-    setPeer(null);
-    setError(null);
+
+    if (isMountedRef.current) {
+      setLocalStream(null);
+      setRemoteStream(null);
+      setMuted(false);
+      setVideoOff(false);
+      setCameraUnavailable(false);
+      setScreenSharing(false);
+      setDurationSec(0);
+      setCallId(null);
+      setPeer(null);
+      setError(null);
+    }
     setPhaseSafe("idle");
   }, []);
 
-  // attach/detach the camera mute->videoOff listeners on a track (re-used after switchCamera)
+  useEffect(() => {
+    teardownRef.current = teardown;
+  }, [teardown]);
+
+  // #6 system mute/unmute => cameraUnavailable (NOT user videoOff), AbortController-managed.
   const bindCameraListeners = useCallback((track) => {
     if (!track) return;
-    const onMute = () => setVideoOff(true);
-    const onUnmute = () => setVideoOff(false);
-    track.addEventListener("mute", onMute);
-    track.addEventListener("unmute", onUnmute);
-    track.__mayaListeners = [onMute, onUnmute]; // so we can strip on stop if needed
+    const ac = new AbortController();
+    track.__mayaAc = ac;
+    const onMute = () => {
+      if (isMountedRef.current) setCameraUnavailable(true);
+    };
+    const onUnmute = () => {
+      if (isMountedRef.current) setCameraUnavailable(false);
+    };
+    track.addEventListener("mute", onMute, { signal: ac.signal });
+    track.addEventListener("unmute", onUnmute, { signal: ac.signal });
+  }, []);
+
+  const unbindCameraListeners = useCallback((track) => {
+    try {
+      track?.__mayaAc?.abort();
+    } catch {}
   }, []);
 
   const buildPc = useCallback(
     (iceServers) => {
-      const pc = new RTCPeerConnection({
-        iceServers,
-        bundlePolicy: "max-bundle",
-      });
+      clearQualityBindings(); // #6 never leak a previous pc's timers on retry
+
+      const safeServers = sanitizeIceServers(iceServers);
+      const pc = createHighQualityPeerConnection(safeServers);
       pcRef.current = pc;
+      pc._callId = null;
+      pc._peerId = null;
+      pc._abort = new AbortController(); // #6 scoped listener teardown
+
+      try {
+        qualityStopRef.current = bindQualityToPeerConnection(
+          pc,
+          presetRef.current
+        );
+      } catch {}
+      if (isWebRtcDebugEnabled()) {
+        try {
+          statsStopRef.current = startWebRtcStatsMonitor(pc, 3000);
+        } catch {}
+      }
+
       pc.onicecandidate = (e) => {
-        if (e.candidate && socket && pc._callId) {
-          socket.emit("call:signal", {
+        if (!e.candidate || !socketRef.current || !pc._callId || !pc._peerId)
+          return;
+        try {
+          socketRef.current.emit("call:signal", {
             callId: pc._callId,
             to: pc._peerId,
             candidate: e.candidate.toJSON(),
           });
-        }
+        } catch {}
       };
+
+      // #6 robust remote assembly via track set + AbortController (no onended clobber).
       pc.ontrack = (e) => {
-        const [stream] = e.streams;
-        if (stream) setRemoteStream(stream);
+        if (!e.track) return;
+        remoteTracksRef.current.add(e.track);
+        e.track.addEventListener(
+          "ended",
+          () => {
+            remoteTracksRef.current.delete(e.track);
+            publishRemote();
+          },
+          { once: true, signal: pc._abort.signal }
+        );
+        publishRemote();
       };
+
       pc.onconnectionstatechange = () => {
         const st = pc.connectionState;
         if (st === "connected") {
           clearIceDisconnectTimer();
+          clearNoAnswerTimer();
           setPhaseSafe("in-call");
-          socket?.emit("call:connected", { callId: pc._callId });
+          try {
+            socketRef.current?.emit("call:connected", { callId: pc._callId });
+          } catch {}
           clearDurationTimer();
           const start = Date.now();
-          durationTimerRef.current = setInterval(
-            () => setDurationSec(Math.floor((Date.now() - start) / 1000)),
-            1000
-          );
+          durationTimerRef.current = setInterval(() => {
+            if (isMountedRef.current)
+              setDurationSec(Math.floor((Date.now() - start) / 1000));
+          }, 1000);
         } else if (st === "failed") {
-          setError("Connection failed");
-          socket?.emit("call:end", { callId: pc._callId, reason: "error" });
+          if (isMountedRef.current) setError("Connection failed");
+          try {
+            socketRef.current?.emit("call:end", {
+              callId: pc._callId,
+              reason: "error",
+            });
+          } catch {}
           teardown();
         } else if (st === "disconnected") {
-          // half-open: give ICE a grace window, then self-end so the registry/media don't leak
           clearIceDisconnectTimer();
           iceDisconnectTimerRef.current = setTimeout(() => {
             if (pcRef.current === pc && pc.connectionState !== "connected") {
-              socket?.emit("call:end", { callId: pc._callId, reason: "error" });
+              try {
+                socketRef.current?.emit("call:end", {
+                  callId: pc._callId,
+                  reason: "error",
+                });
+              } catch {}
               teardown();
             }
           }, ICE_DISCONNECT_GRACE_MS);
         }
       };
+
       return pc;
     },
-    [socket, teardown]
+    [teardown, publishRemote]
   );
 
   const flushPendingCandidates = useCallback(async (pc) => {
-    for (const c of pendingCandidatesRef.current) {
+    const list = pendingCandidatesRef.current.splice(0, MAX_PENDING_CANDIDATES);
+    for (const c of list) {
       try {
         await pc.addIceCandidate(c);
       } catch {}
@@ -172,189 +323,398 @@ export function useCall() {
     pendingCandidatesRef.current = [];
   }, []);
 
+  // Graceful acquisition: busy/denied CAMERA must NOT cancel; mic failure aborts.
   const acquireLocal = useCallback(
     async (mt) => {
-      const constraints =
-        mt === "video"
-          ? {
-              audio: true,
-              video: {
-                facingMode: "user",
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-              },
-            }
-          : { audio: true, video: false };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const preset = presetRef.current;
+      const base = getMediaConstraints(preset);
+      const audioOnly = { audio: base.audio, video: false };
+
+      let stream = null;
+      let degraded = false;
+
+      if (mt === "video") {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(base);
+          if (!stream.getVideoTracks().length) {
+            try {
+              stream.getTracks().forEach((t) => t.stop());
+            } catch {}
+            stream = null;
+          }
+        } catch {
+          stream = null;
+        }
+        if (!stream) {
+          degraded = true;
+          stream = await navigator.mediaDevices.getUserMedia(audioOnly); // may throw -> abort
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia(audioOnly);
+      }
+
       localStreamRef.current = stream;
-      setLocalStream(stream);
+      if (isMountedRef.current) setLocalStream(stream);
+
       const v = stream.getVideoTracks()[0] || null;
       cameraTrackRef.current = v;
       bindCameraListeners(v);
+
+      if (degraded && isMountedRef.current) {
+        setCameraUnavailable(true);
+        toastRef.current?.warning?.(
+          "Camera unavailable — continuing with audio only",
+          "Call",
+          4000
+        );
+      }
+      if (isWebRtcDebugEnabled()) await logLocalMediaSettings(stream);
       return stream;
     },
     [bindCameraListeners]
   );
 
   const attachLocalToPc = useCallback((pc, stream) => {
+    if (!pc || !stream) return;
+    const preset = presetRef.current;
     stream.getTracks().forEach((track) => {
-      const sender = pc.addTrack(track, stream);
-      if (track.kind === "video") videoSenderRef.current = sender;
+      try {
+        if (typeof pc.addTransceiver === "function") {
+          const transceiver = pc.addTransceiver(track, {
+            direction: "sendrecv",
+            streams: [stream],
+          });
+          if (track.kind === "video") {
+            preferVideoCodec(transceiver, "compatible"); // #1 valid order
+            videoSenderRef.current = transceiver.sender;
+          }
+        } else {
+          const sender = pc.addTrack(track, stream);
+          if (track.kind === "video") videoSenderRef.current = sender;
+        }
+      } catch (err) {
+        if (isWebRtcDebugEnabled())
+          console.warn("attachLocalToPc track failed:", err?.message || err);
+      }
     });
+    // audio-only side must still RECEIVE peer video (cross-browser).
+    const hasVideoSender = pc
+      .getSenders()
+      .some((s) => s.track?.kind === "video");
+    if (!hasVideoSender && typeof pc.addTransceiver === "function") {
+      try {
+        pc.addTransceiver("video", { direction: "recvonly" });
+      } catch {}
+    }
+    applyAllSendersQuality(pc, preset).catch(() => {});
   }, []);
 
-  // ── caller ──
   const startCall = useCallback(
     (to, mt, conversationId) => {
-      if (phaseRef.current !== "idle" || !socket) return;
+      if (phaseRef.current !== "idle" || !socketRef.current) return;
       if (mt !== "audio" && mt !== "video") return;
+      const safeTo = sanitizeCallId(to);
+      if (!safeTo) return;
+      const safeConv = conversationId
+        ? sanitizeCallId(conversationId)
+        : undefined;
+
       setMediaType(mt);
       setPhaseSafe("outgoing");
-      setPeer({ _id: to, name: null, photo: null });
-      socket.emit("call:start", { to, mediaType: mt, conversationId });
-    },
-    [socket]
-  );
+      setPeer(
+        sanitizePeer({ _id: safeTo }) || {
+          _id: safeTo,
+          name: null,
+          photo: null,
+        }
+      );
 
-  // ── callee ─
-  const acceptCall = useCallback(async () => {
-    if (phaseRef.current !== "incoming" || !callIdRef.current || !socket)
-      return;
-    const id = callIdRef.current;
-    try {
-      setPhaseSafe("connecting");
-      const stream = await acquireLocal(mediaTypeRef.current);
-      const pc = pcRef.current || buildPc(iceServersRef.current || []); // ✅ ref, not global
-      pc._callId = id;
-      pc._peerId = peer?._id;
-      attachLocalToPc(pc, stream);
-      socket.emit("call:accept", { callId: id });
-    } catch (e) {
-      const name = e?.name;
-      if (name === "NotAllowedError" || name === "NotFoundError")
-        toast.error("Camera/mic permission denied", "Call", 4000);
-      else toast.error("Could not start call", "Call", 4000);
-      socket.emit("call:reject", { callId: id, reason: "declined" });
-      teardown();
-    }
-  }, [peer, socket, acquireLocal, buildPc, attachLocalToPc, teardown, toast]);
-
-  const rejectCall = useCallback(() => {
-    if (phaseRef.current !== "incoming" || !callIdRef.current || !socket)
-      return;
-    socket.emit("call:reject", {
-      callId: callIdRef.current,
-      reason: "declined",
-    });
-    teardown();
-  }, [socket, teardown]);
-
-  const endCall = useCallback(
-    (reason = "hangup") => {
-      if (!socket) {
+      try {
+        socketRef.current.emit("call:start", {
+          to: safeTo,
+          mediaType: mt,
+          conversationId: safeConv,
+        });
+      } catch {
         teardown();
         return;
       }
-      if (callIdRef.current)
-        socket.emit("call:end", { callId: callIdRef.current, reason });
-      teardown();
+
+      clearNoAnswerTimer();
+      noAnswerTimerRef.current = setTimeout(() => {
+        // #4 fire even if call:ready never arrived (callIdRef may be null).
+        if (phaseRef.current !== "outgoing") return;
+        if (callIdRef.current) {
+          try {
+            socketRef.current?.emit("call:end", {
+              callId: callIdRef.current,
+              reason: "no-answer",
+            });
+          } catch {}
+        }
+        if (isMountedRef.current)
+          toastRef.current?.info?.("No answer", "Call", 3000);
+        teardown();
+      }, OUTGOING_NO_ANSWER_MS);
     },
-    [socket, teardown]
+    [teardown]
   );
 
-  // ── controls ──
+  const acceptCall = useCallback(async () => {
+    if (
+      phaseRef.current !== "incoming" ||
+      !callIdRef.current ||
+      !socketRef.current
+    )
+      return;
+    const id = callIdRef.current;
+    const peerId = peer?._id;
+    if (!peerId) {
+      try {
+        socketRef.current.emit("call:reject", {
+          callId: id,
+          reason: "declined",
+        });
+      } catch {}
+      teardown();
+      return;
+    }
+    try {
+      setPhaseSafe("connecting");
+      const stream = await acquireLocal(mediaTypeRef.current);
+      const pc = pcRef.current || buildPc(iceServersRef.current || []);
+      pc._callId = id;
+      pc._peerId = peerId;
+      attachLocalToPc(pc, stream);
+      try {
+        socketRef.current.emit("call:accept", { callId: id });
+      } catch {
+        teardown();
+      }
+    } catch (e) {
+      const name = e?.name;
+      if (isMountedRef.current) {
+        if (name === "NotAllowedError" || name === "NotFoundError")
+          toastRef.current?.error?.(
+            "Microphone permission denied",
+            "Call",
+            4000
+          );
+        else toastRef.current?.error?.("Could not start call", "Call", 4000);
+      }
+      try {
+        socketRef.current.emit("call:reject", {
+          callId: id,
+          reason: "declined",
+        });
+      } catch {}
+      teardown();
+    }
+  }, [peer, acquireLocal, buildPc, attachLocalToPc, teardown]);
+
+  const rejectCall = useCallback(() => {
+    if (
+      phaseRef.current !== "incoming" ||
+      !callIdRef.current ||
+      !socketRef.current
+    )
+      return;
+    try {
+      socketRef.current.emit("call:reject", {
+        callId: callIdRef.current,
+        reason: "declined",
+      });
+    } catch {}
+    teardown();
+  }, [teardown]);
+
+  const endCall = useCallback(
+    (reason = "hangup") => {
+      if (!socketRef.current) {
+        teardown();
+        return;
+      }
+      const safeReason =
+        typeof reason === "string"
+          ? reason.replace(CONTROL_CHARS_RE, "").slice(0, 40)
+          : "hangup";
+      if (callIdRef.current) {
+        try {
+          socketRef.current.emit("call:end", {
+            callId: callIdRef.current,
+            reason: safeReason,
+          });
+        } catch {}
+      }
+      teardown();
+    },
+    [teardown]
+  );
+
   const toggleMute = useCallback(() => {
     const s = localStreamRef.current;
     if (!s) return;
     const next = !muted;
     s.getAudioTracks().forEach((t) => (t.enabled = !next));
-    setMuted(next);
+    if (isMountedRef.current) setMuted(next);
   }, [muted]);
 
   const toggleVideo = useCallback(() => {
+    if (cameraUnavailable) return;
     const t = cameraTrackRef.current;
     if (!t) return;
     const next = !videoOff;
     t.enabled = !next;
-    setVideoOff(next);
-  }, [videoOff]);
+    if (isMountedRef.current) setVideoOff(next);
+  }, [videoOff, cameraUnavailable]);
 
   const switchCamera = useCallback(async () => {
     const t = cameraTrackRef.current;
-    if (!t || screenSharing) return;
+    if (!t || screenSharing || cameraUnavailable) return;
     try {
+      const preset = presetRef.current;
+      const base = getMediaConstraints(preset);
       const nextFacing =
         t.getSettings().facingMode === "environment" ? "user" : "environment";
       const ns = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: nextFacing },
+        video: { ...base.video, facingMode: nextFacing },
+        audio: false,
       });
       const nt = ns.getVideoTracks()[0];
+      if (!nt) throw new Error("No video track returned");
+      try {
+        if ("contentHint" in nt)
+          nt.contentHint = preset.contentHint || "motion";
+      } catch {}
+      unbindCameraListeners(t); // #6 strip old listeners before stop
       t.stop();
-      if (videoSenderRef.current) await videoSenderRef.current.replaceTrack(nt);
+      if (videoSenderRef.current) {
+        await videoSenderRef.current.replaceTrack(nt);
+        await applyVideoSenderQuality(videoSenderRef.current, preset);
+      }
       cameraTrackRef.current = nt;
-      bindCameraListeners(nt); // ✅ re-attach so the off-indicator still works after a switch
+      bindCameraListeners(nt);
       const s = localStreamRef.current;
       if (s) {
         const oldV = s.getVideoTracks()[0];
-        if (oldV) s.removeTrack(oldV);
+        if (oldV && oldV !== nt) s.removeTrack(oldV);
         s.addTrack(nt);
-        setLocalStream(new MediaStream(s.getTracks()));
+        if (isMountedRef.current)
+          setLocalStream(new MediaStream(s.getTracks()));
       }
     } catch {
-      toast.error("Camera switch unavailable", "Call", 3000);
+      if (isMountedRef.current)
+        toastRef.current?.error?.("Camera switch unavailable", "Call", 3000);
     }
-  }, [screenSharing, toast, bindCameraListeners]);
+  }, [
+    screenSharing,
+    cameraUnavailable,
+    bindCameraListeners,
+    unbindCameraListeners,
+  ]);
 
   const toggleScreenShare = useCallback(async () => {
     if (!SUPPORTS_DISPLAYMEDIA) {
-      toast.error("Screen share not supported here", "Call", 3000);
+      if (isMountedRef.current)
+        toastRef.current?.error?.(
+          "Screen share not supported here",
+          "Call",
+          3000
+        );
       return;
     }
+    const preset = presetRef.current;
     if (screenSharing) {
-      if (videoSenderRef.current && cameraTrackRef.current)
+      if (videoSenderRef.current && cameraTrackRef.current) {
         await videoSenderRef.current
           .replaceTrack(cameraTrackRef.current)
           .catch(() => {});
-      if (screenTrackRef.current) screenTrackRef.current.stop();
+        await applyVideoSenderQuality(videoSenderRef.current, preset).catch(
+          () => {}
+        );
+      }
+      if (screenTrackRef.current) {
+        try {
+          screenTrackRef.current.stop();
+        } catch {}
+      }
       screenTrackRef.current = null;
-      setScreenSharing(false);
+      if (isMountedRef.current) setScreenSharing(false);
       return;
     }
     try {
       const ds = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
+        video: { frameRate: { ideal: 30, max: 30 } },
         audio: false,
       });
       const dt = ds.getVideoTracks()[0];
+      if (!dt) throw new Error("No screen track returned");
+      try {
+        if ("contentHint" in dt) dt.contentHint = "detail";
+      } catch {}
       screenTrackRef.current = dt;
-      dt.addEventListener("ended", () => {
-        if (videoSenderRef.current && cameraTrackRef.current)
-          videoSenderRef.current
-            .replaceTrack(cameraTrackRef.current)
-            .catch(() => {});
-        screenTrackRef.current = null;
-        setScreenSharing(false);
-      });
-      if (videoSenderRef.current) await videoSenderRef.current.replaceTrack(dt);
-      setScreenSharing(true);
+      dt.addEventListener(
+        "ended",
+        () => {
+          if (videoSenderRef.current && cameraTrackRef.current) {
+            videoSenderRef.current
+              .replaceTrack(cameraTrackRef.current)
+              .catch(() => {});
+            applyVideoSenderQuality(
+              videoSenderRef.current,
+              presetRef.current
+            ).catch(() => {});
+          }
+          screenTrackRef.current = null;
+          if (isMountedRef.current) setScreenSharing(false);
+        },
+        { once: true }
+      );
+      if (videoSenderRef.current) {
+        await videoSenderRef.current.replaceTrack(dt);
+        await applyVideoSenderQuality(videoSenderRef.current, preset);
+      }
+      if (isMountedRef.current) setScreenSharing(true);
     } catch {
       /* user cancelled picker */
     }
-  }, [screenSharing, toast]);
+  }, [screenSharing]);
 
-  // ── socket listeners ──
+  // Single subscription per socket (deps are all stable refs/callbacks now -> #2).
   useEffect(() => {
     if (!socket) return;
 
-    const onReady = ({ callId: id, iceServers, to }) => {
-      iceServersRef.current = iceServers || []; // ✅
-      const pc = buildPc(iceServersRef.current);
-      pc._callId = id;
-      pc._peerId = to;
-      setCallId(id);
+    const emit = (...a) => {
+      try {
+        socketRef.current?.emit(...a);
+      } catch {}
     };
+
+    const onReady = ({ callId: id, iceServers, to }) => {
+      const cid = sanitizeCallId(id);
+      const peerId = sanitizeCallId(to);
+      if (!cid || !peerId) return;
+      iceServersRef.current = sanitizeIceServers(iceServers);
+      const pc = buildPc(iceServersRef.current);
+      pc._callId = cid;
+      pc._peerId = peerId;
+      if (isMountedRef.current) {
+        setCallId(cid);
+        setPeer(
+          sanitizePeer({ _id: peerId }) || {
+            _id: peerId,
+            name: null,
+            photo: null,
+          }
+        );
+      }
+    };
+
     const onAccepted = async ({ callId: id }) => {
-      if (phaseRef.current !== "outgoing" || id !== callIdRef.current) return;
+      const cid = sanitizeCallId(id);
+      if (phaseRef.current !== "outgoing" || !cid || cid !== callIdRef.current)
+        return;
+      clearNoAnswerTimer();
       try {
         const stream = await acquireLocal(mediaTypeRef.current);
         const pc = pcRef.current;
@@ -365,98 +725,183 @@ export function useCall() {
           offerToReceiveVideo: mediaTypeRef.current === "video",
         });
         await pc.setLocalDescription(offer);
-        socket.emit("call:signal", {
-          callId: id,
+        emit("call:signal", {
+          callId: cid,
           to: pc._peerId,
           sdp: pc.localDescription,
         });
         setPhaseSafe("connecting");
       } catch (e) {
         const name = e?.name;
-        if (name === "NotAllowedError" || name === "NotFoundError")
-          toast.error("Camera/mic permission denied", "Call", 4000);
-        socket.emit("call:end", { callId: id, reason: "error" });
+        if (isMountedRef.current) {
+          if (name === "NotAllowedError" || name === "NotFoundError")
+            toastRef.current?.error?.(
+              "Microphone permission denied",
+              "Call",
+              4000
+            );
+          else toastRef.current?.error?.("Could not start call", "Call", 4000);
+        }
+        emit("call:end", { callId: cid, reason: "error" });
         teardown();
       }
     };
-    const onRing = ({ callId: id, from, mediaType: mt, iceServers }) => {
-      if (phaseRef.current !== "idle") {
-        socket.emit("call:reject", { callId: id, reason: "busy" });
+
+    const onRing = (payload) => {
+      clearNoAnswerTimer(); // #7 drop any lingering outgoing timer
+      const id = sanitizeCallId(payload?.callId);
+      const mt = payload?.mediaType;
+      const from = sanitizePeer(payload?.from);
+      const ice = sanitizeIceServers(payload?.iceServers);
+      if (!id || !from || (mt !== "audio" && mt !== "video")) {
+        if (id) emit("call:reject", { callId: id, reason: "busy" });
         return;
       }
-      iceServersRef.current = iceServers || []; // ✅
-      setCallId(id);
-      setPeer(from);
-      setMediaType(mt);
+      if (phaseRef.current !== "idle") {
+        emit("call:reject", { callId: id, reason: "busy" });
+        return;
+      }
+      iceServersRef.current = ice;
+      if (isMountedRef.current) {
+        setCallId(id);
+        setPeer(from);
+        setMediaType(mt);
+      }
       setPhaseSafe("incoming");
-      const pc = buildPc(iceServersRef.current);
-      pc._callId = id;
-      pc._peerId = from?._id;
+      try {
+        const pc = buildPc(ice);
+        pc._callId = id;
+        pc._peerId = from._id;
+      } catch {
+        emit("call:reject", { callId: id, reason: "busy" });
+        teardown();
+      }
     };
+
+    // #3 require exact callId match (no fall-through teardown on missing id).
     const onDismiss = ({ callId: id }) => {
-      // a sibling tab accepted; clear OUR stale ring only if we're still ringing this call
-      if (phaseRef.current === "incoming" && id === callIdRef.current)
+      const cid = sanitizeCallId(id);
+      if (phaseRef.current === "incoming" && cid && cid === callIdRef.current)
         teardown();
     };
-    const onRejected = ({ reason }) => {
-      toast.info(
-        reason === "busy" ? "They're on another call" : "Call declined",
-        "Call",
-        3000
-      );
+
+    const onRejected = (payload) => {
+      const cid = sanitizeCallId(payload?.callId);
+      if (!cid || cid !== callIdRef.current) return; // #3
+      const reason =
+        typeof payload?.reason === "string"
+          ? payload.reason.replace(CONTROL_CHARS_RE, "").slice(0, 80)
+          : "declined";
+      if (isMountedRef.current) {
+        toastRef.current?.info?.(
+          reason === "busy"
+            ? "They're on another call"
+            : reason === "offline" || reason === "unreachable"
+            ? "User is offline"
+            : "Call declined",
+          "Call",
+          3000
+        );
+      }
       teardown();
     };
-    const onEnded = ({ reason, status, durationMs }) => {
+
+    const onEnded = (payload) => {
+      const cid = sanitizeCallId(payload?.callId);
+      if (!cid || cid !== callIdRef.current) return; // #3
+      const ms = Number(payload?.durationMs);
+      const safeDuration = Number.isFinite(ms) && ms > 0 ? ms : 0;
+      const status =
+        typeof payload?.status === "string"
+          ? payload.status.replace(CONTROL_CHARS_RE, "").slice(0, 40)
+          : "";
+      const reason =
+        typeof payload?.reason === "string"
+          ? payload.reason.replace(CONTROL_CHARS_RE, "").slice(0, 40)
+          : "";
       const label =
-        status === "missed"
-          ? "Missed call"
+        status === "missed" || reason === "no-answer"
+          ? "No answer"
+          : reason === "offline" || reason === "unreachable"
+          ? "User is offline"
           : reason === "blocked"
           ? "Call ended (blocked)"
-          : reason === "unmatched"
-          ? "Call ended"
-          : reason === "inactive"
-          ? "Call ended"
           : "Call ended";
-      if (durationMs > 0)
-        toast.info(`${label} · ${fmt(durationMs)}`, "Call", 3000);
-      else toast.info(label, "Call", 3000);
+      if (isMountedRef.current) {
+        if (safeDuration > 0)
+          toastRef.current?.info?.(
+            `${label} · ${fmt(safeDuration)}`,
+            "Call",
+            3000
+          );
+        else toastRef.current?.info?.(label, "Call", 3000);
+      }
       teardown();
     };
+
     const onBusy = () => {
-      toast.warning("You're already in a call", "Call", 3000);
+      if (phaseRef.current !== "outgoing") return; // #3 busy only cancels OUR attempt
+      if (isMountedRef.current)
+        toastRef.current?.warning?.("You're already in a call", "Call", 3000);
       teardown();
     };
+
     const onSignal = async ({ callId: id, from, sdp, candidate }) => {
-      if (id !== callIdRef.current) return;
+      const cid = sanitizeCallId(id);
+      if (!cid || cid !== callIdRef.current) return;
       const pc = pcRef.current;
       if (!pc) return;
+      const fromId = sanitizeCallId(
+        typeof from === "string"
+          ? from
+          : from && typeof from === "object"
+          ? from._id
+          : null
+      );
+      if (!fromId) return;
+      if (pc._peerId && fromId !== pc._peerId) return; // signaling-hijack guard
+
       if (sdp) {
+        const cleanSdp = sanitizeSdp(sdp);
+        if (!cleanSdp) return;
         try {
-          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+          await pc.setRemoteDescription(new RTCSessionDescription(cleanSdp));
           remoteDescSetRef.current = true;
           await flushPendingCandidates(pc);
-          if (sdp.type === "offer" && phaseRef.current === "connecting") {
+          await applyAllSendersQuality(pc, presetRef.current).catch(() => {});
+          // #5 answer exactly once, driven by signaling state (idempotent vs re-offer).
+          if (pc.signalingState === "have-remote-offer") {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            socket.emit("call:signal", {
-              callId: id,
-              to: from,
+            emit("call:signal", {
+              callId: cid,
+              to: pc._peerId,
               sdp: pc.localDescription,
             });
           }
         } catch (e) {
-          console.error("setRemoteDescription failed", e);
+          if (isWebRtcDebugEnabled())
+            console.error("setRemoteDescription failed", e);
         }
       } else if (candidate) {
+        const cleanCandidate = sanitizeIceCandidate(candidate);
+        if (!cleanCandidate) return;
         if (remoteDescSetRef.current) {
           try {
-            await pc.addIceCandidate(candidate);
+            await pc.addIceCandidate(cleanCandidate);
           } catch {}
-        } else pendingCandidatesRef.current.push(candidate);
+        } else if (pendingCandidatesRef.current.length < MAX_PENDING_CANDIDATES)
+          pendingCandidatesRef.current.push(cleanCandidate);
       }
     };
-    const onError = ({ message }) => {
-      toast.error(message || "Call error", "Call", 4000);
+
+    const onError = (payload) => {
+      const cid = sanitizeCallId(payload?.callId);
+      if (cid && cid !== callIdRef.current) return; // targeted error -> only if ours
+      if (!cid && phaseRef.current === "idle") return; // #3 global error ignored when idle
+      const safeMessage = sanitizeErrorMessage(payload?.message);
+      if (isMountedRef.current)
+        toastRef.current?.error?.(safeMessage, "Call", 4000);
       if (phaseRef.current !== "idle") teardown();
     };
 
@@ -469,6 +914,7 @@ export function useCall() {
     socket.on("call:busy", onBusy);
     socket.on("call:signal", onSignal);
     socket.on("call_error", onError);
+
     return () => {
       socket.off("call:ready", onReady);
       socket.off("call:accepted", onAccepted);
@@ -487,21 +933,22 @@ export function useCall() {
     attachLocalToPc,
     flushPendingCandidates,
     teardown,
-    toast,
   ]);
 
-  // hard cleanup on unmount
-  useEffect(
-    () => () => {
-      if (callIdRef.current && socket)
-        socket.emit("call:end", {
-          callId: callIdRef.current,
-          reason: "disconnected",
-        });
-      teardown();
-    },
-    [socket, teardown]
-  );
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      const s = socketRef.current;
+      const id = callIdRef.current;
+      if (id && s) {
+        try {
+          s.emit("call:end", { callId: id, reason: "disconnected" });
+        } catch {}
+      }
+      teardownRef.current?.();
+    };
+  }, []);
 
   return {
     phase,
@@ -512,6 +959,7 @@ export function useCall() {
     remoteStream,
     muted,
     videoOff,
+    cameraUnavailable,
     screenSharing,
     durationSec,
     error,

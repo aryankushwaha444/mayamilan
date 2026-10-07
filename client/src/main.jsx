@@ -35,6 +35,7 @@ import "./styles/pages/admin.css";
 import "./styles/pages/blog.css";
 import "./styles/pages/settings.css";
 import "./styles/pages/suggestion.css";
+import "./styles/pages/call.css";
 
 import "./styles/utils/datepicker.css";
 import "./styles/utils/utilities.css";

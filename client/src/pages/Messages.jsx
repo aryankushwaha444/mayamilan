@@ -17,6 +17,35 @@ import SEO from "../components/SEO";
 import { avatarImg } from "../utils/cloudinary";
 import { DEFAULT_AVATAR, onAvatarError } from "../utils/avatarFallback";
 
+// ✅ call-preview helpers (defensive: conversation.lastMessage is raw API data)
+const SIDEBAR_CALL_TYPES = new Set([
+  "call",
+  "audio_call",
+  "video_call",
+  "voice_call",
+]);
+const SIDEBAR_CONNECTED = new Set([
+  "ended",
+  "completed",
+  "answered",
+  "connected",
+]);
+const fmtSidebarDur = (ms) => {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const total = Math.floor(n / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const p = (x) => String(x).padStart(2, "0");
+  return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+};
+const isSidebarCall = (lm) =>
+  !!lm &&
+  (SIDEBAR_CALL_TYPES.has(String(lm.type || "").toLowerCase()) ||
+    lm.callStatus != null ||
+    (lm.callType != null && lm.callType !== ""));
+
 /* ═══════════════════════════════════════════════════════
    CONVERSATION ITEM (memoized — hover / swipe / hold delete)
    ═══════════════════════════════════════════════════════ */
@@ -80,6 +109,49 @@ const ConversationItem = memo(function ConversationItem({
   const getMessagePreview = () => {
     if (!lastMessage) return "Start a conversation";
     if (lastMessage.deletedForEveryone) return "This message was deleted";
+
+    // ✅ call log preview (audio/video + duration / missed / declined)
+    if (isSidebarCall(lastMessage)) {
+      const t = String(lastMessage.type || "").toLowerCase();
+      const isVideo =
+        (lastMessage.callType || lastMessage.mediaType) === "video" ||
+        t === "video_call";
+      const st = String(
+        lastMessage.callStatus ||
+          lastMessage.status ||
+          (lastMessage.missed
+            ? "missed"
+            : lastMessage.declined
+            ? "declined"
+            : "ended")
+      ).toLowerCase();
+      const dnum = Number(
+        lastMessage.durationMs ??
+          lastMessage.callDuration ??
+          lastMessage.duration ??
+          0
+      );
+      const dur =
+        SIDEBAR_CONNECTED.has(st) && Number.isFinite(dnum) && dnum > 0
+          ? fmtSidebarDur(dnum)
+          : "";
+      const base =
+        st === "missed"
+          ? "Missed call"
+          : st === "declined"
+          ? "Declined"
+          : st === "canceled" || st === "cancelled"
+          ? "Canceled"
+          : st === "busy"
+          ? "Busy"
+          : st === "unreachable" || st === "offline"
+          ? "Unreachable"
+          : isVideo
+          ? "Video call"
+          : "Voice call";
+      return `${isVideo ? "📹" : "📞"} ${base}${dur ? ` · ${dur}` : ""}`;
+    }
+
     switch (lastMessage.type) {
       case "image":
         return "📷 Photo";
