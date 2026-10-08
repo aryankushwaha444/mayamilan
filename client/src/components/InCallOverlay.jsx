@@ -60,12 +60,6 @@ const safeText = (v, fallback = "") => {
   return c.slice(0, 80) || fallback;
 };
 
-// ✅ SINGLE-INSTANCE GUARD. If two InCallOverlay components are mounted at once
-// (e.g. rendered both in a global layout AND inside Messages.jsx), each binds
-// the SAME call.remoteStream to its own <video>/<audio> -> the far voice plays
-// twice with a tiny offset, which sounds exactly like an echo/doubling. This is
-// the only software path to "remote stream played more than once"; the guard
-// turns it from a suspicion into a console error that names the fix.
 let OVERLAY_MOUNT_COUNT = 0;
 
 export default function InCallOverlay() {
@@ -74,8 +68,6 @@ export default function InCallOverlay() {
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const localVideoRef = useRef(null);
-  // Which element currently OWNS the remote stream: "video" | "audio" | null.
-  // Enforces the invariant that the remote stream is on exactly one element.
   const remoteOwnerRef = useRef(null);
 
   const [sinkIds, setSinkIds] = useState([]);
@@ -85,7 +77,6 @@ export default function InCallOverlay() {
   const isVideo = call.mediaType === "video";
   const isIncoming = call.phase === "incoming";
   const isOutgoing = call.phase === "outgoing";
-  const isConnected = call.phase === "in-call" || call.phase === "connecting";
 
   const remoteHasVideo = useMemo(
     () =>
@@ -101,7 +92,6 @@ export default function InCallOverlay() {
   const { blocked: rbBlocked, enable: enableRingback } =
     useOutgoingRingback(isOutgoing);
 
-  // Mount-count guard (dev): warn loudly if more than one overlay is alive.
   useEffect(() => {
     OVERLAY_MOUNT_COUNT += 1;
     if (import.meta.env?.DEV && OVERLAY_MOUNT_COUNT > 1) {
@@ -116,19 +106,12 @@ export default function InCallOverlay() {
     };
   }, []);
 
-  // Bind the remote stream to ONE element chosen by remote CONTENT, and hard-null
-  // the other, recording the owner. Idempotent across rapid remoteStream rebuilds
-  // and StrictMode double-invoke (the owner ref makes the second run a no-op).
   const bindRemote = useCallback(() => {
     const vEl = remoteVideoRef.current;
     const aEl = remoteAudioRef.current;
     const desiredOwner = showRemoteVideo ? "video" : "audio";
     const target = desiredOwner === "video" ? vEl : aEl;
     const other = desiredOwner === "video" ? aEl : vEl;
-
-    // Dev double-bind detector: if BOTH elements ever hold the same stream object,
-    // that is audible duplication (echo). With the owner logic this must never fire;
-    // if it does, another file is also binding remoteStream -> find it.
     if (
       import.meta.env?.DEV &&
       vEl &&
@@ -140,7 +123,6 @@ export default function InCallOverlay() {
         "[InCallOverlay] DOUBLE REMOTE PLAYBACK detected: same MediaStream on <video> and <audio>. Echo is software, not acoustic."
       );
     }
-
     try {
       if (other && other.srcObject) other.srcObject = null;
     } catch {}
@@ -148,7 +130,6 @@ export default function InCallOverlay() {
       remoteOwnerRef.current = null;
       return;
     }
-
     if (
       remoteOwnerRef.current !== desiredOwner ||
       target.srcObject !== (call.remoteStream || null)
@@ -156,7 +137,6 @@ export default function InCallOverlay() {
       target.srcObject = call.remoteStream || null;
       remoteOwnerRef.current = call.remoteStream ? desiredOwner : null;
     }
-
     if (!call.remoteStream) {
       setMediaBlocked(false);
       return;
@@ -179,7 +159,6 @@ export default function InCallOverlay() {
     bindRemote();
   }, [bindRemote]);
 
-  // Local preview: ALWAYS muted -> localStream can never be an audible echo source.
   useEffect(() => {
     const el = localVideoRef.current;
     if (!el) return;
@@ -189,7 +168,7 @@ export default function InCallOverlay() {
       );
     }
     el.srcObject = call.localStream;
-    el.muted = true; // enforce regardless of JSX
+    el.muted = true;
     el.play?.().catch(() => {});
   }, [call.localStream]);
 
@@ -206,7 +185,7 @@ export default function InCallOverlay() {
         setSinkIds(outs.length ? outs : [{ deviceId: "default" }]);
       })
       .catch(() => {});
-  }, [call.supportsSpeaker]);
+  }, [call.supportsSpeaker, call.phase]); // ✅ re-enumerate when a call connects so speaker labels populate
 
   useEffect(
     () => () => {
@@ -222,7 +201,6 @@ export default function InCallOverlay() {
     []
   );
 
-  // Route gesture-unmute / speaker toggle to the element that actually owns the stream.
   const getRemoteEl = useCallback(
     () =>
       remoteOwnerRef.current === "video"
@@ -297,14 +275,16 @@ export default function InCallOverlay() {
     "0"
   )}:${String(call.durationSec % 60).padStart(2, "0")}`;
 
+  // ✅ DEFECT 1+2 FIX: 'connecting' must read "Connecting…" (NOT a premature
+  //    "camera off"); the timer must show whenever we are in-call; "camera off"
+  //    is only an appendix, and only once truly connected with no remote video.
   let statusText;
   if (phase === "incoming") statusText = "Incoming call…";
   else if (phase === "outgoing") statusText = "Ringing…";
-  else if (isVideo && !remoteHasVideo && isConnected)
-    statusText = "Their camera is off";
   else if (phase === "connecting") statusText = "Connecting…";
   else if (call.error) statusText = "Reconnecting…";
-  else statusText = mmss;
+  else statusText = mmss; // in-call -> timer always visible, never hidden by the note
+  const remoteCamOff = isVideo && !remoteHasVideo && phase === "in-call";
 
   const showSoundButton = ringBlocked || rbBlocked || mediaBlocked;
   const hasLocalVideo =
@@ -336,7 +316,6 @@ export default function InCallOverlay() {
           </div>
         )}
 
-        {/* Always mounted; owns the stream only when there's no remote video. */}
         <audio
           ref={remoteAudioRef}
           autoPlay
@@ -360,6 +339,7 @@ export default function InCallOverlay() {
           <strong>{safeName}</strong>
           <span aria-live="polite">
             {statusText}
+            {remoteCamOff ? " · Their camera is off" : ""}
             {call.screenSharing ? " · sharing screen" : ""}
           </span>
         </div>
@@ -420,21 +400,25 @@ export default function InCallOverlay() {
               />
             </button>
             {isVideo && (
+              // ✅ DEFECT 4 FIX: never disable the camera button. When there is no
+              //    live track (degraded/dead) the click RE-ACQUIRES via toggleVideo's
+              //    retry path; when a live track exists it just toggles enabled.
               <button
-                className={`incall-btn ${call.videoOff ? "active" : ""}`}
+                className={`incall-btn ${
+                  call.cameraUnavailable || call.videoOff ? "active" : ""
+                }`}
                 onClick={call.toggleVideo}
-                disabled={call.cameraUnavailable}
                 aria-label={
                   call.cameraUnavailable
-                    ? "Camera unavailable"
+                    ? "Enable camera (retry)"
                     : call.videoOff
-                    ? "Camera on"
-                    : "Camera off"
+                    ? "Turn camera on"
+                    : "Turn camera off"
                 }
-                aria-pressed={call.videoOff}
+                aria-pressed={call.cameraUnavailable || call.videoOff}
                 title={
                   call.cameraUnavailable
-                    ? "Another app or tab is using the camera"
+                    ? "No camera feed yet — tap to enable / retry"
                     : undefined
                 }
               >
@@ -451,7 +435,6 @@ export default function InCallOverlay() {
               <button
                 className="incall-btn"
                 onClick={call.switchCamera}
-                disabled={call.cameraUnavailable}
                 aria-label="Switch camera"
               >
                 <i className="bi bi-arrow-repeat" />

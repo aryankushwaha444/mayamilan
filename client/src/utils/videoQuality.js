@@ -83,9 +83,15 @@ export const getPresetById = (id) => {
  */
 const readPipeline = () => {
   try {
-    const m = (globalThis.localStorage?.getItem("MAYA_AUDIO_PIPELINE") || "native").toLowerCase();
-    return ["raw", "native", "notch", "notch+gate", "gate"].includes(m) ? m : "native";
-  } catch { return "native"; }
+    const m = (
+      globalThis.localStorage?.getItem("MAYA_AUDIO_PIPELINE") || "native"
+    ).toLowerCase();
+    return ["raw", "native", "notch", "notch+gate", "gate"].includes(m)
+      ? m
+      : "native";
+  } catch {
+    return "native";
+  }
 };
 
 export const getMediaConstraints = (preset = getDefaultPreset()) => {
@@ -833,4 +839,63 @@ export async function buildProcessedAudioTrack(micTrack) {
       console.warn("buildProcessedAudioTrack skipped:", err?.message || err);
     return null; // never throw into the call flow
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ✅ PERMISSION PRE-FLIGHT — MICROPHONE ONLY (the hard gate).
+   ---------------------------------------------------------------------
+   We deliberately DO NOT probe the camera here. The camera is a SOFT gate
+   owned by acquireLocal, and probing it (getUserMedia -> stop -> acquireLocal
+   getUserMedia again) is an open->stop->open race on the SAME physical device:
+   while the other tab already holds the webcam, that race can hand acquireLocal
+   a track that is immediately muted/ended — which is exactly the "receiver
+   camera reads 'Using now' but the caller never gets video" symptom. Probing
+   the mic only still surfaces the permission prompt BEFORE we ring/accept (so
+   the no-answer / ring timers never overlap a dialog) without EVER opening the
+   camera twice. Returns { mic, cam } where cam is always null here (the camera
+   status is decided later, by acquireLocal, on its single open).
+   ═══════════════════════════════════════════════════════════════════════ */
+const MIC_PROBE = {
+  audio: { channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } },
+  video: false,
+};
+
+// Resolve one permission kind without leaving the device hot.
+async function resolveKind(name, probeConstraints) {
+  // Fast path: if the browser already knows granted/denied, DON'T probe
+  // (avoids a pointless device blink and gives us the blocked-vs-prompt signal).
+  try {
+    const st = (await navigator.permissions?.query?.({ name }))?.state;
+    if (st === "granted") return "granted";
+    if (st === "denied") return "denied"; // blocked in site settings: no dialog will show
+    // 'prompt' / undefined / unsupported -> fall through and actually prompt
+  } catch {}
+  if (!navigator.mediaDevices?.getUserMedia) return "error"; // insecure context / unsupported
+  try {
+    const s = await navigator.mediaDevices.getUserMedia(probeConstraints);
+    s.getTracks().forEach((t) => {
+      try {
+        t.stop();
+      } catch {}
+    }); // stop immediately: no hot device
+    return "granted";
+  } catch (e) {
+    const n = e?.name;
+    if (n === "NotAllowedError" || n === "SecurityError") return "denied";
+    if (
+      n === "NotFoundError" ||
+      n === "DevicesNotFoundError" ||
+      n === "OverconstrainedError" ||
+      n === "ConstraintNotSatisfiedError"
+    )
+      return "no-device";
+    return "error";
+  }
+}
+
+// Signature/arity unchanged (mediaType kept so call sites don't move); the body
+// now resolves the microphone only, so the camera is opened exactly once.
+export async function requestMediaPermission(_mediaType) {
+  const mic = await resolveKind("microphone", MIC_PROBE);
+  return { mic, cam: null }; // camera status is decided later, by acquireLocal (single open)
 }

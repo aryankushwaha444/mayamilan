@@ -13,6 +13,7 @@ import {
   logLocalMediaSettings,
   startWebRtcStatsMonitor,
   buildProcessedAudioTrack, // ✅ mic denoiser factory
+  requestMediaPermission, // ✅ permission pre-flight (no auto-end on denial)
 } from "../utils/videoQuality.js";
 
 import {
@@ -53,6 +54,23 @@ const mapRejectedStatus = (reason) => {
   if (r === "offline" || r === "unreachable") return "unreachable";
   return "declined";
 };
+
+// ✅ Actionable text for a blocked/absent mic. A *blocked* site permission will
+// NOT re-prompt, so a blind "retry" is useless — we must show the 🔒/camera-icon
+// -> Allow instructions. (Pure string builder; touches no call state.)
+function permMessage(perm, mt) {
+  if (perm.mic === "no-device")
+    return "No microphone found. Connect a mic (or use a device with one), then try again.";
+  if (perm.mic === "error")
+    return "Couldn't access the microphone. Check browser permissions and that the site is HTTPS, then try again.";
+  const parts = ["Microphone"];
+  if (mt === "video" && perm.cam === "denied") parts.push("Camera");
+  return `${parts.join(
+    " and "
+  )} access is blocked. Tap the 🔒 / camera icon in your browser's address bar, set ${parts.join(
+    " and "
+  )} to “Allow”, then tap Call / Accept again.`;
+}
 
 export function useCall() {
   const { socket } = useSocket();
@@ -101,6 +119,7 @@ export function useCall() {
   const isMountedRef = useRef(true);
   const socketRef = useRef(socket);
   const teardownRef = useRef(null);
+  const permBusyRef = useRef(false); // ✅ double-tap guard while a prompt is open
 
   const toastRef = useRef(toast);
   useEffect(() => {
@@ -394,6 +413,12 @@ export function useCall() {
     pendingCandidatesRef.current = [];
   }, []);
 
+  // ✅ acquireLocal is now the SINGLE place the camera is opened (the pre-flight
+  //    is mic-only), so there is no open->stop->open race that could hand us a
+  //    muted/ended track. It also CLASSIFIES the camera-open failure so the
+  //    degrade toast is actionable (blocked vs busy vs none) instead of vague,
+  //    and it does NOT install a permanent lock (the camera button stays usable
+  //    for the toggleVideo retry below).
   const acquireLocal = useCallback(
     async (mt) => {
       const preset = presetRef.current;
@@ -401,16 +426,22 @@ export function useCall() {
       const audioOnly = { audio: base.audio, video: false };
       let stream = null;
       let degraded = false;
+      let camFail = null; // ✅ capture the camera-open error name for messaging
       if (mt === "video") {
         try {
-          stream = await navigator.mediaDevices.getUserMedia(base);
+          stream = await navigator.mediaDevices.getUserMedia(base); // ✅ the ONLY camera open
           if (!stream.getVideoTracks().length) {
             try {
-              stream.getTracks().forEach((t) => t.stop());
+              stream.getTracks().forEach((t) => {
+                try {
+                  t.stop();
+                } catch {}
+              });
             } catch {}
             stream = null;
           }
-        } catch {
+        } catch (e) {
+          camFail = e?.name || "error";
           stream = null;
         }
         if (!stream) {
@@ -426,12 +457,14 @@ export function useCall() {
       cameraTrackRef.current = v;
       bindCameraListeners(v);
       if (degraded && isMountedRef.current) {
-        setCameraUnavailable(true);
-        toastRef.current?.warning?.(
-          "Camera unavailable — continuing with audio only",
-          "Call",
-          4000
-        );
+        setCameraUnavailable(true); // state for icon/aria; the overlay no longer disables the button
+        const msg =
+          camFail === "NotAllowedError" || camFail === "SecurityError"
+            ? "Camera blocked — tap the 🔒 / camera icon in the address bar, set Camera to “Allow”, then tap the camera button to join with video."
+            : camFail === "NotReadableError"
+            ? "Camera busy — another tab/app/device is using it. Continuing audio-only; free the camera and tap the camera button to add video."
+            : "No camera available on this device. Continuing with audio only.";
+        toastRef.current?.warning?.(msg, "Call", 6000);
       }
       if (isWebRtcDebugEnabled()) await logLocalMediaSettings(stream);
       return stream;
@@ -569,15 +602,39 @@ export function useCall() {
     [applyNoiseSuppression]
   );
 
+  // ✅ Caller: ask permission BEFORE ringing anyone. Denial => the call is never
+  //    started (nothing to end); the no-answer countdown starts only after a
+  //    grant, so a slow answer can't time the call out mid-prompt. All inbound
+  //    ids still sanitized; phase re-checked after the await (race guard).
   const startCall = useCallback(
-    (to, mt, conversationId) => {
+    async (to, mt, conversationId) => {
       if (phaseRef.current !== "idle" || !socketRef.current) return;
       if (mt !== "audio" && mt !== "video") return;
+      if (permBusyRef.current) return; // a prompt is already open
       const safeTo = sanitizeCallId(to);
       if (!safeTo) return;
       const safeConv = conversationId
         ? sanitizeCallId(conversationId)
         : undefined;
+
+      permBusyRef.current = true;
+      let perm;
+      try {
+        perm = await requestMediaPermission(mt);
+      } finally {
+        permBusyRef.current = false;
+      }
+      // re-check after the await: they may have navigated away mid-prompt
+      if (phaseRef.current !== "idle" || !socketRef.current) return;
+      if (perm.mic !== "granted") {
+        // ✅ NOT an end — the call was never started. Clear, actionable message.
+        toastRef.current?.error?.(
+          permMessage(perm, mt),
+          "Permission needed",
+          6000
+        );
+        return;
+      }
 
       resetCallLog(safeTo);
       setMediaType(mt);
@@ -602,6 +659,7 @@ export function useCall() {
         return;
       }
 
+      // timer starts only now (post-permission), so it can never overlap the prompt
       clearNoAnswerTimer();
       noAnswerTimerRef.current = setTimeout(() => {
         if (phaseRef.current !== "outgoing") return;
@@ -622,6 +680,11 @@ export function useCall() {
     [teardown, resetCallLog, finalizeCall]
   );
 
+  // ✅ Callee: ask permission while phase is STILL "incoming" (we have NOT set
+  //    "connecting" and have NOT emitted anything to the caller). Granted ->
+  //    connect normally. Denied -> stay "incoming"; Accept/Decline remain visible
+  //    (that IS the retry); we do NOT reject and do NOT tear down. Only a genuine
+  //    non-permission failure ends the call.
   const acceptCall = useCallback(async () => {
     if (
       phaseRef.current !== "incoming" ||
@@ -632,6 +695,7 @@ export function useCall() {
     const id = callIdRef.current;
     const peerId = peer?._id || peerIdRef.current;
     if (!peerId) {
+      // corrupted (no peer id) -> ending is correct here, not a permission case
       try {
         socketRef.current.emit("call:reject", {
           callId: id,
@@ -642,9 +706,32 @@ export function useCall() {
       teardown();
       return;
     }
+    if (permBusyRef.current) return; // double-tap guard while a prompt is open
+
+    permBusyRef.current = true;
+    let perm;
     try {
+      perm = await requestMediaPermission(mediaTypeRef.current);
+    } finally {
+      permBusyRef.current = false;
+    }
+    if (phaseRef.current !== "incoming") return; // declined/hung-up during prompt
+    if (perm.mic !== "granted") {
+      toastRef.current?.error?.(
+        permMessage(perm, mediaTypeRef.current),
+        "Permission needed",
+        6000
+      );
+      setError(
+        perm.mic === "no-device" ? "No microphone" : "Microphone/camera blocked"
+      );
+      return; // stay incoming -> user can retry (re-prompt) or Decline. No auto-end.
+    }
+
+    try {
+      setError(null);
       setPhaseSafe("connecting");
-      const stream = await acquireLocal(mediaTypeRef.current);
+      const stream = await acquireLocal(mediaTypeRef.current); // instant: already granted
       const pc = pcRef.current || buildPc(iceServersRef.current || []);
       pc._callId = id;
       pc._peerId = peerId;
@@ -658,15 +745,19 @@ export function useCall() {
       }
     } catch (e) {
       const name = e?.name;
-      if (isMountedRef.current) {
-        if (name === "NotAllowedError" || name === "NotFoundError")
-          toastRef.current?.error?.(
-            "Microphone permission denied",
-            "Call",
-            4000
-          );
-        else toastRef.current?.error?.("Could not start call", "Call", 4000);
+      if (name === "NotAllowedError" || name === "NotFoundError") {
+        // shouldn't happen post-gate, but if permission vanished mid-step, do NOT
+        // auto-reject: revert to incoming + actionable message (same policy above).
+        toastRef.current?.error?.(
+          permMessage({ mic: "denied", cam: null }, mediaTypeRef.current),
+          "Permission needed",
+          6000
+        );
+        setPhaseSafe("incoming");
+        return;
       }
+      if (isMountedRef.current)
+        toastRef.current?.error?.("Could not start call", "Call", 4000);
       try {
         socketRef.current.emit("call:reject", {
           callId: id,
@@ -742,14 +833,88 @@ export function useCall() {
     if (isMountedRef.current) setMuted(next);
   }, [muted]);
 
-  const toggleVideo = useCallback(() => {
-    if (cameraUnavailable) return;
+  // ✅ Camera button = toggle when a live track exists, RETRY (re-acquire +
+  //    replaceTrack) when it doesn't. replaceTrack needs NO renegotiation, so
+  //    recovery is safe mid-call. If the call connected with no video SEND slot
+  //    (pure-audio degrade) we cannot add one without renegotiation, so we stop
+  //    the new track and tell the user to redial (honest, never a silent one-way).
+  //    (Signature unchanged; now async so it can await getUserMedia/replaceTrack —
+  //    an onClick handler ignores the returned Promise, so call sites don't move.)
+  const toggleVideo = useCallback(async () => {
+    if (phaseRef.current === "idle" || phaseRef.current === "incoming") return; // no call to attach video to
     const t = cameraTrackRef.current;
-    if (!t) return;
-    const next = !videoOff;
-    t.enabled = !next;
-    if (isMountedRef.current) setVideoOff(next);
-  }, [videoOff, cameraUnavailable]);
+    if (t && t.readyState === "live") {
+      const next = !videoOff;
+      t.enabled = !next;
+      if (isMountedRef.current) setVideoOff(next);
+      return;
+    }
+    if (permBusyRef.current) return;
+    permBusyRef.current = true;
+    try {
+      const preset = presetRef.current;
+      const base = getMediaConstraints(preset);
+      const ns = await navigator.mediaDevices.getUserMedia({
+        video: base.video,
+        audio: false,
+      });
+      const nt = ns.getVideoTracks()[0];
+      if (!nt) throw new Error("no video track");
+      try {
+        if ("contentHint" in nt)
+          nt.contentHint = preset.contentHint || "motion";
+      } catch {}
+      if (videoSenderRef.current) {
+        await videoSenderRef.current.replaceTrack(nt); // ✅ no renegotiation
+        await applyVideoSenderQuality(videoSenderRef.current, preset).catch(
+          () => {}
+        );
+      } else {
+        try {
+          nt.stop();
+        } catch {}
+        if (isMountedRef.current)
+          toastRef.current?.error?.(
+            "Camera was off when this call connected. Hang up and call again to use video.",
+            "Camera",
+            5000
+          );
+        return;
+      }
+      unbindCameraListeners(t);
+      if (t) {
+        try {
+          t.stop();
+        } catch {}
+      }
+      cameraTrackRef.current = nt;
+      bindCameraListeners(nt);
+      const s = localStreamRef.current;
+      if (s) {
+        const ov = s.getVideoTracks()[0];
+        if (ov && ov !== nt) s.removeTrack(ov);
+        s.addTrack(nt);
+        if (isMountedRef.current)
+          setLocalStream(new MediaStream(s.getTracks()));
+      }
+      if (isMountedRef.current) {
+        setCameraUnavailable(false);
+        setVideoOff(false);
+        setError(null);
+      }
+    } catch (e) {
+      const n = e?.name;
+      const msg =
+        n === "NotAllowedError" || n === "SecurityError"
+          ? "Camera access is blocked. Tap the 🔒 / camera icon in the address bar, set Camera to “Allow”, then tap the camera button again."
+          : n === "NotReadableError"
+          ? "Camera is busy — another tab or app is using it. Close that, then tap the camera button again."
+          : "No camera available on this device.";
+      if (isMountedRef.current) toastRef.current?.error?.(msg, "Camera", 6000);
+    } finally {
+      permBusyRef.current = false;
+    }
+  }, [videoOff, bindCameraListeners, unbindCameraListeners]);
 
   const switchCamera = useCallback(async () => {
     const t = cameraTrackRef.current;
@@ -916,11 +1081,15 @@ export function useCall() {
       } catch (e) {
         const name = e?.name;
         if (isMountedRef.current) {
+          // ✅ With the pre-flight in startCall this path is effectively dead
+          //    (mic already granted). If it ever fires (revoked mid-call), give
+          //    the same actionable text. An end here is unavoidable: the caller
+          //    has no UI state to retreat to and no local media to send.
           if (name === "NotAllowedError" || name === "NotFoundError")
             toastRef.current?.error?.(
-              "Microphone permission denied",
-              "Call",
-              4000
+              permMessage({ mic: "denied", cam: null }, mediaTypeRef.current),
+              "Permission needed",
+              6000
             );
           else toastRef.current?.error?.("Could not start call", "Call", 4000);
         }
