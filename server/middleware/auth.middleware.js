@@ -217,14 +217,12 @@ export const protect = async (req, res, next) => {
         ip: req.ip,
         requestId: req.requestId,
       });
-      return res
-        .status(401)
-        .json({
-          success: false,
-          message: "Authentication required",
-          code: ERROR_CODES.NO_TOKEN,
-          requestId: req.requestId,
-        });
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+        code: ERROR_CODES.NO_TOKEN,
+        requestId: req.requestId,
+      });
     }
 
     const token = authHeader.split(" ")[1];
@@ -234,24 +232,20 @@ export const protect = async (req, res, next) => {
         ip: req.ip,
         requestId: req.requestId,
       });
-      return res
-        .status(401)
-        .json({
-          success: false,
-          message: "Token is required",
-          code: ERROR_CODES.EMPTY_TOKEN,
-          requestId: req.requestId,
-        });
+      return res.status(401).json({
+        success: false,
+        message: "Token is required",
+        code: ERROR_CODES.EMPTY_TOKEN,
+        requestId: req.requestId,
+      });
     }
     if (token.length > 2048) {
-      return res
-        .status(401)
-        .json({
-          success: false,
-          message: "Invalid token",
-          code: ERROR_CODES.INVALID_TOKEN,
-          requestId: req.requestId,
-        });
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token",
+        code: ERROR_CODES.INVALID_TOKEN,
+        requestId: req.requestId,
+      });
     }
 
     let decoded;
@@ -265,15 +259,13 @@ export const protect = async (req, res, next) => {
         userAgent: req.get("user-agent")?.substring(0, 100),
         requestId: req.requestId,
       });
-      return res
-        .status(tokenError.status)
-        .json({
-          success: false,
-          message: tokenError.message,
-          code: tokenError.code,
-          shouldRefresh: tokenError.shouldRefresh,
-          requestId: req.requestId,
-        });
+      return res.status(tokenError.status).json({
+        success: false,
+        message: tokenError.message,
+        code: tokenError.code,
+        shouldRefresh: tokenError.shouldRefresh,
+        requestId: req.requestId,
+      });
     }
 
     if (decoded.sessionId) {
@@ -323,14 +315,12 @@ export const protect = async (req, res, next) => {
         ip: req.ip,
         requestId: req.requestId,
       });
-      return res
-        .status(401)
-        .json({
-          success: false,
-          message: "Invalid token subject",
-          code: ERROR_CODES.INVALID_TOKEN,
-          requestId: req.requestId,
-        });
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token subject",
+        code: ERROR_CODES.INVALID_TOKEN,
+        requestId: req.requestId,
+      });
     }
 
     const user = await User.findById(decoded.userId)
@@ -344,14 +334,12 @@ export const protect = async (req, res, next) => {
         ip: req.ip,
         requestId: req.requestId,
       });
-      return res
-        .status(401)
-        .json({
-          success: false,
-          message: "User no longer exists",
-          code: ERROR_CODES.USER_NOT_FOUND,
-          requestId: req.requestId,
-        });
+      return res.status(401).json({
+        success: false,
+        message: "User no longer exists",
+        code: ERROR_CODES.USER_NOT_FOUND,
+        requestId: req.requestId,
+      });
     }
     if (!user.isActive || user.deletedAt) {
       await safeLogAudit(req, "auth_failed", {
@@ -361,14 +349,12 @@ export const protect = async (req, res, next) => {
         ip: req.ip,
         requestId: req.requestId,
       });
-      return res
-        .status(403)
-        .json({
-          success: false,
-          message: "Your account is inactive or has been deleted",
-          code: ERROR_CODES.ACCOUNT_INACTIVE,
-          requestId: req.requestId,
-        });
+      return res.status(403).json({
+        success: false,
+        message: "Your account is inactive or has been deleted",
+        code: ERROR_CODES.ACCOUNT_INACTIVE,
+        requestId: req.requestId,
+      });
     }
 
     req.user = user;
@@ -391,14 +377,12 @@ export const protect = async (req, res, next) => {
       ip: req.ip,
       requestId: req.requestId,
     });
-    return res
-      .status(401)
-      .json({
-        success: false,
-        message: "Authentication failed",
-        code: ERROR_CODES.AUTH_FAILED,
-        requestId: req.requestId,
-      });
+    return res.status(401).json({
+      success: false,
+      message: "Authentication failed",
+      code: ERROR_CODES.AUTH_FAILED,
+      requestId: req.requestId,
+    });
   }
 };
 
@@ -408,13 +392,11 @@ export const protect = async (req, res, next) => {
 
 export const adminOnly = async (req, res, next) => {
   if (!req.user)
-    return res
-      .status(401)
-      .json({
-        success: false,
-        message: "Authentication required",
-        code: ERROR_CODES.NO_USER,
-      });
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required",
+      code: ERROR_CODES.NO_USER,
+    });
   if (!ADMIN_ROLES.includes(req.user.role)) {
     await safeLogAudit(req, "admin_access_denied", {
       userId: req.user._id,
@@ -424,26 +406,22 @@ export const adminOnly = async (req, res, next) => {
       method: req.method,
       ip: req.ip,
     });
-    return res
-      .status(403)
-      .json({
-        success: false,
-        message: "Admin access required",
-        code: ERROR_CODES.FORBIDDEN,
-      });
+    return res.status(403).json({
+      success: false,
+      message: "Admin access required",
+      code: ERROR_CODES.FORBIDDEN,
+    });
   }
   next();
 };
 
 export const superadminOnly = async (req, res, next) => {
   if (!req.user)
-    return res
-      .status(401)
-      .json({
-        success: false,
-        message: "Authentication required",
-        code: ERROR_CODES.NO_USER,
-      });
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required",
+      code: ERROR_CODES.NO_USER,
+    });
   if (req.user.role !== SUPERADMIN_ROLE) {
     await safeLogAudit(req, "superadmin_access_denied", {
       userId: req.user._id,
@@ -453,26 +431,22 @@ export const superadminOnly = async (req, res, next) => {
       method: req.method,
       ip: req.ip,
     });
-    return res
-      .status(403)
-      .json({
-        success: false,
-        message: "Superadmin access required",
-        code: ERROR_CODES.FORBIDDEN,
-      });
+    return res.status(403).json({
+      success: false,
+      message: "Superadmin access required",
+      code: ERROR_CODES.FORBIDDEN,
+    });
   }
   next();
 };
 
 export const requireVerified = async (req, res, next) => {
   if (!req.user)
-    return res
-      .status(401)
-      .json({
-        success: false,
-        message: "Authentication required",
-        code: ERROR_CODES.NO_USER,
-      });
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required",
+      code: ERROR_CODES.NO_USER,
+    });
   if (!req.user.isVerified) {
     await safeLogAudit(req, "unverified_access_attempt", {
       userId: req.user._id,
@@ -481,58 +455,37 @@ export const requireVerified = async (req, res, next) => {
       method: req.method,
       ip: req.ip,
     });
-    return res
-      .status(403)
-      .json({
-        success: false,
-        message: "Email verification required",
-        code: ERROR_CODES.EMAIL_NOT_VERIFIED,
-        requiresVerification: true,
-      });
+    return res.status(403).json({
+      success: false,
+      message: "Email verification required",
+      code: ERROR_CODES.EMAIL_NOT_VERIFIED,
+      requiresVerification: true,
+    });
   }
   next();
 };
 
-export const optionalAuth = async (req, res, next) => {
-  req.requestId = crypto.randomUUID();
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    req.isAuthenticated = false;
-    return next();
-  }
-  const token = authHeader.split(" ")[1];
-  if (!token || token.trim() === "" || token.length > 2048) {
-    req.isAuthenticated = false;
-    return next();
-  }
+export const optionalAuth = (req, res, next) => {
   try {
-    const decoded = verifyAccessToken(token);
-    if (decoded.sessionId) {
-      const sessionValidation = await validateSession(
-        decoded.sessionId,
-        decoded.userId,
-        req
-      );
-      if (!sessionValidation.valid) {
-        req.isAuthenticated = false;
-        return next();
-      }
-    }
-    if (!mongoose.Types.ObjectId.isValid(decoded.userId)) {
-      req.isAuthenticated = false;
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+    if (!token) return next(); // anonymous -> fine for logout
+    let payload;
+    try {
+      payload = verifyAccessToken(token);
+    } catch {
+      // your existing verifier
       return next();
-    } // ✅ guard
-    const user = await User.findById(decoded.userId)
-      .select("-password -refreshToken -twoFactorSecret -twoFactorBackupCodes")
-      .lean();
-    if (user && user.isActive && !user.deletedAt) {
-      req.user = user;
-      req.isAuthenticated = true;
-    } else req.isAuthenticated = false;
+    } // expired/invalid -> anonymous, do NOT 401
+    req.user = {
+      _id: payload.userId ?? payload.id,
+      role: payload.role,
+      sessionId: payload.sessionId,
+    };
+    return next();
   } catch {
-    req.isAuthenticated = false;
+    return next(); // never block logout
   }
-  next();
 };
 
 export default protect;

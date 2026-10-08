@@ -12,8 +12,11 @@ import {
   loginUser,
   getCurrentUser,
   refreshAccessToken,
-  logoutUser,
 } from "../services/authService";
+// NOTE: logoutUser is intentionally NOT imported here. The instant logout beacons
+// the revoke directly (sendBeacon / fetch keepalive) so it survives unload; an
+// axios call would be cancelled the moment we navigate. logoutUser stays exported
+// in authService for any other caller, but the hot path doesn't use it.
 import { unsubscribeFromPush } from "../utils/alerts";
 import {
   setSigningKey,
@@ -52,6 +55,17 @@ const normalizeUser = (u) => {
   if (!id) return u;
   return { ...u, _id: id, id };
 };
+
+// Same base rule as refreshAccessToken / the documented precondition: PROD uses
+// the RELATIVE "/api" (Vercel rewrite -> same-origin -> the Lax refresh cookie
+// rides the beacon). DEV falls back to the absolute localhost only if VITE_API_URL
+// is unset. (In dev, if that base is cross-origin, the Lax cookie won't ride the
+// beacon and the server-side revoke may no-op — client logout is still instant and
+// complete; clear the dev cookie via Clear site data. Prod, the actual complaint,
+// is fully correct.)
+const authBase = () =>
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? "http://localhost:5000/api" : "/api");
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(getStoredUser);
@@ -93,7 +107,11 @@ export const AuthProvider = ({ children }) => {
     [postToChannel]
   );
 
-  // ✅ Stable clearSession — clears signing key + storage + state
+  // ✅ Stable clearSession — clears signing key + storage + state.
+  //    (Used by the cross-tab / storage / init paths. The logout path below does
+  //    its OWN synchronous clear so it can control ordering and must NOT be
+  //    skipped by the isMountedRef guard — we are about to unmount and still have
+  //    to navigate.)
   const clearSession = useCallback(
     (broadcastLogout = true) => {
       if (!isMountedRef.current) return;
@@ -473,19 +491,127 @@ export const AuthProvider = ({ children }) => {
   );
 
   // ==========================================
-  // LOGOUT
+  // LOGOUT  (✅ INSTANT — synchronous local wipe + detached beacon + immediate nav)
   // ==========================================
-  const logout = useCallback(async () => {
+  // This is NON-async and NON-throwing. Nothing on the critical path waits on the
+  // network. Order is load-bearing:
+  //   1) synchronous local teardown  -> UI is logged-out the same tick (µs)
+  //   2) synchronous broadcast/dispatch -> other tabs + same-tab socket/call clean up
+  //   3) DETACHED server revoke via sendBeacon (survives unload; no await) -> DB revoke
+  //   4) DETACHED best-effort hygiene (push / SW / caches) -> never blocks
+  //   5) immediate hard navigate -> nukes ALL in-memory React state (incl. any hot
+  //      mic / live RTCPeerConnection / socket) and forces a fresh document
+  // The awaited version put steps 3-4 BEFORE step 5, which is exactly the latency
+  // you felt (and, worse, an in-flight axios call gets CANCELLED on navigate, so the
+  // revoke frequently never reached the server — the race that made logout
+  // browser-dependent). Beacon fixes both.
+  const logout = useCallback(() => {
     try {
-      await unsubscribeFromPush();
-    } catch {}
+      // 1) SYNCHRONOUS local wipe. Deliberately NOT via clearSession(): that helper
+      //    early-returns when unmounted, but we ARE about to unmount and MUST still
+      //    finish + navigate. Guard only the setState calls (no-op if already gone).
+      try {
+        clearSigningKey();
+      } catch {}
+      try {
+        localStorage.removeItem("accessToken");
+        localStorage.removeItem("user");
+        sessionStorage.clear();
+      } catch {}
+      if (isMountedRef.current) {
+        setAccessToken(null);
+        setUser(null);
+      }
 
-    try {
-      await logoutUser();
-    } catch {}
+      // 2) Synchronous cross-tab + same-tab teardown signals (postMessage /
+      //    dispatchEvent are instant; listeners then drop the socket / end any call).
+      try {
+        postToChannel({ type: "auth-logout" });
+      } catch {}
+      try {
+        window.dispatchEvent(new Event("auth:logout"));
+      } catch {}
 
-    clearSession(true);
-  }, [clearSession]);
+      // 3) DETACHED server revoke. sendBeacon is guaranteed to be delivered across
+      //    unload (that's its whole purpose); fetch(keepalive) is the fallback. We
+      //    send ONLY cookies (no Bearer, no signing) — optionalAuth + the no-
+      //    verifySignature logout route want exactly that, and it avoids shipping a
+      //    possibly-expired access token. Relative "/api" in prod => same-origin =>
+      //    the Lax refresh cookie rides => the server can revoke it.
+      try {
+        const url = `${authBase()}/auth/logout`;
+        let queued = false;
+        try {
+          const body = new Blob(["{}"], { type: "application/json" });
+          queued = !!navigator.sendBeacon?.(url, body);
+        } catch {
+          queued = false;
+        }
+        if (!queued) {
+          // keepalive:true lets the request outlive the page; credentials:"include"
+          // ensures the cookie is sent (same-origin in prod).
+          fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+            credentials: "include",
+            keepalive: true,
+          }).catch(() => {});
+        }
+      } catch {
+        try {
+          fetch(`${authBase()}/auth/logout`, {
+            method: "POST",
+            credentials: "include",
+            keepalive: true,
+          }).catch(() => {});
+        } catch {}
+      }
+
+      // 4) DETACHED best-effort hygiene. Fire-and-forget; a hung push/SW/cache call
+      //    can never stall logout because we never await these. (The once-per-deploy
+      //    manual "Clear site data" is what truly retires a stale bundle; this is
+      //    opportunistic cleanup so the NEXT load is fresh.)
+      try {
+        unsubscribeFromPush?.()?.catch?.(() => {});
+      } catch {}
+      try {
+        if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+          navigator.serviceWorker
+            .getRegistrations()
+            .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+            .catch(() => {});
+        }
+      } catch {}
+      try {
+        if (typeof caches !== "undefined") {
+          caches
+            .keys()
+            .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+            .catch(() => {});
+        }
+      } catch {}
+
+      // 5) IMMEDIATE hard navigate. Nukes memory (auth context, socket, any live
+      //    call/mic) and loads a fresh /login document. This is the line that makes
+      //    logout identical across Chrome/Brave/Safari/Firefox — a soft navigate
+      //    could let a stale guard re-auth from memory or leave a call hot.
+      try {
+        if (
+          typeof window !== "undefined" &&
+          window.location.pathname !== "/login"
+        ) {
+          window.location.replace("/login");
+        }
+      } catch {}
+    } catch {
+      // Absolute last-resort: even if something above threw unexpectedly, never
+      // leave the user stuck logged-in. Force the navigation.
+      try {
+        window.location.replace("/login");
+      } catch {}
+    }
+  }, [postToChannel]);
 
   // Stable context value — prevents consumer re-renders
   const contextValue = useMemo(

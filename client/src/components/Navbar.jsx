@@ -16,10 +16,15 @@ import { useAuth } from "../context/AuthContext.jsx";
 
 // ✅ CHANGED — public/ assets are served at the site ROOT, so reference them with
 // BASE_URL (== "/" at a root deploy, but base-proof). The old "../../public/images/..."
-// 404s because Vite strips the "public" segment. BRAND_LOGO fixes the same latent bug
+//  404s because Vite strips the "public" segment. BRAND_LOGO fixes the same latent bug
 // on nested routes (./images/logo.png -> /users/images/logo.png on /users/:id).
 const DEFAULT_AVATAR = `${import.meta.env.BASE_URL}images/default-avatar.png`;
 const BRAND_LOGO = `${import.meta.env.BASE_URL}images/logo.png`;
+
+// ✅ Mirror the backend admin set (server/middleware ADMIN_ROLES + App.jsx). The old
+// `role === "admin"` check silently excluded "superadmin", so a superadmin got the
+// USER navbar and no admin badges.
+const ADMIN_ROLES = ["admin", "superadmin"];
 
 // ✅ CHANGED — graceful degradation: if a photo URL 404s (e.g. a Cloudinary asset that
 // deleteProfilePhoto destroyed, or any dead link), swap to the default silhouette instead
@@ -46,7 +51,7 @@ function Navbar() {
   const { user, logout } = useAuth();
   const { socket } = useSocket();
 
-  const isAdmin = user?.role === "admin";
+  const isAdmin = ADMIN_ROLES.includes(user?.role); // ✅ was: user?.role === "admin"
 
   // UI States
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -80,9 +85,9 @@ function Navbar() {
     return primary?.url || primary?.secure_url || null;
   };
 
-  // ✅ MERGED: Single effect for admin data
+  // ✅ MERGED: Single effect for admin data (now includes superadmin)
   useEffect(() => {
-    if (!user || user.role !== "admin") return;
+    if (!user || !ADMIN_ROLES.includes(user.role)) return; // ✅ was: user.role !== "admin"
 
     const loadAdminData = async () => {
       try {
@@ -264,17 +269,29 @@ function Navbar() {
     debouncedLoadChatData,
   ]);
 
-  const handleLogout = async () => {
+  // ✅ CHANGED — logout OWNS the redirect (hard location.replace inside
+  // AuthContext.logout). The old code soft-navigated here in a `finally`, which
+  // raced the in-flight server revoke and left the stale service worker + any
+  // live call/socket in memory (the "works on Chrome only" symptom). Close the
+  // menus, await logout (it normally never resolves because the page unloads),
+  // and only fall back to a hard nav if logout somehow threw before navigating.
+  const handleLogout = () => {
+    setProfileOpen(false);
+    setMobileOpen(false);
+    setChatOpen(false);
+    setNotificationsOpen(false);
+    // ✅ logout() is synchronous + non-throwing: it wipes local state, beacons the
+    //    server revoke (fire-and-forget, survives unload), detaches push/SW/cache
+    //    hygiene, and hard-navigates to /login on this same tick. No await, no
+    //    "logging out…" stall. The catch is pure belt-and-suspenders.
     try {
-      await logout();
-    } catch (error) {
-      console.error("Logout error:", error);
-    } finally {
-      setProfileOpen(false);
-      setMobileOpen(false);
-      setChatOpen(false);
-      setNotificationsOpen(false);
-      navigate("/login", { replace: true }); // Use navigate instead of window.location
+      logout();
+    } catch {
+      try {
+        window.location.replace("/login");
+      } catch {
+        navigate("/login", { replace: true });
+      }
     }
   };
 

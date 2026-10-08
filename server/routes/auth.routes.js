@@ -32,7 +32,11 @@ import {
   constantTimeCompare,
 } from "../utils/generateToken.js";
 
-import { protect } from "../middleware/auth.middleware.js";
+// ✅ FIXED — optionalAuth was USED below but NEVER imported here, so this module
+//    threw "ReferenceError: optionalAuth is not defined" at load and the server
+//    could not boot. Import it alongside protect (and make sure the middleware
+//    file actually exports it — see companion edit A).
+import { protect, optionalAuth } from "../middleware/auth.middleware.js";
 import { verifySignature } from "../middleware/verifySignature.js";
 
 import {
@@ -83,24 +87,36 @@ if (TRUSTED_ORIGINS.size === 0) {
   throw new Error("CLIENT_URL contains no valid origin");
 }
 
+// 🔒 Keep the refresh-cookie maxAge in sync with the controller's
+//    REFRESH_TOKEN_EXPIRY_MS (30 days). Duplicating the literal here is how the
+//    OAuth cookie expiry drifts from the DB row expiry.
+const REFRESH_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
 const OAUTH_STATE_COOKIE = "mm_oauth_state";
+// ✅ FIXED — was sameSite: IS_PRODUCTION ? "none" : "lax". The SPA calls /api
+//    RELATIVELY (Vercel rewrite), so this cookie is FIRST-PARTY; "lax" still
+//    rides the cross-site TOP-LEVEL GET navigation that is the OAuth callback,
+//    and "none" only widens the CSRF/third-party surface and invites Brave's
+//    third-party-cookie blocking. Mirrors the controller's documented precondition.
 const oauthStateOpts = {
   httpOnly: true,
   secure: IS_PRODUCTION,
-  sameSite: IS_PRODUCTION ? "none" : "lax",
+  sameSite: "lax",
   maxAge: 10 * 60 * 1000,
   path: "/",
 };
 
+// ✅ FIXED — same rationale: "lax", matching the controller's REACTIVATE_COOKIE.
 const REACTIVATE_COOKIE = {
   httpOnly: true,
   secure: IS_PRODUCTION,
-  sameSite: IS_PRODUCTION ? "none" : "lax",
+  sameSite: "lax",
   maxAge: 10 * 60 * 1000,
   path: "/",
 };
 
 // ✅ Open-redirect safe: only redirect to a path on a trusted origin.
+//    (Blocks "//evil.com" protocol-relative and absolute cross-origin targets.)
 const safeRedirect = (res, path) => {
   try {
     const cleanPath = String(path).startsWith("/") ? String(path) : `/${path}`;
@@ -147,7 +163,13 @@ router.post(
   reactivateAccount
 );
 
-router.post("/logout", jsonLimit("1kb"), logout);
+// ✅ logout is reached via optionalAuth (never 401s) so an EXPIRED access token
+//    still clears + revokes the long-lived refresh cookie — this is the actual
+//    fix for "logout works only on Chrome". No rate limiter on purpose: it is
+//    idempotent and cheap (one indexed hash lookup; no-op without the cookie),
+//    and 429-ing it could trap a user who cannot sign out. verifySignature is
+//    intentionally absent so logout works even with no/​stale signing key.
+router.post("/logout", optionalAuth, jsonLimit("1kb"), logout);
 
 router.post("/refresh", refreshLimiter, jsonLimit("1kb"), refreshAccessToken);
 
@@ -226,7 +248,7 @@ router.get(
   oauthLimiter,
   passport.authenticate("google", {
     session: false,
-    state: false,
+    state: false, // manual constant-time cookie-vs-query check below instead
     failureRedirect: `${PRIMARY_ORIGIN}/login?error=google_failed`,
   }),
   async (req, res) => {
@@ -302,13 +324,16 @@ router.get(
 
       // ── 2FA ──────────
       if (user.twoFactorEnabled) {
+        // ✅ FIXED — sameSite "lax" (was "none" in prod), matching the
+        //    controller's PENDING_2FA_COOKIE so the half-flow cookie is
+        //    first-party and Brave-safe.
         res.cookie(
           "oauth2faPending",
           generateTempToken(user._id.toString(), "oauth-2fa-pending"),
           {
             httpOnly: true,
             secure: IS_PRODUCTION,
-            sameSite: IS_PRODUCTION ? "none" : "lax",
+            sameSite: "lax",
             maxAge: 5 * 60 * 1000,
             path: "/",
           }
@@ -322,11 +347,15 @@ router.get(
         familyId: crypto.randomUUID(),
       });
 
+      // ✅ FIXED — sameSite "lax" + named maxAge (was "none" + a duplicated
+      //    30-day literal), matching login/refresh so a Google session and a
+      //    password session produce an identical, first-party, Brave-safe cookie
+      //    whose deletion tuple matches clearRefreshTokenCookie in the controller.
       res.cookie("refreshToken", refreshToken, {
         httpOnly: true,
         secure: IS_PRODUCTION,
-        sameSite: IS_PRODUCTION ? "none" : "lax",
-        maxAge: 30 * 24 * 60 * 60 * 1000,
+        sameSite: "lax",
+        maxAge: REFRESH_COOKIE_MAX_AGE_MS,
         path: "/",
       });
 

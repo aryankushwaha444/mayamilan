@@ -73,6 +73,15 @@ const debugLog = (...args) => {
   if (!IS_PRODUCTION) console.log(...args);
 };
 
+// 🔒 Strict string guard. Several auth endpoints (OTP / forgot / reset / change /
+// reactivate) read req.body fields WITHOUT a zod schema. Passing an object like
+// {"email":{"$ne":null}} straight into User.findOne({email}) turns it into a
+// Mongo OPERATOR (NoSQL injection) -> matches an arbitrary user / bypasses the
+// isVerified & OAuth checks / enumerates. A legit client always sends strings,
+// so rejecting non-strings here closes the hole with zero UX regression.
+const isStr = (v) => typeof v === "string" && v.length > 0 && v.length <= 256;
+const isOtp = (v) => typeof v === "string" && /^\d{4,10}$/.test(v);
+
 // ✅ Enumeration timing equalizer:
 // A syntactically valid argon2 hash used on the “user not found” path so that
 // path costs approximately the same as a real password verification.
@@ -391,6 +400,10 @@ const createSessionAndTokens = async (user, req, res) => {
 };
 
 const clearRefreshTokenCookie = (res) => {
+  // 🔒 Deletion matches on (name, domain, path). This MUST equal the options used
+  //    at set-time (path "/", no domain). secure/httpOnly/sameSite are echoed for
+  //    clarity but are NOT part of the deletion key, so set/clear staying in sync
+  //    here is what makes logout work on spec-strict engines (Safari/Firefox).
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: IS_PRODUCTION,
@@ -425,13 +438,18 @@ const verifyPassword = async (hash, password) => {
   }
 };
 
+// 🔒 Was: no sleep -> the "user not found" path returned ~100ms FASTER than the
+// wrong-password path (verifyPassword sleeps 50-149ms), a timing oracle that
+// reveals whether an email exists. Now it mirrors verifyPassword's jitter+argon2
+// so not-found, wrong-password, and the deletedAt early-returns (below) all cost
+// the same. The 80ms fallback only fires if DUMMY_HASH hasn't finished initializing.
 const dummyVerify = async (password) => {
+  const delay = Math.floor(Math.random() * 100) + 50;
+  await new Promise((resolve) => setTimeout(resolve, delay));
   if (DUMMY_HASH) {
     try {
       await argon2.verify(DUMMY_HASH, String(password));
     } catch {}
-  } else {
-    await new Promise((r) => setTimeout(r, 80));
   }
 };
 
@@ -641,6 +659,9 @@ export const login = async (req, res, next) => {
       const now = new Date();
 
       if (now > user.scheduledDeletionAt) {
+        // 🔒 Equalize: this branch used to return instantly (no argon2) -> a fast
+        //    timing signature that revealed "this email exists and is past grace".
+        await dummyVerify(password);
         await logAudit(req, "login_failed", {
           email,
           userId: user._id,
@@ -655,6 +676,7 @@ export const login = async (req, res, next) => {
 
       const currentAttempts = Number(user.reactivationAttempts) || 0;
       if (currentAttempts >= MAX_REACTIVATION_ATTEMPTS) {
+        await dummyVerify(password); // 🔒 equalize (was instant)
         await logAudit(req, "login_blocked", {
           email,
           userId: user._id,
@@ -674,6 +696,7 @@ export const login = async (req, res, next) => {
       );
 
       if (user.oauthProvider && user.oauthProvider !== "local") {
+        await dummyVerify(password); // 🔒 equalize (was instant -> OAuth-existence oracle)
         return res.status(403).json({
           success: false,
           message:
@@ -796,6 +819,10 @@ export const login = async (req, res, next) => {
 // GET CURRENT USER
 // ═══════════════════════════════════════════
 
+// NOTE: req.user here is whatever the auth middleware loaded. That middleware MUST
+// select the user WITHOUT +password (the password hash must never reach /me). The
+// response shape is intentionally left untouched so the working client keeps its
+// fields; the whitelisting concern is enforced at the middleware, not here.
 export const getMe = async (req, res) => {
   res.status(200).json({ success: true, user: req.user });
 };
@@ -804,27 +831,36 @@ export const getMe = async (req, res) => {
 // LOGOUT
 // ═══════════════════════════════════════════
 
+// ✅/🔒 Rewritten so logout WORKS even when the access token has expired (the exact
+// "Chrome only" failure): it revokes by the long-lived REFRESH COOKIE, not by
+// req.user, and audits from the stored session row when req.user is absent.
+// PRECONDITION (route layer, not this file): POST /api/auth/logout MUST be mounted
+// with `optionalAuth` (decode-if-present, NEVER 401), NOT `protect`. With `protect`
+// an expired access token 401s before this handler runs -> cookie never cleared.
 export const logout = async (req, res, next) => {
   try {
-    const refreshToken = req.cookies.refreshToken;
+    const refreshToken = req.cookies?.refreshToken;
+    let auditUser = req.user || null;
+
     if (refreshToken) {
       const tokenHash = hashToken(refreshToken);
-
-      const storedToken = await RefreshToken.findOne({
-        tokenHash,
-        revokedAt: null,
-      });
-
+      // Find by hash regardless of revokedAt so we can (a) audit the owner even
+      // without a valid access token and (b) avoid a double-revoke write.
+      const storedToken = await RefreshToken.findOne({ tokenHash });
       if (storedToken) {
-        storedToken.revokedAt = new Date();
-        await storedToken.save();
+        if (!auditUser) auditUser = { _id: storedToken.user, email: null };
+        if (!storedToken.revokedAt) {
+          storedToken.revokedAt = new Date();
+          storedToken.revokeReason = "manual_logout";
+          await storedToken.save();
+        }
       }
     }
 
-    if (req.user) {
+    if (auditUser?._id) {
       await logAudit(req, "logout", {
-        userId: req.user._id,
-        email: req.user.email,
+        userId: auditUser._id,
+        email: auditUser.email || null,
       });
     }
 
@@ -1158,6 +1194,13 @@ export const reactivateAccount = async (req, res, next) => {
     const reactivationToken =
       req.cookies?.reactivatePending || req.body?.reactivationToken;
 
+    // 🔒 Reject a non-string token from the body (operator/shape injection).
+    if (reactivationToken != null && typeof reactivationToken !== "string") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid reactivation token" });
+    }
+
     debugLog("🔑 Reactivation attempt received");
 
     if (!reactivationToken) {
@@ -1270,7 +1313,9 @@ export const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    if (!currentPassword || !newPassword) {
+    // 🔒 Strict string guards (no zod here): blocks {"$ne":...} operator injection
+    //    into argon2.compare / the breach lookup / the equality check.
+    if (!isStr(currentPassword) || !isStr(newPassword)) {
       return res.status(400).json({
         success: false,
         message: "Current password and new password are required.",
@@ -1380,7 +1425,11 @@ export const sendOTPCode = async (req, res, next) => {
     }
 
     const { email, name } = req.body;
-    if (!email || !name) {
+    // 🔒 Strict string guards: this endpoint has NO zod schema, so an object email
+    //    ({"$gt":""}) would be a Mongo operator in User.findOne({email}) and a
+    //    crafted name could reach the email template/headers. Legit clients send
+    //    strings, so this only rejects malformed/abusive input.
+    if (!isStr(email) || !isStr(name)) {
       return res
         .status(400)
         .json({ success: false, message: "Email and name are required" });
@@ -1442,7 +1491,9 @@ export const verifyOTPCode = async (req, res, next) => {
     }
 
     const { email, otp } = req.body;
-    if (!email || !otp) {
+    // 🔒 Strict guards (no zod): object email = operator injection into
+    //    User.findOne({email}); object/oversized otp feeds verifyOTP/redis keys.
+    if (!isStr(email) || !isOtp(otp)) {
       return res
         .status(400)
         .json({ success: false, message: "Email and OTP are required" });
@@ -1500,7 +1551,9 @@ export const forgotPassword = async (req, res, next) => {
     }
 
     const { email } = req.body;
-    if (!email) {
+    // 🔒 Strict guard (no zod): object email = operator injection into
+    //    User.findOne({email}) and into the per-email OTP limit key.
+    if (!isStr(email)) {
       return res
         .status(400)
         .json({ success: false, message: "Email is required" });
@@ -1583,7 +1636,10 @@ export const resetPassword = async (req, res, next) => {
 
     const { email, otp, newPassword } = req.body;
 
-    if (!email || !otp || !newPassword) {
+    // 🔒 Strict guards (no zod): object email/otp = operator injection + OTP
+    //    bypass surface; object newPassword would skip the length check (undefined<8
+    //    is false) and reach argon2.hash / the breach lookup.
+    if (!isStr(email) || !isOtp(otp) || !isStr(newPassword)) {
       return res.status(400).json({ success: false, message: genericMessage });
     }
 
@@ -1754,7 +1810,14 @@ export const loginWith2FA = async (req, res, next) => {
     const tempToken = req.cookies?.login2faPending || req.body?.tempToken;
     const { totpCode } = req.body;
 
-    if (!tempToken || !totpCode) {
+    // 🔒 Strict guards: object tempToken/totpCode would reach verifyTempToken /
+    //    verifyTotp with a non-string; reject cleanly.
+    if (
+      typeof tempToken !== "string" ||
+      !tempToken ||
+      typeof totpCode !== "string" ||
+      !totpCode
+    ) {
       return res
         .status(400)
         .json({ success: false, message: "Token and code required" });
@@ -1844,8 +1907,8 @@ export const loginWith2FA = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: "Login successful",
-      accessToken,
       signingKey,
+      accessToken,
       user: formatUserResponse(user),
     });
   } catch (error) {
@@ -1858,7 +1921,13 @@ export const completeOAuth2FA = async (req, res, next) => {
     const tempToken = req.cookies?.oauth2faPending || req.body?.tempToken;
     const { totpCode } = req.body;
 
-    if (!tempToken || !totpCode) {
+    // 🔒 Strict guards (same rationale as loginWith2FA).
+    if (
+      typeof tempToken !== "string" ||
+      !tempToken ||
+      typeof totpCode !== "string" ||
+      !totpCode
+    ) {
       return res
         .status(400)
         .json({ success: false, message: "Token and code required" });
