@@ -25,10 +25,8 @@ const MEDIA_HOSTS = [
   /([a-z0-9-]+\.)?tenor\.googleusercontent\.com$/i,
 ];
 
-// ✅ CHANGED (E1): built from char codes so the SOURCE is pure ASCII and can
-//    NEVER be corrupted by copy/paste into /[ -]/g (the recurring silent bug
-//    that stripped spaces/hyphens from the peer name and failed to strip real
-//    control chars). Behaviorally identical to /[\u0000-\u001F\u007F]/g.
+// ✅ Built from char codes -> pure ASCII source, paste-proof (was the recurring
+//    /[ -]/g corruption that mangled the peer name and failed to strip control chars).
 const CONTROL_CHARS_RE = new RegExp(
   "[" +
     String.fromCharCode(0) +
@@ -86,10 +84,16 @@ export default function InCallOverlay() {
   const [speakerOn, setSpeakerOn] = useState(true);
   const [mediaBlocked, setMediaBlocked] = useState(false);
 
-  // ✅ in-app permission panel state
-  const [micPerm, setMicPerm] = useState(null); // 'prompt' | 'denied' | 'granted' | 'no-device' | null
-  const [hint, setHint] = useState(""); // ✅ transient feedback so a click is never silent
-  const permStatusRef = useRef(null); // ✅ PermissionStatus, for .onchange (same-tab toggle)
+  // 🔒 PERMISSION-FIX: the panel MODE/MESSAGE is now driven by call.permissionIssue.kind
+  //    (a REAL probe from the hook), NOT by a second independent navigator.permissions
+  //    query that could disagree with the actual mic state. So `micPerm` state is
+  //    REMOVED entirely, and with it the `micPerm === "granted"` auto-resume effect
+  //    that could thrash when site=granted but OS=blocked. Resume is now purely
+  //    edge-triggered (onchange / focus / visibility / the button), each running the
+  //    hook's real probe. permissions.query is kept ONLY to attach .onchange as a
+  //    same-tab wake-up.
+  const [hint, setHint] = useState(""); // transient feedback so a click is never silent
+  const permStatusRef = useRef(null); // PermissionStatus, for .onchange wake-up
   const hintTimerRef = useRef(null);
 
   const isVideo = call.mediaType === "video";
@@ -208,16 +212,18 @@ export default function InCallOverlay() {
   const showHint = useCallback((msg) => {
     setHint(msg);
     if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
-    hintTimerRef.current = setTimeout(() => setHint(""), 5000);
+    hintTimerRef.current = setTimeout(() => setHint(""), 6000);
   }, []);
 
-  // ✅ Authoritative permission mode + LIVE onchange. permissions.query is LOCAL and
-  //    cannot be forged. We KEEP the PermissionStatus and attach .onchange because
-  //    toggling Allow in the address-bar dropdown happens in the SAME tab and fires
-  //    NO focus/visibilitychange — onchange is the only in-tab signal. When it flips
-  //    to granted we resume automatically (no button press). Re-runs whenever the
-  //    hook refreshes the probe (call.permissionIssue.probe) so a stale button
-  //    self-corrects.
+  // 🔒 PERMISSION-FIX: ONE wake-up effect replaces the old three (query/micPerm mode,
+  //    focus-only, granted-auto). When the panel is open we attach onchange (same-tab
+  //    site grant) + focus/visibility (OS / other-tab / settings-page grant); every
+  //    wake calls resolvePermission, which runs the hook's REAL getUserMedia probe.
+  //    Granted -> panel clears + resumes. Not granted -> the hook re-arms with the
+  //    accurate kind and this effect re-runs (edge-triggered, permBusy-guarded, so
+  //    NO tight loop — the old micPerm==='granted' effect that could thrash is gone).
+  //    On close we clear the stale hint + its timer (the "appeared without clicking"
+  //    bleed) and detach onchange.
   useEffect(() => {
     if (!call.permissionIssue) {
       if (permStatusRef.current) {
@@ -226,11 +232,6 @@ export default function InCallOverlay() {
         } catch {}
         permStatusRef.current = null;
       }
-      setMicPerm(null);
-      // ✅ CHANGED (E2): clear any stale hint + its timer so a leftover
-      //    "Still blocked" message from a PREVIOUS panel can never bleed into a
-      //    later panel in the same mount (the "hint shows but I didn't click
-      //    continue" symptom in the screenshot).
       setHint("");
       if (hintTimerRef.current) {
         clearTimeout(hintTimerRef.current);
@@ -239,35 +240,23 @@ export default function InCallOverlay() {
       return;
     }
     let alive = true;
+    const wake = () => {
+      if (!alive) return;
+      void call.resolvePermission?.(); // real probe; self-guards + only resumes on grant
+    };
     (async () => {
-      let status = null;
       let st = null;
       try {
-        status =
+        st =
           (await navigator.permissions?.query?.({ name: "microphone" })) ||
           null;
       } catch {}
       if (!alive) return;
-      st = status?.state || null;
-      if (!st)
-        st =
-          call.permissionIssue.probe === "no-device"
-            ? "no-device"
-            : call.permissionIssue.probe === "denied" ||
-              call.permissionIssue.probe === "error"
-            ? "denied"
-            : "prompt";
-      setMicPerm(st);
-      permStatusRef.current = status || null;
-      if (status) {
-        status.onchange = () => {
-          if (!alive) return;
-          const s = status.state;
-          setMicPerm(s);
-          if (s === "granted") void call.resolvePermission?.(); // ✅ auto-resume the instant they Allow in-tab
-        };
-      }
+      permStatusRef.current = st || null;
+      if (st) st.onchange = wake; // any site-level change -> re-probe
     })();
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
     return () => {
       alive = false;
       if (permStatusRef.current) {
@@ -275,42 +264,10 @@ export default function InCallOverlay() {
           permStatusRef.current.onchange = null;
         } catch {}
       }
-    };
-  }, [
-    call.permissionIssue,
-    call.permissionIssue?.probe,
-    call.resolvePermission,
-  ]);
-
-  // ✅ granted race / tab-away-and-back fallback (covers changing it in another tab or
-  //    the full site-settings page, where onchange may not fire for this document).
-  useEffect(() => {
-    if (!call.permissionIssue) return;
-    const onFocus = async () => {
-      let st = null;
-      try {
-        st =
-          (await navigator.permissions?.query?.({ name: "microphone" }))
-            ?.state || null;
-      } catch {}
-      if (st === "prompt" || st == null) return; // don't re-prompt on focus
-      call.resolvePermission?.(); // granted -> resumes; denied -> refreshes panel, no dialog
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, [call.permissionIssue, call.resolvePermission]);
-
-  // ✅ auto-resume the moment the panel learns it's already allowed. (The retry-loop
-  //    that a re-armed caller-media panel could otherwise cause is prevented
-  //    hook-side by EDIT H1, so no one-shot guard is needed here.)
-  useEffect(() => {
-    if (call.permissionIssue && micPerm === "granted")
-      call.resolvePermission?.();
-  }, [micPerm, call.permissionIssue, call.resolvePermission]);
 
   useEffect(
     () => () => {
@@ -419,30 +376,57 @@ export default function InCallOverlay() {
     isVideo && call.localStream && call.localStream.getVideoTracks().length > 0;
 
   // ═══════════════════════════════════════════════════════════════════════
-  // ✅ IN-APP PERMISSION PANEL. Adaptive + never silent + never stale:
-  //    prompt -> real re-prompt; denied -> lock guide + Continue that resumes on
-  //    flip (via onchange) and shows an inline hint if it's STILL blocked; no-device
-  //    -> honest message. A click that can't grant now always prints feedback, and
-  //    the feedback no longer contradicts the button label or bleeds across panels.
+  // 🔒 PERMISSION PANEL — kind-driven (REAL probe), accurate per blocker, never
+  //    shown when the mic actually works, never contradicts its own button, and
+  //    resumes automatically the instant a real probe passes (onchange/focus/
+  //    visibility/button). The body and the hint agree on where to fix it.
   // ═══════════════════════════════════════════════════════════════════════
   if (call.permissionIssue) {
-    const blocked = micPerm === "denied";
-    const noDevice = micPerm === "no-device";
-    const connecting = micPerm === "granted";
-    const primaryLabel = connecting
-      ? "Connecting…"
-      : noDevice
+    const kind = call.permissionIssue.kind;
+    const siteDenied = kind === "site-denied";
+    const osBlocked = kind === "os-blocked";
+    const blockedUnknown = kind === "blocked-unknown";
+    const occupied = kind === "occupied";
+    const noDevice = kind === "no-device";
+    const prompting = kind === "prompt";
+    const lockHelps = siteDenied || blockedUnknown; // address-bar instruction is correct
+
+    const primaryDisabled = noDevice;
+    const primaryLabel = noDevice
       ? "No microphone"
-      : blocked
-      ? "I've allowed it — continue"
-      : "Allow microphone";
-    const primaryDisabled = connecting || noDevice;
+      : occupied
+      ? "Try again"
+      : prompting
+      ? "Allow microphone"
+      : osBlocked
+      ? "I've enabled it — continue"
+      : "I've allowed it — continue";
+
+    const title = noDevice
+      ? "No microphone found"
+      : occupied
+      ? "Microphone in use"
+      : osBlocked
+      ? "System is blocking the microphone"
+      : siteDenied
+      ? "Microphone is blocked"
+      : prompting
+      ? "Microphone permission needed"
+      : "Microphone access needed";
+
     const body = noDevice
       ? "No microphone was found. Connect one (or use a device with a built-in mic), then try again."
-      : // ✅ CHANGED (E5): aligned with the auto-connect hint so body and hint agree.
-      blocked
+      : occupied
+      ? "Another app or browser tab is using the microphone. Close it, then press try again — the call connects automatically once it's free."
+      : osBlocked
+      ? "The site permission is already allowed, but your device or operating system is blocking the microphone for this browser — so the lock icon won't help. Open your system privacy/microphone settings (macOS: System Settings → Privacy & Security → Microphone; Windows: Settings → Privacy → Microphone) and make sure this browser is allowed and a microphone is enabled. The call connects automatically once it is."
+      : siteDenied
       ? "Your browser has blocked the microphone for this site, so it won't ask again automatically. Open the lock / camera icon in the address bar, set Microphone to “Allow” — the call connects on its own the moment it's allowed. You can also press continue below after allowing."
-      : "Tap “Allow microphone” so Maya~Milan can hear you on this call.";
+      : prompting
+      ? "Tap “Allow microphone” so Maya~Milan can hear you on this call."
+      : blockedUnknown
+      ? "We couldn't read the microphone permission for this browser. Try the lock / camera icon in the address bar → Microphone → Allow, and also check your system microphone privacy settings. The call connects automatically once it's allowed."
+      : "We couldn't access the microphone. Check the lock icon and your system mic settings, then try again.";
 
     const cardStyle = {
       position: "fixed",
@@ -463,6 +447,8 @@ export default function InCallOverlay() {
       padding: "22px 20px",
       boxShadow: "0 18px 60px rgba(0,0,0,0.45)",
       textAlign: "center",
+      maxHeight: "92vh",
+      overflowY: "auto",
     };
     const titleStyle = { margin: "0 0 6px", fontSize: 18, fontWeight: 700 };
     const nameStyle = { margin: "0 0 14px", fontSize: 13, color: "#666" };
@@ -530,18 +516,18 @@ export default function InCallOverlay() {
 
     const onPrimary = async () => {
       if (primaryDisabled) return;
-      const ok = await call.resolvePermission?.();
+      const ok = await call.resolvePermission?.(); // REAL probe
       if (ok === true) return; // resumed; panel unmounts
       if (ok === undefined)
         showHint(
           "Permission UI isn't connected — hard‑refresh the page (Ctrl/Cmd + Shift + R)."
         );
-      // ✅ CHANGED (E3): label-independent + states auto-connect, so the hint never
-      //    tells you to press a button whose label has already changed, and never
-      //    implies a manual step that the onchange listener already does.
+      // 🔒 kind-independent + never contradicts the button: the (re-rendered) BODY
+      // above already carries the precise, kind-correct steps; this line just points
+      // there and reaffirms auto-connect. No stale "tap continue again" wording.
       else
         showHint(
-          "Still blocked. Open the 🔒 / camera icon in the address bar → Microphone → Allow. The call connects automatically the moment it's allowed — you don't need to press continue."
+          "Still blocked. Follow the steps above, then press continue — the call connects automatically once the microphone is allowed."
         );
     };
 
@@ -553,20 +539,14 @@ export default function InCallOverlay() {
         aria-label="Microphone permission"
       >
         <div style={boxStyle}>
-          <p style={titleStyle}>
-            {noDevice
-              ? "No microphone found"
-              : blocked
-              ? "Microphone is blocked"
-              : "Microphone permission needed"}
-          </p>
+          <p style={titleStyle}>{title}</p>
           <p style={nameStyle}>
             {safeName}
             {isVideo ? " · video call" : " · voice call"}
           </p>
           <p style={textStyle}>{body}</p>
 
-          {blocked && (
+          {lockHelps && (
             <div style={lockRowStyle} aria-hidden="true">
               <span style={chipStyle}>🔒 address bar</span>
               <span>→</span>
@@ -574,7 +554,6 @@ export default function InCallOverlay() {
                 Microphone: <b>Allow</b>
               </span>
               <span>→</span>
-              {/* ✅ CHANGED (E5): third chip reflects auto-connect, not "continue". */}
               <span style={chipStyle}>Allow ✓</span>
             </div>
           )}

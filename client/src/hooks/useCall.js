@@ -13,7 +13,9 @@ import {
   logLocalMediaSettings,
   startWebRtcStatsMonitor,
   buildProcessedAudioTrack, // ✅ mic denoiser factory
-  requestMediaPermission, // ✅ permission pre-flight (no auto-end on denial)
+  // 🔒 PERMISSION-FIX: requestMediaPermission is NO LONGER imported/used. The mic
+  //    verdict now comes from classifyMic() below (a REAL getUserMedia probe), so a
+  //    lying/unsupported navigator.permissions.query can never fake a "blocked" panel.
 } from "../utils/videoQuality.js";
 
 import {
@@ -35,9 +37,7 @@ const SUPPORTS_DISPLAYMEDIA =
 const ICE_DISCONNECT_GRACE_MS = 8000;
 const OUTGOING_NO_ANSWER_MS = 30000;
 // ✅ Built from char codes so the SOURCE is pure ASCII and can NEVER be corrupted
-//    by copy/paste into /[ -]/g (the silent bug that stripped spaces/hyphens and
-//    failed to strip control chars, breaking "no-answer" labelling + endCall
-//    status mapping). Behaviorally identical to /[\u0000-\u001F\u007F]/g.
+//    by copy/paste into /[ -]/g. Behaviorally identical to /[\u0000-\u001F\u007F]/g.
 const CONTROL_CHARS_RE = new RegExp(
   "[" +
     String.fromCharCode(0) +
@@ -47,6 +47,8 @@ const CONTROL_CHARS_RE = new RegExp(
     "]",
   "g"
 );
+
+const MIC_PROBE_TIMEOUT_MS = 10000;
 
 // Map a terminal transition -> a chat-log status the UI understands.
 const mapEndedStatus = (payload) => {
@@ -67,22 +69,30 @@ const mapRejectedStatus = (reason) => {
   return "declined";
 };
 
-// ✅ Actionable text for a blocked/absent mic. A *blocked* site permission will
-// NOT re-prompt, so a blind "retry" is useless — we must show the 🔒/camera-icon
-// -> Allow instructions. (Pure string builder; touches no call state.)
-function permMessage(perm, mt) {
-  if (perm.mic === "no-device")
-    return "No microphone found. Connect a mic (or use a device with one), then try again.";
-  if (perm.mic === "error")
-    return "Couldn't access the microphone. Check browser permissions and that the site is HTTPS, then try again.";
-  const parts = ["Microphone"];
-  if (mt === "video" && perm.cam === "denied") parts.push("Camera");
-  return `${parts.join(
-    " and "
-  )} access is blocked. Tap the 🔒 / camera icon in your browser's address bar, set ${parts.join(
-    " and "
-  )} to “Allow”, then tap Call / Accept again.`;
-}
+// 🔒 PERMISSION-FIX: replaces the old permMessage(). One accurate, kind-aware string
+//    per real blocker. The OVERLAY renders the full panel from these kinds; this is
+//    for the occasional toast (e.g. a post-gate transient). kind values come from
+//    classifyMic() below.
+const kindMessage = (kind, mt) => {
+  switch (kind) {
+    case "no-device":
+      return "No microphone found. Connect a mic (or use a device with one), then try again.";
+    case "occupied":
+      return "The microphone is in use by another app or tab. Close it, then try again.";
+    case "os-blocked":
+      return "Your device or operating system is blocking the microphone for this browser, even though the site permission is allowed. Check your system privacy/microphone settings and make sure the browser is allowed and a mic is enabled.";
+    case "site-denied":
+      return "Microphone access is blocked for this site. Tap the lock / camera icon in the address bar, set Microphone to Allow, then try again.";
+    case "prompt":
+      return mt === "video"
+        ? "Allow the microphone (and camera) so Maya~Milan can hear you on this call."
+        : "Allow the microphone so Maya~Milan can hear you on this call.";
+    case "blocked-unknown":
+      return "We couldn't read the microphone permission for this browser. Try the lock icon in the address bar AND your system microphone privacy settings.";
+    default:
+      return "Couldn't access the microphone. Check your permissions and try again.";
+  }
+};
 
 export function useCall() {
   const { socket } = useSocket();
@@ -100,6 +110,10 @@ export function useCall() {
   const [screenSharing, setScreenSharing] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
   const [error, setError] = useState(null);
+  // 🔒 PERMISSION-FIX: shape is now { mediaType, kind } (kind from a REAL probe),
+  //    not { mediaType, probe } (which trusted an unreliable query / a hardcoded
+  //    "denied"). null = no panel. The panel is set ONLY when classifyMic() says the
+  //    mic genuinely cannot be used, so a working mic NEVER shows it.
   const [permissionIssue, setPermissionIssue] = useState(null);
 
   const pcRef = useRef(null);
@@ -132,8 +146,8 @@ export function useCall() {
   const isMountedRef = useRef(true);
   const socketRef = useRef(socket);
   const teardownRef = useRef(null);
-  const permBusyRef = useRef(false); // ✅ double-tap guard while a prompt is open
-  const pendingRef = useRef(null); // ✅ { type:'start'|'accept'|'caller-media', ...args } to resume after grant
+  const permBusyRef = useRef(false); // ✅ double-tap / concurrent-probe guard
+  const pendingRef = useRef(null); // ✅ { type:'start'|'accept'|'caller-media', ...args }
   const startCallRef = useRef(null);
   const acceptCallRef = useRef(null);
 
@@ -241,8 +255,6 @@ export function useCall() {
     clearNoAnswerTimer();
     clearQualityBindings();
 
-    // ✅ release the denoiser (stops cleaned track + closes AudioContext) BEFORE
-    // we stop the raw mic / close the pc, so the audio thread is freed promptly.
     try {
       audioDisposeRef.current?.();
     } catch {}
@@ -305,10 +317,6 @@ export function useCall() {
   useEffect(() => {
     teardownRef.current = teardown;
   }, [teardown]);
-  // ✅ NOTE: the startCall/acceptCall resume-ref effects are intentionally placed
-  // BELOW their definitions (see after each useCallback). Putting them here —
-  // before the consts exist — reads them in the temporal dead zone and throws
-  // "Cannot access 'startCall' before initialization" on first render.
 
   const bindCameraListeners = useCallback((track) => {
     if (!track) return;
@@ -435,12 +443,6 @@ export function useCall() {
     pendingCandidatesRef.current = [];
   }, []);
 
-  // ✅ acquireLocal is now the SINGLE place the camera is opened (the pre-flight
-  //    is mic-only), so there is no open->stop->open race that could hand us a
-  //    muted/ended track. It also CLASSIFIES the camera-open failure so the
-  //    degrade toast is actionable (blocked vs busy vs none) instead of vague,
-  //    and it does NOT install a permanent lock (the camera button stays usable
-  //    for the toggleVideo retry below).
   const acquireLocal = useCallback(
     async (mt) => {
       const preset = presetRef.current;
@@ -448,10 +450,10 @@ export function useCall() {
       const audioOnly = { audio: base.audio, video: false };
       let stream = null;
       let degraded = false;
-      let camFail = null; // ✅ capture the camera-open error name for messaging
+      let camFail = null;
       if (mt === "video") {
         try {
-          stream = await navigator.mediaDevices.getUserMedia(base); // ✅ the ONLY camera open
+          stream = await navigator.mediaDevices.getUserMedia(base);
           if (!stream.getVideoTracks().length) {
             try {
               stream.getTracks().forEach((t) => {
@@ -479,7 +481,7 @@ export function useCall() {
       cameraTrackRef.current = v;
       bindCameraListeners(v);
       if (degraded && isMountedRef.current) {
-        setCameraUnavailable(true); // state for icon/aria; the overlay no longer disables the button
+        setCameraUnavailable(true);
         const msg =
           camFail === "NotAllowedError" || camFail === "SecurityError"
             ? "Camera blocked — tap the 🔒 / camera icon in the address bar, set Camera to “Allow”, then tap the camera button to join with video."
@@ -494,31 +496,15 @@ export function useCall() {
     [bindCameraListeners]
   );
 
-  // ✅ Swap the raw mic for the denoised track on the audio sender. Fire-and-forget:
-  //    negotiation already happened with the raw track, so replaceTrack mid-call is
-  //    exactly like the camera/screen swap (no renegotiation). On ANY failure the
-  //    raw track stays in place (browser NS only) -> never breaks the call.
   const applyNoiseSuppression = useCallback(async () => {
     try {
       const sender = audioSenderRef.current;
-
       const raw =
         sender?.track || localStreamRef.current?.getAudioTracks?.()[0] || null;
-
       if (!sender || !raw || raw.kind !== "audio") return;
-
-      // Do not rebuild an already processed track.
-      if (audioOutTrackRef.current === sender.track) {
-        return;
-      }
-
+      if (audioOutTrackRef.current === sender.track) return;
       const built = await buildProcessedAudioTrack(raw);
-
-      if (!built?.track || typeof built.dispose !== "function") {
-        return;
-      }
-
-      // Prevent a race with call teardown / sender replacement.
+      if (!built?.track || typeof built.dispose !== "function") return;
       if (
         audioSenderRef.current !== sender ||
         pcRef.current == null ||
@@ -527,60 +513,45 @@ export function useCall() {
         try {
           built.dispose();
         } catch {}
-
         return;
       }
-
       const previousDispose = audioDisposeRef.current;
-
       try {
         await sender.replaceTrack(built.track);
       } catch {
         try {
           built.dispose();
         } catch {}
-
         return;
       }
-
-      // Only dispose the previous processor AFTER
-      // the new track has successfully replaced it.
       if (previousDispose && previousDispose !== built.dispose) {
         try {
           previousDispose();
         } catch {}
       }
-
       audioOutTrackRef.current = built.track;
       audioDisposeRef.current = built.dispose;
-
       try {
         built.track.addEventListener(
           "ended",
           () => {
-            if (!isMountedRef.current) return; // ✅ no-op after unmount/teardown
-            if (audioOutTrackRef.current === built.track) {
+            if (!isMountedRef.current) return;
+            if (audioOutTrackRef.current === built.track)
               audioOutTrackRef.current = null;
-            }
-
-            if (audioDisposeRef.current === built.dispose) {
+            if (audioDisposeRef.current === built.dispose)
               audioDisposeRef.current = null;
-            }
           },
           { once: true }
         );
       } catch {}
-
-      if (isWebRtcDebugEnabled()) {
+      if (isWebRtcDebugEnabled())
         console.log("🎚 microphone noise suppression engaged");
-      }
     } catch (e) {
-      if (isWebRtcDebugEnabled()) {
+      if (isWebRtcDebugEnabled())
         console.warn(
           "noise suppression skipped (raw/browser NS remains active):",
           e?.message || e
         );
-      }
     }
   }, []);
 
@@ -599,12 +570,12 @@ export function useCall() {
               preferVideoCodec(transceiver, "compatible");
               videoSenderRef.current = transceiver.sender;
             } else if (track.kind === "audio") {
-              audioSenderRef.current = transceiver.sender; // ✅ remember audio sender
+              audioSenderRef.current = transceiver.sender;
             }
           } else {
             const sender = pc.addTrack(track, stream);
             if (track.kind === "video") videoSenderRef.current = sender;
-            else if (track.kind === "audio") audioSenderRef.current = sender; // ✅
+            else if (track.kind === "audio") audioSenderRef.current = sender;
           }
         } catch (err) {
           if (isWebRtcDebugEnabled())
@@ -620,14 +591,11 @@ export function useCall() {
         } catch {}
       }
       applyAllSendersQuality(pc, preset).catch(() => {});
-      void applyNoiseSuppression(); // ✅ engage denoiser after senders exist
+      void applyNoiseSuppression();
     },
     [applyNoiseSuppression]
   );
 
-  // ✅ Shared caller media+offer sequence, used by onAccepted's happy path AND by
-  //    resolvePermission's "caller-media" resume (so a blocked mic at answer time
-  //    can complete the call once granted, without re-emitting call:accept).
   const establishCallerMedia = useCallback(
     async (pc, cid) => {
       const stream = await acquireLocal(mediaTypeRef.current);
@@ -648,18 +616,109 @@ export function useCall() {
     [acquireLocal, attachLocalToPc]
   );
 
-  // ✅ Caller: the pre-flight only WARMS the native prompt during the Call click
+  // 🔒 PERMISSION-FIX: the SINGLE definitive mic check. PRIMARY signal = a real
+  //    getUserMedia (works even when navigator.permissions.query is unsupported or
+  //    lying). The site query is read ONLY to SUBDIVIDE a genuine gUM failure so we
+  //    can point the user at the RIGHT place to fix it:
+  //      ok             -> mic usable  -> NO panel, ever (this is the fix for the
+  //                                       false "blocked" panel when the mic works)
+  //      site-denied    -> lock icon / site settings will help
+  //      os-blocked     -> site ALLOWED but OS/hardware/privacy blocks it; the lock
+  //                        icon WON'T help (the "I allowed it, still blocked" case)
+  //      occupied       -> another app/tab holds the device
+  //      no-device      -> nothing to grant
+  //      prompt         -> not granted yet, but a gesture can show the native dialog
+  //      blocked-unknown-> query unsupported/lying on a NotAllowedError
+  //      unknown        -> timeout / unexpected
+  //    The probe stream is stopped immediately so the mic is never left hot. When
+  //    called inside a user gesture with state "prompt", the gUM shows the native
+  //    dialog (this doubles as the warm-up).
+  const classifyMic = useCallback(async () => {
+    let siteState = null;
+    try {
+      siteState =
+        (await navigator.permissions?.query?.({ name: "microphone" }))?.state ||
+        null;
+    } catch {}
+
+    let stream = null;
+    let errName = null;
+    let timedOut = false;
+    try {
+      const p = navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+      const to = new Promise((_, rej) =>
+        setTimeout(() => {
+          timedOut = true;
+          rej(new DOMException("probe-timeout", "TimeoutError"));
+        }, MIC_PROBE_TIMEOUT_MS)
+      );
+      stream = await Promise.race([p, to]);
+      try {
+        stream.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+      } catch {}
+      return { granted: true, kind: "ok" };
+    } catch (e) {
+      errName = e?.name || "Error";
+      if (stream) {
+        try {
+          stream.getTracks().forEach((t) => {
+            try {
+              t.stop();
+            } catch {}
+          });
+        } catch {}
+      }
+    }
+
+    if (timedOut) return { granted: false, kind: "unknown" };
+    if (errName === "NotReadableError" || errName === "AbortError")
+      return { granted: false, kind: "occupied" };
+    if (
+      errName === "NotFoundError" ||
+      errName === "OverconstrainedError" ||
+      errName === "DevicesNotFoundError"
+    )
+      return { granted: false, kind: "no-device" };
+    if (
+      errName === "NotAllowedError" ||
+      errName === "SecurityError" ||
+      errName === "PermissionDeniedError"
+    ) {
+      // Re-query AFTER the failure: a just-clicked "Block" flips the site state to
+      // "denied" synchronously, whereas a no-gesture dismissal leaves it "prompt".
+      let s2 = siteState;
+      try {
+        s2 =
+          (await navigator.permissions?.query?.({ name: "microphone" }))
+            ?.state || siteState;
+      } catch {}
+      if (s2 === "denied") return { granted: false, kind: "site-denied" };
+      if (s2 === "granted") return { granted: false, kind: "os-blocked" };
+      if (s2 === "prompt") return { granted: false, kind: "prompt" };
+      return { granted: false, kind: "blocked-unknown" };
+    }
+    return { granted: false, kind: "unknown" };
+  }, []);
+
+  // ✅ Caller: classifyMic() only WARMS the native prompt during the Call click
   //    (user activation). Ringing is NOT gated on the local mic — we emit
   //    call:start immediately so the OTHER device rings even if our mic is
   //    blocked/denied. The real mic gate happens at media-acquisition time
   //    (onAccepted for us-as-caller, acceptCall for us-as-callee), where a denial
-  //    shows a RESUMABLE panel instead of killing the call. All inbound ids still
-  //    sanitized; phase re-checked after the await (race guard).
+  //    shows a RESUMABLE panel with the ACCURATE kind. All inbound ids sanitized;
+  //    phase re-checked after the await (race guard).
   const startCall = useCallback(
     async (to, mt, conversationId) => {
       if (phaseRef.current !== "idle" || !socketRef.current) return;
       if (mt !== "audio" && mt !== "video") return;
-      if (permBusyRef.current) return; // a prompt is already open
+      if (permBusyRef.current) return;
       const safeTo = sanitizeCallId(to);
       if (!safeTo) return;
       const safeConv = conversationId
@@ -668,19 +727,16 @@ export function useCall() {
 
       permBusyRef.current = true;
       try {
-        // ✅ pre-flight only WARMS the native prompt (user activation). Its result
-        //    no longer gates placement (see below).
-        await requestMediaPermission(mt);
+        // 🔒 warm-up only (result discarded): in-gesture gUM surfaces the native
+        //    dialog if state is "prompt"; we ring regardless of the outcome.
+        await classifyMic();
       } finally {
         permBusyRef.current = false;
       }
-      // re-check after the await: they may have navigated away mid-prompt
       if (phaseRef.current !== "idle" || !socketRef.current) return;
 
-      // ✅ POLICY: we NO LONGER return on a blocked/denied mic. The call is placed
-      //    now so the other device rings; the mic gate is enforced at media time
-      //    with a resumable panel. Clear any stale panel/pending from a prior
-      //    attempt before we dial.
+      // 🔒 no panel at place-time on the caller (the gate is at onAccepted). Clear
+      //    any stale panel/pending from a prior attempt before we dial.
       setPermissionIssue(null);
       pendingRef.current = null;
 
@@ -707,7 +763,6 @@ export function useCall() {
         return;
       }
 
-      // timer starts now (post pre-flight), so it can never overlap the prompt
       clearNoAnswerTimer();
       noAnswerTimerRef.current = setTimeout(() => {
         if (phaseRef.current !== "outgoing") return;
@@ -725,18 +780,18 @@ export function useCall() {
         teardown();
       }, OUTGOING_NO_ANSWER_MS);
     },
-    [teardown, resetCallLog, finalizeCall]
+    [teardown, resetCallLog, finalizeCall, classifyMic]
   );
-  // ✅ resume-ref effect MUST live after the const it reads (no TDZ).
   useEffect(() => {
     startCallRef.current = startCall;
   }, [startCall]);
 
-  // ✅ Callee: ask permission while phase is STILL "incoming" (we have NOT set
-  //    "connecting" and have NOT emitted anything to the caller). Granted ->
-  //    connect normally. Denied -> stay "incoming"; Accept/Decline remain visible
-  //    (that IS the retry); we do NOT reject and do NOT tear down. Only a genuine
-  //    non-permission failure ends the call.
+  // ✅ Callee: classifyMic() while phase is STILL "incoming" (no "connecting" set,
+  //    nothing emitted to the caller). Granted -> connect. NOT granted -> stay
+  //    "incoming" with the ACCURATE kind (the panel is the retry surface); we do
+  //    NOT reject and do NOT tear down. Because classifyMic does a REAL gUM, a
+  //    working mic is reported granted here and NO panel is shown (false-positive
+  //    fix). A genuine non-permission media failure ends the call.
   const acceptCall = useCallback(async () => {
     if (
       phaseRef.current !== "incoming" ||
@@ -747,7 +802,6 @@ export function useCall() {
     const id = callIdRef.current;
     const peerId = peer?._id || peerIdRef.current;
     if (!peerId) {
-      // corrupted (no peer id) -> ending is correct here, not a permission case
       try {
         socketRef.current.emit("call:reject", {
           callId: id,
@@ -758,32 +812,29 @@ export function useCall() {
       teardown();
       return;
     }
-    if (permBusyRef.current) return; // double-tap guard while a prompt is open
+    if (permBusyRef.current) return;
 
     permBusyRef.current = true;
-    let perm;
+    let c;
     try {
-      perm = await requestMediaPermission(mediaTypeRef.current);
+      c = await classifyMic();
     } finally {
       permBusyRef.current = false;
     }
-    if (phaseRef.current !== "incoming") return; // declined/hung-up during prompt
-    if (perm.mic !== "granted") {
-      // ✅ stay incoming, NO toast — the overlay's panel is the single retry surface
-      //    (so a second tap can't stack another message). resolvePermission resumes.
+    if (phaseRef.current !== "incoming") return;
+    if (!c.granted) {
       pendingRef.current = { type: "accept" };
-      setPermissionIssue({ mediaType: mediaTypeRef.current, probe: perm.mic });
+      setPermissionIssue({ mediaType: mediaTypeRef.current, kind: c.kind });
       return;
     }
 
-    // ✅ granted -> leaving incoming; clear any stale panel/pending resume.
     setPermissionIssue(null);
     pendingRef.current = null;
 
     try {
       setError(null);
       setPhaseSafe("connecting");
-      const stream = await acquireLocal(mediaTypeRef.current); // instant: already granted
+      const stream = await acquireLocal(mediaTypeRef.current);
       const pc = pcRef.current || buildPc(iceServersRef.current || []);
       pc._callId = id;
       pc._peerId = peerId;
@@ -796,56 +847,75 @@ export function useCall() {
         teardown();
       }
     } catch (e) {
-      const name = e?.name;
-      if (name === "NotAllowedError" || name === "NotFoundError") {
-        // shouldn't happen post-gate, but if permission vanished mid-step, do NOT
-        // auto-reject: revert to incoming + actionable message (same policy above).
-        toastRef.current?.error?.(
-          permMessage({ mic: "denied", cam: null }, mediaTypeRef.current),
-          "Permission needed",
-          6000
-        );
+      // 🔒 A real acquire failure right after a granted probe is almost always a
+      //    "device just released" transient. Re-classify: if still not granted ->
+      //    accurate panel + stay incoming (no auto-reject). If granted -> retry the
+      //    acquire ONCE; if that also fails -> genuine error -> reject + teardown.
+      const c2 = await classifyMic();
+      if (!c2.granted) {
+        pendingRef.current = { type: "accept" };
+        setPermissionIssue({ mediaType: mediaTypeRef.current, kind: c2.kind });
         setPhaseSafe("incoming");
         return;
       }
-      if (isMountedRef.current)
-        toastRef.current?.error?.("Could not start call", "Call", 4000);
       try {
-        socketRef.current.emit("call:reject", {
-          callId: id,
-          reason: "declined",
-        });
-      } catch {}
-      finalizeCall("failed");
-      teardown();
+        const stream = await acquireLocal(mediaTypeRef.current);
+        const pc = pcRef.current || buildPc(iceServersRef.current || []);
+        pc._callId = id;
+        pc._peerId = peerId;
+        peerIdRef.current = peerId;
+        attachLocalToPc(pc, stream);
+        try {
+          socketRef.current.emit("call:accept", { callId: id });
+        } catch {
+          finalizeCall("failed");
+          teardown();
+        }
+        return;
+      } catch {
+        if (isMountedRef.current)
+          toastRef.current?.error?.("Could not start call", "Call", 4000);
+        try {
+          socketRef.current.emit("call:reject", {
+            callId: id,
+            reason: "declined",
+          });
+        } catch {}
+        finalizeCall("failed");
+        teardown();
+      }
     }
-  }, [peer, acquireLocal, buildPc, attachLocalToPc, teardown, finalizeCall]);
-  // ✅ resume-ref effect MUST live after the const it reads (no TDZ).
+  }, [
+    peer,
+    acquireLocal,
+    buildPc,
+    attachLocalToPc,
+    teardown,
+    finalizeCall,
+    classifyMic,
+  ]);
   useEffect(() => {
     acceptCallRef.current = acceptCall;
   }, [acceptCall]);
 
-  // ✅ In-app "Allow / Continue": re-probes the mic. On grant it clears the panel and
-  //    resumes the pending start/accept/caller-media by re-invoking the SAME handler
-  //    (its gate now passes instantly). On not-granted it refreshes the panel's probe
-  //    so the overlay re-queries permissions.query and flips Allow<->lock-guide
-  //    correctly. Returns true only when it actually resumed; the overlay uses that
-  //    to decide whether to show the "still blocked" hint. Never toasts.
+  // 🔒 PERMISSION-FIX: "Allow / Continue" re-runs the REAL probe (classifyMic), not
+  //    a query. Granted -> clear + resume by pending type. Not granted -> re-arm the
+  //    panel with the ACCURATE kind (so site-denied vs os-blocked vs occupied show
+  //    the right instructions) and return false so the overlay can hint. Never toasts.
   const resolvePermission = useCallback(async () => {
     if (permBusyRef.current) return false;
     const pend = pendingRef.current;
-    if (!pend) return false; // panel shown but the pending resume was lost
-    const mt = pend?.mt ?? mediaTypeRef.current;
+    if (!pend) return false;
     permBusyRef.current = true;
-    let perm;
+    let c;
     try {
-      perm = await requestMediaPermission(mt);
+      c = await classifyMic();
     } finally {
-      permBusyRef.current = false; // released BEFORE the resume call -> no deadlock
+      permBusyRef.current = false;
     }
-    if (perm.mic !== "granted") {
-      setPermissionIssue({ mediaType: mt, probe: perm.mic }); // keep panel, refresh mode
-      return false; // ✅ tell the overlay "still blocked" so the button can show a hint
+    if (!c.granted) {
+      setPermissionIssue({ mediaType: mediaTypeRef.current, kind: c.kind });
+      return false;
     }
     setPermissionIssue(null);
     pendingRef.current = null;
@@ -853,28 +923,20 @@ export function useCall() {
       void startCallRef.current?.(pend.to, pend.mt, pend.conversationId);
     else if (pend?.type === "accept") void acceptCallRef.current?.();
     else if (pend?.type === "caller-media") {
-      // ✅ finish the caller's offer that was blocked at answer time. Re-arm the
-      //    resumable panel ONLY on a permission/device error (the user can still
-      //    grant -> onchange/granted-effect retries once, no loop). Any OTHER
-      //    failure (offer/setLocalDescription/invalid-state) cannot be fixed by
-      //    granting, so end the call cleanly instead of re-arming into a retry
-      //    loop (which the overlay's granted auto-resume would otherwise re-fire).
       const pc = pcRef.current;
       const cid = callIdRef.current;
       if (!pc || !cid) return true;
       try {
         await establishCallerMedia(pc, cid);
-      } catch (e2) {
-        const n2 = e2?.name;
-        if (
-          n2 === "NotAllowedError" ||
-          n2 === "NotFoundError" ||
-          n2 === "SecurityError"
-        ) {
+      } catch {
+        // 🔒 bounded single re-classify: permission/device -> re-arm (no loop,
+        //    wake-ups are edge-triggered); anything else -> end cleanly.
+        const c2 = await classifyMic();
+        if (!c2.granted) {
           pendingRef.current = { type: "caller-media" };
           setPermissionIssue({
             mediaType: mediaTypeRef.current,
-            probe: "denied",
+            kind: c2.kind,
           });
         } else {
           try {
@@ -888,8 +950,8 @@ export function useCall() {
         }
       }
     }
-    return true; // ✅ resumed
-  }, [establishCallerMedia]);
+    return true;
+  }, [establishCallerMedia, classifyMic, teardown, finalizeCall]);
 
   const clearPermissionIssue = useCallback(() => {
     pendingRef.current = null;
@@ -915,8 +977,6 @@ export function useCall() {
 
   const endCall = useCallback(
     (reason = "hangup") => {
-      // ✅ idle guard: a denied outgoing call never left idle, so Cancel here must
-      //    NOT finalizeCall (would touch a stale peerIdRef) nor emit (no callId).
       if (phaseRef.current === "idle") {
         teardown();
         return;
@@ -950,9 +1010,6 @@ export function useCall() {
     [teardown, finalizeCall]
   );
 
-  // ✅ Mute the track that is ACTUALLY transmitted (the cleaned one after the
-  //    swap), not the raw mic — otherwise muting silently stops working once
-  //    the denoiser replaces the sender track. Falls back to raw if no swap.
   const toggleMute = useCallback(() => {
     const next = !muted;
     const out = audioOutTrackRef.current;
@@ -966,15 +1023,8 @@ export function useCall() {
     if (isMountedRef.current) setMuted(next);
   }, [muted]);
 
-  // ✅ Camera button = toggle when a live track exists, RETRY (re-acquire +
-  //    replaceTrack) when it doesn't. replaceTrack needs NO renegotiation, so
-  //    recovery is safe mid-call. If the call connected with no video SEND slot
-  //    (pure-audio degrade) we cannot add one without renegotiation, so we stop
-  //    the new track and tell the user to redial (honest, never a silent one-way).
-  //    (Signature unchanged; now async so it can await getUserMedia/replaceTrack —
-  //    an onClick handler ignores the returned Promise, so call sites don't move.)
   const toggleVideo = useCallback(async () => {
-    if (phaseRef.current === "idle" || phaseRef.current === "incoming") return; // no call to attach video to
+    if (phaseRef.current === "idle" || phaseRef.current === "incoming") return;
     const t = cameraTrackRef.current;
     if (t && t.readyState === "live") {
       const next = !videoOff;
@@ -998,7 +1048,7 @@ export function useCall() {
           nt.contentHint = preset.contentHint || "motion";
       } catch {}
       if (videoSenderRef.current) {
-        await videoSenderRef.current.replaceTrack(nt); // ✅ no renegotiation
+        await videoSenderRef.current.replaceTrack(nt);
         await applyVideoSenderQuality(videoSenderRef.current, preset).catch(
           () => {}
         );
@@ -1137,7 +1187,7 @@ export function useCall() {
       dt.addEventListener(
         "ended",
         () => {
-          if (!isMountedRef.current) return; // ✅ no-op after unmount/teardown
+          if (!isMountedRef.current) return;
           if (videoSenderRef.current && cameraTrackRef.current) {
             videoSenderRef.current
               .replaceTrack(cameraTrackRef.current)
@@ -1174,20 +1224,14 @@ export function useCall() {
       const cid = sanitizeCallId(id);
       const peerId = sanitizeCallId(to);
       if (!cid || !peerId) return;
-      // ✅ caller-only, once-only, and only for the callee we actually dialed.
-      //    Without this a duplicate/out-of-band call:ready would buildPc() again ->
-      //    LEAK the live pc + leave mic/camera HOT (privacy) and overwrite callId/
-      //    peer mid-call; and trusting the server's `to` blindly lets a confused/
-      //    malicious signaling repoint our offer to a THIRD PARTY.
       if (phaseRef.current !== "outgoing") return;
-      if (pcRef.current) return; // duplicate ready -> ignore
-      if (peerIdRef.current && peerId !== peerIdRef.current) return; // confusion guard
+      if (pcRef.current) return;
+      if (peerIdRef.current && peerId !== peerIdRef.current) return;
       iceServersRef.current = sanitizeIceServers(iceServers);
       let pc;
       try {
         pc = buildPc(iceServersRef.current);
       } catch {
-        // pc construction failed -> end the outgoing call cleanly (no hot devices)
         try {
           socketRef.current?.emit("call:end", { callId: cid, reason: "error" });
         } catch {}
@@ -1214,9 +1258,6 @@ export function useCall() {
       const cid = sanitizeCallId(id);
       if (phaseRef.current !== "outgoing" || !cid || cid !== callIdRef.current)
         return;
-      // ✅ validate pc FIRST (keep the no-answer timer alive if it's missing), then
-      //    flip to "connecting" BEFORE acquiring media so a DUPLICATE call:accepted
-      //    can't re-run acquireLocal and open a SECOND camera/mic (the first leaks).
       const pc = pcRef.current;
       if (!pc) return;
       clearNoAnswerTimer();
@@ -1224,26 +1265,43 @@ export function useCall() {
       try {
         await establishCallerMedia(pc, cid);
       } catch (e) {
-        const name = e?.name;
-        if (name === "NotAllowedError" || name === "NotFoundError") {
-          // ✅ caller mic blocked AFTER the callee answered: do NOT end the call
-          //    (the callee is connected/waiting). Show the panel, stay "connecting",
-          //    keep pc+callId; resolvePermission("caller-media") finishes the offer
-          //    the instant the caller grants (or onchange auto-resumes).
+        // 🔒 PERMISSION-FIX: classify the REAL cause instead of hardcoding "denied".
+        //    Not granted -> accurate resumable panel (caller-media), keep call alive.
+        //    Granted (transient/race) -> retry the offer ONCE; if it fails again,
+        //    re-classify -> re-arm on a permission/device error, else end cleanly.
+        const c = await classifyMic();
+        if (!c.granted) {
           pendingRef.current = { type: "caller-media" };
           setPermissionIssue({
             mediaType: mediaTypeRef.current,
-            probe: "denied",
+            kind: c.kind,
           });
           return;
         }
-        if (isMountedRef.current)
-          toastRef.current?.error?.("Could not start call", "Call", 4000);
         try {
-          socketRef.current?.emit("call:end", { callId: cid, reason: "error" });
-        } catch {}
-        finalizeCall("failed");
-        teardown();
+          await establishCallerMedia(pc, cid);
+          return;
+        } catch {
+          const c2 = await classifyMic();
+          if (!c2.granted) {
+            pendingRef.current = { type: "caller-media" };
+            setPermissionIssue({
+              mediaType: mediaTypeRef.current,
+              kind: c2.kind,
+            });
+            return;
+          }
+          if (isMountedRef.current)
+            toastRef.current?.error?.("Could not start call", "Call", 4000);
+          try {
+            socketRef.current?.emit("call:end", {
+              callId: cid,
+              reason: "error",
+            });
+          } catch {}
+          finalizeCall("failed");
+          teardown();
+        }
       }
     };
 
@@ -1261,9 +1319,6 @@ export function useCall() {
         emit("call:reject", { callId: id, reason: "busy" });
         return;
       }
-      // ✅ clear any stale permission panel / pending resume left over from a
-      //    previously DENIED outgoing call (which never left idle), so this new
-      //    ring can't be hijacked by the old panel's "Allow".
       setPermissionIssue(null);
       pendingRef.current = null;
       resetCallLog(from._id);
@@ -1443,6 +1498,7 @@ export function useCall() {
     acquireLocal,
     attachLocalToPc,
     establishCallerMedia,
+    classifyMic,
     flushPendingCandidates,
     teardown,
     resetCallLog,
@@ -1489,8 +1545,8 @@ export function useCall() {
     toggleVideo,
     switchCamera,
     toggleScreenShare,
-    permissionIssue, // ✅ { mediaType, probe } | null -> overlay renders the panel
-    resolvePermission, // ✅ in-app Allow / lock-guide Continue (re-probes + resumes)
+    permissionIssue, // ✅ { mediaType, kind } | null -> overlay renders the panel
+    resolvePermission, // ✅ real-probe resume (re-runs classifyMic)
     clearPermissionIssue, // ✅ dismiss the panel
   };
 }
