@@ -11,7 +11,7 @@ import { useAuth } from "./hooks/useAuth";
 import Loader from "./components/Loader.jsx";
 import Footer from "./components/Footer.jsx";
 import Navbar from "./components/Navbar.jsx";
-import CallProvider from "./context/CallContext.jsx"; // ✅ USED NOW
+import {CallProvider} from "./context/CallContext.jsx"; // ✅ USED NOW
 import ScrollToTop from "./components/ScrollToTop.jsx";
 
 // ═══════════════════════════════════════════
