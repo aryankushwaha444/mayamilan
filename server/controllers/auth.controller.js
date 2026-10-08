@@ -85,10 +85,20 @@ argon2
   .catch(() => {});
 
 // ✅ Pending 2FA cookie: httpOnly, never in URL, mirrors refreshToken flags.
+// ✅ sameSite is now ALWAYS "lax" (was "none" in prod). PRECONDITION: the SPA
+//    calls /api RELATIVELY through the Vercel rewrite (VITE_API_URL="/api"), so
+//    every cookie set/read in this file is FIRST-PARTY on the public origin.
+//    "lax" still rides the cross-site TOP-LEVEL GET navigation (the OAuth
+//    callback) and same-origin XHRs (refresh/2FA/reactivate), which is the whole
+//    flow. Do NOT revert to "none" unless you also revert the SPA to calling
+//    Render cross-origin for HTTP — and then Brave will block it again. If you
+//    ever move back to cross-origin HTTP, set these to "none" AND accept the
+//    third-party-cookie loss. The OAuth state/nonce cookie lives in
+//    server/config/passport.js and should mirror this same "lax" tightening.
 const PENDING_2FA_COOKIE = {
   httpOnly: true,
   secure: IS_PRODUCTION,
-  sameSite: IS_PRODUCTION ? "none" : "lax",
+  sameSite: "lax", // ✅ was: IS_PRODUCTION ? "none" : "lax"
   maxAge: 5 * 60 * 1000,
   path: "/",
 };
@@ -97,7 +107,7 @@ const PENDING_2FA_COOKIE = {
 const REACTIVATE_COOKIE = {
   httpOnly: true,
   secure: IS_PRODUCTION,
-  sameSite: IS_PRODUCTION ? "none" : "lax",
+  sameSite: "lax", // ✅ was: IS_PRODUCTION ? "none" : "lax"
   maxAge: 10 * 60 * 1000,
   path: "/",
 };
@@ -371,7 +381,7 @@ const createSessionAndTokens = async (user, req, res) => {
   res.cookie("refreshToken", refreshToken, {
     httpOnly: true,
     secure: IS_PRODUCTION,
-    sameSite: IS_PRODUCTION ? "none" : "lax",
+    sameSite: "lax", // ✅ was: IS_PRODUCTION ? "none" : "lax"
     maxAge: REFRESH_TOKEN_EXPIRY_MS,
     path: "/",
   });
@@ -384,7 +394,7 @@ const clearRefreshTokenCookie = (res) => {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: IS_PRODUCTION,
-    sameSite: IS_PRODUCTION ? "none" : "lax",
+    sameSite: "lax", // ✅ was: IS_PRODUCTION ? "none" : "lax"
     path: "/",
   });
 };
@@ -989,7 +999,7 @@ export const refreshAccessToken = async (req, res, next) => {
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
       secure: IS_PRODUCTION,
-      sameSite: IS_PRODUCTION ? "none" : "lax",
+      sameSite: "lax", // ✅ was: IS_PRODUCTION ? "none" : "lax"
       maxAge: REFRESH_TOKEN_EXPIRY_MS,
       path: "/",
     });
@@ -1132,7 +1142,7 @@ const restoreMatchesForReactivatedUser = async (userId, req) => {
       io.to(`user:${other}`).emit("new_match", {
         matchId: m._id,
         conversationId: conv?._id,
-        matchedUserId: meStr,
+        matchedUserId: otherStr,
       });
     }
 

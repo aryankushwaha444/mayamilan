@@ -38,10 +38,31 @@ const NODE_ENV = process.env.NODE_ENV || "development";
 const SITE_URL = process.env.SITE_URL || "https://mayamilan.vercel.app";
 const COOKIE_SECRET = process.env.COOKIE_SECRET || "your-cookie-secret-here";
 
-// Parse allowed origins
-const allowedOrigins = process.env.CLIENT_URL
-  ? process.env.CLIENT_URL.split(",").map((url) => url.trim())
-  : ["http://localhost:5173"];
+// ✅ Parse allowed origins — always include the canonical public origin (SITE_URL)
+//    so the proxied SAME-ORIGIN refresh POST (browser sends Origin: SITE_URL) can
+//    never 500 if CLIENT_URL is mis-set, plus dev localhost outside prod. Unknown
+//    origins STILL throw — allowlist semantics preserved (this is a widening by
+//    exactly our own origin, not a security regression).
+const _clientOrigins = process.env.CLIENT_URL
+  ? process.env.CLIENT_URL.split(",")
+      .map((u) => u.trim())
+      .filter(Boolean)
+  : [];
+const allowedOrigins = Array.from(
+  new Set(
+    [
+      ..._clientOrigins,
+      SITE_URL, // https://mayamilan.vercel.app (the origin the browser actually sends)
+      ...(NODE_ENV !== "production"
+        ? [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+          ]
+        : []),
+    ].filter(Boolean)
+  )
+);
 
 // ═══════════════════════════════════════════
 // SECURITY: Sentry Initialization
@@ -208,9 +229,9 @@ app.use(
     referrerPolicy: { policy: "strict-origin-when-cross-origin" },
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
-    crossOriginOpenerPolicy: { policy: "same-origin" }, // NEW: Prevents window.opener attacks
-    dnsPrefetchControl: { allow: false }, // NEW: Prevents DNS prefetching leaks
-    permittedCrossDomainPolicies: { permittedPolicies: "none" }, // NEW: Blocks Flash/Acrobat
+    crossOriginOpenerPolicy: { policy: "same-origin" }, // Prevents window.opener attacks
+    dnsPrefetchControl: { allow: false }, // Prevents DNS prefetching leaks
+    permittedCrossDomainPolicies: { permittedPolicies: "none" }, // Blocks Flash/Acrobat
     hidePoweredBy: true, // Remove X-Powered-By header
     xssFilter: true, // Enable XSS filter (legacy browsers)
     noSniff: true, // Prevent MIME type sniffing
@@ -256,12 +277,17 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Trust proxy (1 hop for Nginx/Cloudflare)
+// ✅ Trust proxy — DEFAULT 2 hops (Vercel edge → Render edge → app). The SPA now
+//    calls /api RELATIVELY through the Vercel rewrite, so a request arrives with
+//    TWO X-Forwarded-For entries. Trusting only 1 makes req.ip resolve to Vercel's
+//    SHARED egress IP for every visitor → the global /api ip-rate-limiter treats all
+//    users as one IP → mass 429, and lastIp/"session hijacking" logs become
+//    meaningless. Override via TRUST_PROXY env if Render's topology differs.
 const _rawTrust = process.env.TRUST_PROXY;
 const _trustNum =
-  _rawTrust === undefined || _rawTrust === "" ? 1 : Number(_rawTrust);
+  _rawTrust === undefined || _rawTrust === "" ? 2 : Number(_rawTrust);
 const TRUST_PROXY_HOPS =
-  Number.isInteger(_trustNum) && _trustNum >= 1 ? _trustNum : 1;
+  Number.isInteger(_trustNum) && _trustNum >= 1 ? _trustNum : 2;
 app.set("trust proxy", TRUST_PROXY_HOPS);
 
 // ═══════════════════════════════════════════
