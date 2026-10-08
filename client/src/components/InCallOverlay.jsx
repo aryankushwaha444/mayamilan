@@ -74,6 +74,9 @@ export default function InCallOverlay() {
   const [speakerOn, setSpeakerOn] = useState(true);
   const [mediaBlocked, setMediaBlocked] = useState(false);
 
+  // ✅ in-app permission panel state (replaces the stacked "Permission needed" toasts)
+  const [micPerm, setMicPerm] = useState(null); // 'prompt' | 'denied' | 'granted' | 'no-device' | null
+
   const isVideo = call.mediaType === "video";
   const isIncoming = call.phase === "incoming";
   const isOutgoing = call.phase === "outgoing";
@@ -185,7 +188,71 @@ export default function InCallOverlay() {
         setSinkIds(outs.length ? outs : [{ deviceId: "default" }]);
       })
       .catch(() => {});
-  }, [call.supportsSpeaker, call.phase]); // ✅ re-enumerate when a call connects so speaker labels populate
+  }, [call.supportsSpeaker, call.phase]);
+
+  // ✅ Authoritative permission mode for the panel. permissions.query is LOCAL and
+  //    cannot be forged; 'prompt' means a getUserMedia WILL re-show the dialog,
+  //    'denied' means it will NOT (so we must guide the user to the lock icon and
+  //    only resume once they flip it). Re-runs whenever the hook refreshes the
+  //    probe (call.permissionIssue.probe) so a stale "Allow" button self-corrects.
+  useEffect(() => {
+    if (!call.permissionIssue) {
+      setMicPerm(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      let st = null;
+      try {
+        st =
+          (await navigator.permissions?.query?.({ name: "microphone" }))
+            ?.state || null;
+      } catch {}
+      if (!alive) return;
+      if (!st)
+        st =
+          call.permissionIssue.probe === "no-device"
+            ? "no-device"
+            : call.permissionIssue.probe === "denied" ||
+              call.permissionIssue.probe === "error"
+            ? "denied"
+            : "prompt";
+      setMicPerm(st);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [call.permissionIssue, call.permissionIssue?.probe]);
+
+  // ✅ If the user grants via the address-bar lock menu and tabs back, resume
+  //    WITHOUT re-prompting: only act when the OS state is granted or denied
+  //    (both short-circuit, no getUserMedia). On 'prompt' we stay put so we never
+  //    surprise them with a dialog on focus.
+  useEffect(() => {
+    if (!call.permissionIssue) return;
+    const onFocus = async () => {
+      let st = null;
+      try {
+        st =
+          (await navigator.permissions?.query?.({ name: "microphone" }))
+            ?.state || null;
+      } catch {}
+      if (st === "prompt" || st == null) return; // don't re-prompt on focus
+      call.resolvePermission?.(); // granted -> resumes; denied -> refreshes panel, no dialog
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [call.permissionIssue, call.resolvePermission]);
+
+  // ✅ granted race: auto-resume the moment the panel learns it's already allowed
+  useEffect(() => {
+    if (call.permissionIssue && micPerm === "granted")
+      call.resolvePermission?.();
+  }, [micPerm, call.permissionIssue, call.resolvePermission]);
 
   useEffect(
     () => () => {
@@ -275,20 +342,180 @@ export default function InCallOverlay() {
     "0"
   )}:${String(call.durationSec % 60).padStart(2, "0")}`;
 
-  // ✅ DEFECT 1+2 FIX: 'connecting' must read "Connecting…" (NOT a premature
-  //    "camera off"); the timer must show whenever we are in-call; "camera off"
-  //    is only an appendix, and only once truly connected with no remote video.
   let statusText;
   if (phase === "incoming") statusText = "Incoming call…";
   else if (phase === "outgoing") statusText = "Ringing…";
   else if (phase === "connecting") statusText = "Connecting…";
   else if (call.error) statusText = "Reconnecting…";
-  else statusText = mmss; // in-call -> timer always visible, never hidden by the note
+  else statusText = mmss;
   const remoteCamOff = isVideo && !remoteHasVideo && phase === "in-call";
 
   const showSoundButton = ringBlocked || rbBlocked || mediaBlocked;
   const hasLocalVideo =
     isVideo && call.localStream && call.localStream.getVideoTracks().length > 0;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ✅ IN-APP PERMISSION PANEL (replaces the stacked toasts). Adaptive:
+  //    prompt -> real re-prompt button; denied -> lock guide + Continue that
+  //    resumes on flip; no-device -> honest message. Secondary always lets
+  //    them Decline/Cancel (which tears down + clears the panel). One surface,
+  //    no double-tap loop, no toast spam.
+  // ═══════════════════════════════════════════════════════════════════════
+  if (call.permissionIssue) {
+    const blocked = micPerm === "denied";
+    const noDevice = micPerm === "no-device";
+    const connecting = micPerm === "granted";
+    const primaryLabel = connecting
+      ? "Connecting…"
+      : noDevice
+      ? "No microphone"
+      : blocked
+      ? "I've allowed it — continue"
+      : "Allow microphone";
+    const primaryDisabled = connecting || noDevice;
+    const body = noDevice
+      ? "No microphone was found. Connect one (or use a device with a built-in mic), then try again."
+      : blocked
+      ? "Your browser has blocked the microphone for this site, so it won't ask again automatically. Tap the lock / camera icon in the address bar, set Microphone to “Allow”, then press continue below."
+      : "Tap “Allow microphone” so Maya~Milan can hear you on this call.";
+
+    const cardStyle = {
+      position: "fixed",
+      inset: 0,
+      zIndex: 2147483000,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "rgba(0,0,0,0.72)",
+      padding: 20,
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    };
+    const boxStyle = {
+      width: "min(420px, 92vw)",
+      background: "#fff",
+      color: "#111",
+      borderRadius: 16,
+      padding: "22px 20px",
+      boxShadow: "0 18px 60px rgba(0,0,0,0.45)",
+      textAlign: "center",
+    };
+    const titleStyle = { margin: "0 0 6px", fontSize: 18, fontWeight: 700 };
+    const nameStyle = { margin: "0 0 14px", fontSize: 13, color: "#666" };
+    const textStyle = {
+      margin: "0 0 16px",
+      fontSize: 14,
+      lineHeight: 1.5,
+      color: "#333",
+    };
+    const lockRowStyle = {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      margin: "0 0 16px",
+      fontSize: 13,
+      color: "#444",
+    };
+    const chipStyle = {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "6px 10px",
+      border: "1px solid #ddd",
+      borderRadius: 999,
+      background: "#f6f6f6",
+    };
+    const btnRowStyle = {
+      display: "flex",
+      gap: 10,
+      justifyContent: "center",
+      flexWrap: "wrap",
+    };
+    const primaryStyle = {
+      appearance: "none",
+      border: "none",
+      cursor: primaryDisabled ? "default" : "pointer",
+      background: primaryDisabled ? "#bbb" : "#e91e63",
+      color: "#fff",
+      fontWeight: 700,
+      fontSize: 15,
+      padding: "12px 18px",
+      borderRadius: 12,
+      minWidth: 150,
+    };
+    const secondaryStyle = {
+      appearance: "none",
+      border: "1px solid #ddd",
+      cursor: "pointer",
+      background: "#fff",
+      color: "#c0392b",
+      fontWeight: 600,
+      fontSize: 15,
+      padding: "12px 16px",
+      borderRadius: 12,
+    };
+
+    return (
+      <div
+        style={cardStyle}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Microphone permission"
+      >
+        <div style={boxStyle}>
+          <p style={titleStyle}>
+            {noDevice
+              ? "No microphone found"
+              : blocked
+              ? "Microphone is blocked"
+              : "Microphone permission needed"}
+          </p>
+          <p style={nameStyle}>
+            {safeName}
+            {isVideo ? " · video call" : " · voice call"}
+          </p>
+          <p style={textStyle}>{body}</p>
+
+          {blocked && (
+            <div style={lockRowStyle} aria-hidden="true">
+              <span style={chipStyle}>🔒 address bar</span>
+              <span>→</span>
+              <span style={chipStyle}>
+                Microphone: <b>Allow</b>
+              </span>
+              <span>→</span>
+              <span style={chipStyle}>continue ↓</span>
+            </div>
+          )}
+
+          <div style={btnRowStyle}>
+            <button
+              type="button"
+              style={primaryStyle}
+              disabled={primaryDisabled}
+              onClick={() => {
+                if (!primaryDisabled) call.resolvePermission?.();
+              }}
+            >
+              {primaryLabel}
+            </button>
+            <button
+              type="button"
+              style={secondaryStyle}
+              onClick={() => {
+                stopIncomingRingtone();
+                stopOutgoingRingback();
+                if (isIncoming) rejectCall();
+                else endCall("hangup");
+              }}
+            >
+              {isIncoming ? "Decline" : "Cancel"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -400,9 +627,6 @@ export default function InCallOverlay() {
               />
             </button>
             {isVideo && (
-              // ✅ DEFECT 4 FIX: never disable the camera button. When there is no
-              //    live track (degraded/dead) the click RE-ACQUIRES via toggleVideo's
-              //    retry path; when a live track exists it just toggles enabled.
               <button
                 className={`incall-btn ${
                   call.cameraUnavailable || call.videoOff ? "active" : ""
