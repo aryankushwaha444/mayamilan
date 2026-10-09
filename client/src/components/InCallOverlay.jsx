@@ -16,6 +16,23 @@ const ALLOW_HTTP_MEDIA = (() => {
   }
 })();
 
+// ✅ CROSS-DEVICE: iOS Safari has no Chrome-style address-bar lock; the site grant
+//    lives in the aA menu -> Website Settings, and the OS grant in Settings ->
+//    Privacy & Security. Detect iOS so the panel tells the user the RIGHT control.
+const IS_IOS = (() => {
+  try {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    const iosUA = /iP(hone|od|ad)/.test(ua);
+    // iPadOS 13+ reports MacIntel with touch points
+    const ipadOS =
+      navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+    return iosUA || ipadOS;
+  } catch {
+    return false;
+  }
+})();
+
 const MEDIA_HOSTS = [
   /([a-z0-9-]+\.)?cloudinary\.com$/i,
   /^media\.giphy\.com$/i,
@@ -376,10 +393,10 @@ export default function InCallOverlay() {
     isVideo && call.localStream && call.localStream.getVideoTracks().length > 0;
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 🔒 PERMISSION PANEL — kind-driven (REAL probe), accurate per blocker, never
-  //    shown when the mic actually works, never contradicts its own button, and
-  //    resumes automatically the instant a real probe passes (onchange/focus/
-  //    visibility/button). The body and the hint agree on where to fix it.
+  // 🔒 PERMISSION PANEL — kind-driven (REAL probe), accurate per blocker AND per
+  //    platform (iOS aA menu vs desktop lock icon), never shown when the mic
+  //    actually works, never contradicts its own button, and resumes automatically
+  //    the instant a real probe passes (onchange/focus/visibility/button).
   // ═══════════════════════════════════════════════════════════════════════
   if (call.permissionIssue) {
     const kind = call.permissionIssue.kind;
@@ -389,7 +406,13 @@ export default function InCallOverlay() {
     const occupied = kind === "occupied";
     const noDevice = kind === "no-device";
     const prompting = kind === "prompt";
-    const lockHelps = siteDenied || blockedUnknown; // address-bar instruction is correct
+    const lockHelps = siteDenied || blockedUnknown; // address-bar/aA instruction is correct
+
+    // ✅ platform-correct wording for the SITE grant control
+    const siteControl = IS_IOS
+      ? "the aA menu (left of the address bar) → Website Settings"
+      : "the lock / camera icon in the address bar";
+    const siteChip = IS_IOS ? "aA → Website Settings" : "🔒 address bar";
 
     const primaryDisabled = noDevice;
     const primaryLabel = noDevice
@@ -419,14 +442,26 @@ export default function InCallOverlay() {
       : occupied
       ? "Another app or browser tab is using the microphone. Close it, then press try again — the call connects automatically once it's free."
       : osBlocked
-      ? "The site permission is already allowed, but your device or operating system is blocking the microphone for this browser — so the lock icon won't help. Open your system privacy/microphone settings (macOS: System Settings → Privacy & Security → Microphone; Windows: Settings → Privacy → Microphone) and make sure this browser is allowed and a microphone is enabled. The call connects automatically once it is."
+      ? "The site permission is already allowed, but your device or operating system is blocking the microphone for this browser — so the " +
+        (IS_IOS ? "aA menu won't help" : "lock icon won't help") +
+        ". Open your system privacy/microphone settings (" +
+        (IS_IOS
+          ? "iOS: Settings → Privacy & Security → Microphone"
+          : "macOS: System Settings → Privacy & Security → Microphone; Windows: Settings → Privacy → Microphone") +
+        ") and make sure this browser is allowed and a microphone is enabled. The call connects automatically once it is."
       : siteDenied
-      ? "Your browser has blocked the microphone for this site, so it won't ask again automatically. Open the lock / camera icon in the address bar, set Microphone to “Allow” — the call connects on its own the moment it's allowed. You can also press continue below after allowing."
+      ? "Your browser has blocked the microphone for this site, so it won't ask again automatically. Open " +
+        siteControl +
+        ", set Microphone to “Allow” — the call connects on its own the moment it's allowed. You can also press continue below after allowing."
       : prompting
       ? "Tap “Allow microphone” so Maya~Milan can hear you on this call."
       : blockedUnknown
-      ? "We couldn't read the microphone permission for this browser. Try the lock / camera icon in the address bar → Microphone → Allow, and also check your system microphone privacy settings. The call connects automatically once it's allowed."
-      : "We couldn't access the microphone. Check the lock icon and your system mic settings, then try again.";
+      ? "We couldn't read the microphone permission for this browser. Try " +
+        siteControl +
+        " → Microphone → Allow, and also check your system microphone privacy settings. The call connects automatically once it's allowed."
+      : "We couldn't access the microphone. Check " +
+        (IS_IOS ? "the aA menu" : "the lock icon") +
+        " and your system mic settings, then try again.";
 
     const cardStyle = {
       position: "fixed",
@@ -548,7 +583,7 @@ export default function InCallOverlay() {
 
           {lockHelps && (
             <div style={lockRowStyle} aria-hidden="true">
-              <span style={chipStyle}>🔒 address bar</span>
+              <span style={chipStyle}>{siteChip}</span>
               <span>→</span>
               <span style={chipStyle}>
                 Microphone: <b>Allow</b>

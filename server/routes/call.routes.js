@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { protect } from "../middleware/auth.js"; // ⚠️ SEAM: confirm this path/export matches your OTHER route files
+
+import { protect } from "../middleware/auth.middleware.js";
 import { getCallHistory } from "../controllers/call.controller.js";
 
 const router = Router();

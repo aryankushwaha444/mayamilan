@@ -36,6 +36,7 @@ const SUPPORTS_DISPLAYMEDIA =
 
 const ICE_DISCONNECT_GRACE_MS = 8000;
 const OUTGOING_NO_ANSWER_MS = 30000;
+const RESTART_DEADLINE_MS = 15000; // 🔒 CONNECTIVITY: bound an ICE-restart attempt
 // ✅ Built from char codes so the SOURCE is pure ASCII and can NEVER be corrupted
 //    by copy/paste into /[ -]/g. Behaviorally identical to /[\u0000-\u001F\u007F]/g.
 const CONTROL_CHARS_RE = new RegExp(
@@ -49,6 +50,14 @@ const CONTROL_CHARS_RE = new RegExp(
 );
 
 const MIC_PROBE_TIMEOUT_MS = 10000;
+
+// (applySafeVideoCodecOrder REMOVED — U1.) preferVideoCodec in videoQuality.js is now
+// profile-aware (H264-constrained-baseline first -> VP8 fallback -> main/high -> VP9 ->
+// AV1), which is the correct iOS<->Chrome order. This flat VP8->VP9->H264->AV1 override
+// ran AFTER preferVideoCodec and, because setCodecPreferences REPLACES the list, it
+// CLOBBERED the profile ranking and re-put VP9 ahead of H.264 (old WebKit can choke).
+// Single source of truth for codec order = preferVideoCodec. Both the sendrecv and the
+// recvonly video transceiver now call it (U2/U3 below).
 
 // Map a terminal transition -> a chat-log status the UI understands.
 const mapEndedStatus = (payload) => {
@@ -130,10 +139,12 @@ export function useCall() {
   const durationTimerRef = useRef(null);
   const iceDisconnectTimerRef = useRef(null);
   const noAnswerTimerRef = useRef(null);
+  const restartTimerRef = useRef(null); // 🔒 CONNECTIVITY: ICE-restart deadline
   const iceServersRef = useRef([]);
   const phaseRef = useRef("idle");
   const callIdRef = useRef(null);
   const mediaTypeRef = useRef("audio");
+  const isCallerRef = useRef(false); // 🔒 CONNECTIVITY: only the caller restarts ICE (no glare)
 
   // call-log bookkeeping
   const peerIdRef = useRef(null);
@@ -163,6 +174,15 @@ export function useCall() {
     phaseRef.current = p;
     if (isMountedRef.current) setPhase(p);
   };
+  // 🔒 CONNECTIVITY-FIX: set the callId ref SYNCHRONOUSLY alongside state so an
+  //    immediately-following socket event (e.g. the server's offline call:rejected,
+  //    emitted in the same tick as call:ready) matches and is NOT dropped. The old
+  //    code updated callIdRef only via a [callId] effect, so onRejected saw null and
+  //    the caller hung on "Ringing..." for 30s on an offline callee.
+  const setCallIdSync = (cid) => {
+    callIdRef.current = cid;
+    if (isMountedRef.current) setCallId(cid);
+  };
 
   useEffect(() => {
     callIdRef.current = callId;
@@ -187,6 +207,12 @@ export function useCall() {
     if (noAnswerTimerRef.current) {
       clearTimeout(noAnswerTimerRef.current);
       noAnswerTimerRef.current = null;
+    }
+  };
+  const clearRestartTimer = () => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
     }
   };
   const clearQualityBindings = () => {
@@ -253,7 +279,10 @@ export function useCall() {
     clearDurationTimer();
     clearIceDisconnectTimer();
     clearNoAnswerTimer();
+    clearRestartTimer(); // 🔒 CONNECTIVITY
     clearQualityBindings();
+
+    callIdRef.current = null; // 🔒 CONNECTIVITY: null the ref synchronously too
 
     try {
       audioDisposeRef.current?.();
@@ -311,6 +340,7 @@ export function useCall() {
       setPermissionIssue(null); // ✅ dismiss the permission panel with the call
     }
     pendingRef.current = null;
+    isCallerRef.current = false;
     setPhaseSafe("idle");
   }, []);
 
@@ -346,6 +376,7 @@ export function useCall() {
       pc._callId = null;
       pc._peerId = null;
       pc._abort = new AbortController();
+      pc._restarted = false; // 🔒 CONNECTIVITY: single-shot restart guard
 
       try {
         qualityStopRef.current = bindQualityToPeerConnection(
@@ -385,11 +416,59 @@ export function useCall() {
         publishRemote();
       };
 
+      // 🔒 CONNECTIVITY-FIX: ICE restart for mobile Wi-Fi<->cellular handoff. Only
+      //    the CALLER initiates a renewed offer (the callee just answers) to avoid
+      //    offer glare; only once per connection; only if we HAD connected (never
+      //    restart a call that was still establishing). Bounded by RESTART_DEADLINE_MS.
+      const attemptIceRestart = () => {
+        if (
+          !(
+            isCallerRef.current &&
+            !pc._restarted &&
+            connectedAtRef.current &&
+            pcRef.current === pc
+          )
+        )
+          return false;
+        pc._restarted = true;
+        try {
+          pc.restartIce();
+        } catch {}
+        (async () => {
+          try {
+            const offer = await pc.createOffer({ iceRestart: true });
+            await pc.setLocalDescription(offer);
+            socketRef.current?.emit("call:signal", {
+              callId: pc._callId,
+              to: pc._peerId,
+              sdp: pc.localDescription,
+            });
+          } catch {}
+        })();
+        clearRestartTimer();
+        restartTimerRef.current = setTimeout(() => {
+          if (pcRef.current === pc && pc.connectionState !== "connected") {
+            if (isMountedRef.current) setError("Connection failed");
+            try {
+              socketRef.current?.emit("call:end", {
+                callId: pc._callId,
+                reason: "error",
+              });
+            } catch {}
+            finalizeCall("failed");
+            teardown();
+          }
+        }, RESTART_DEADLINE_MS);
+        return true;
+      };
+
       pc.onconnectionstatechange = () => {
         const st = pc.connectionState;
         if (st === "connected") {
           clearIceDisconnectTimer();
           clearNoAnswerTimer();
+          clearRestartTimer();
+          pc._restarted = false; // allow a FUTURE handoff to restart again
           if (!connectedAtRef.current) connectedAtRef.current = Date.now();
           setPhaseSafe("in-call");
           try {
@@ -402,6 +481,7 @@ export function useCall() {
               setDurationSec(Math.floor((Date.now() - start) / 1000));
           }, 1000);
         } else if (st === "failed") {
+          if (attemptIceRestart()) return; // try a relay re-bind before giving up
           if (isMountedRef.current) setError("Connection failed");
           try {
             socketRef.current?.emit("call:end", {
@@ -415,6 +495,7 @@ export function useCall() {
           clearIceDisconnectTimer();
           iceDisconnectTimerRef.current = setTimeout(() => {
             if (pcRef.current === pc && pc.connectionState !== "connected") {
+              if (attemptIceRestart()) return; // handoff in progress -> restart, not drop
               try {
                 socketRef.current?.emit("call:end", {
                   callId: pc._callId,
@@ -567,6 +648,9 @@ export function useCall() {
               streams: [stream],
             });
             if (track.kind === "video") {
+              // U2: single source of truth = profile-aware preferVideoCodec
+              // (H264-constrained-baseline -> VP8 -> main/high -> VP9 -> AV1).
+              // The flat applySafeVideoCodecOrder override is GONE (it clobbered this).
               preferVideoCodec(transceiver, "compatible");
               videoSenderRef.current = transceiver.sender;
             } else if (track.kind === "audio") {
@@ -587,7 +671,12 @@ export function useCall() {
         .some((s) => s.track?.kind === "video");
       if (!hasVideoSender && typeof pc.addTransceiver === "function") {
         try {
-          pc.addTransceiver("video", { direction: "recvonly" });
+          const recv = pc.addTransceiver("video", { direction: "recvonly" });
+          // U3: the recvonly ANSWERER transceiver now ALSO gets the profile-aware
+          // order (previously it only got the flat override, never preferVideoCodec),
+          // so a video-off / audio-call-that-adds-video side negotiates a shared,
+          // iOS-decodable codec too.
+          preferVideoCodec(recv, "compatible");
         } catch {}
       }
       applyAllSendersQuality(pc, preset).catch(() => {});
@@ -742,6 +831,7 @@ export function useCall() {
 
       resetCallLog(safeTo);
       setMediaType(mt);
+      isCallerRef.current = true; // 🔒 CONNECTIVITY: this side may restart ICE
       setPhaseSafe("outgoing");
       setPeer(
         sanitizePeer({ _id: safeTo }) || {
@@ -1242,8 +1332,9 @@ export function useCall() {
       pc._callId = cid;
       pc._peerId = peerId;
       peerIdRef.current = peerId;
+      isCallerRef.current = true; // 🔒 CONNECTIVITY
       if (isMountedRef.current) {
-        setCallId(cid);
+        setCallIdSync(cid); // 🔒 CONNECTIVITY: sync ref so an immediate call:rejected matches
         setPeer(
           sanitizePeer({ _id: peerId }) || {
             _id: peerId,
@@ -1251,6 +1342,8 @@ export function useCall() {
             photo: null,
           }
         );
+      } else {
+        callIdRef.current = cid;
       }
     };
 
@@ -1323,10 +1416,13 @@ export function useCall() {
       pendingRef.current = null;
       resetCallLog(from._id);
       iceServersRef.current = ice;
+      isCallerRef.current = false; // 🔒 CONNECTIVITY: callee never initiates restart (avoids glare)
       if (isMountedRef.current) {
-        setCallId(id);
+        setCallIdSync(id); // 🔒 CONNECTIVITY: sync ref so an immediate dismiss/ended matches
         setPeer(from);
         setMediaType(mt);
+      } else {
+        callIdRef.current = id;
       }
       setPhaseSafe("incoming");
       try {

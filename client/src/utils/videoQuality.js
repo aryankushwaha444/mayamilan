@@ -12,9 +12,19 @@
 
 import { sanitizeIceServers, isWebRtcDebugEnabled } from "./webrtcSecurity.js";
 
-const IS_MOBILE =
+// ✅ CROSS-BROWSER-FIX: iPadOS 13+ reports a "Macintosh" UA, so the old regex
+//    treated an iPad as desktop and handed it the hd720 preset. Detect the
+//    touch-capable Mac (standard heuristic) so iPads get the mobile preset.
+const UA = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+const IS_TOUCH_MAC =
   typeof navigator !== "undefined" &&
-  /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent || "");
+  /Macintosh/.test(UA) &&
+  typeof navigator.maxTouchPoints === "number" &&
+  navigator.maxTouchPoints > 1 &&
+  // window.MSStream existed only on legacy Edge-on-Windows "Mac"-ish UAs; absent elsewhere.
+  (typeof window === "undefined" || !window.MSStream);
+const IS_MOBILE =
+  /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(UA) || IS_TOUCH_MAC;
 
 export const VIDEO_QUALITY_PRESETS = {
   low: {
@@ -73,13 +83,20 @@ export const getPresetById = (id) => {
  * navigator.mediaDevices.getUserMedia({ video: true, audio: true })
  *
  * ✅ AUDIO CHANGES:
- *  - channelCount / sampleRate are now {ideal:...} (NOT exact) so a device that
- *    can't deliver exactly 1ch/48kHz no longer throws OverconstrainedError and
- *    silently degrades the whole call.
- *  - Added the experimental Google `advanced` processors (NS/EC/AGC/high-pass +
- *    the "*2" stronger models). Unknown keys are ignored per-spec on browsers
- *    that don't implement them (Firefox/Safari), so this is cross-browser safe.
- *    These engage the *stronger* built-in suppression that the plain booleans miss.
+ *  - channelCount / sampleRate are {ideal:...} (NOT exact) so a device that
+ *    can't deliver exactly 1ch/48kHz no longer throws OverconstrainedError.
+ *  - 🔒 CROSS-BROWSER-FIX: the Chromium-only `advanced` goog* block is NO LONGER in
+ *    the default constraints. The three top-level booleans already engage native
+ *    NS/EC/AGC on EVERY browser; the goog* keys were a Chrome-only bonus that, on
+ *    any engine rejecting an unrecognized `advanced` member, throws at getUserMedia
+ *    time — and acquireLocal's audio-only RETRY reuses base.audio, so the retry
+ *    would throw too and the call would die with no fallback. Opt the bonus back in
+ *    per-tab with localStorage MAYA_AUDIO_ADVANCED=1 (Chrome only) if you want it.
+ * ✅ VIDEO CHANGES:
+ *  - 🔒 facingMode is now {ideal:"user"} (was a bare string == EXACT). An exact
+ *    facingMode throws OverconstrainedError on devices/virtual-cams that can't
+ *    report "user", which made acquireLocal silently degrade the WHOLE call to
+ *    audio-only (the "no video on some phones/webcams" symptom).
  */
 const readPipeline = () => {
   try {
@@ -102,7 +119,10 @@ export const getMediaConstraints = (preset = getDefaultPreset()) => {
     width: { ideal: preset.width },
     height: { ideal: preset.height },
     frameRate: { ideal: preset.frameRate, max: preset.frameRate },
-    facingMode: "user",
+    // 🔒 was a bare string "user" == EXACT -> OverconstrainedError on some devices
+    //    -> silent audio-only degrade. {ideal} keeps the front-cam preference
+    //    without ever failing the open.
+    facingMode: { ideal: "user" },
   };
 
   if (rawMic) {
@@ -118,42 +138,49 @@ export const getMediaConstraints = (preset = getDefaultPreset()) => {
     };
   }
 
-  // DEFAULT (native): browser NS + EC + AGC. The custom gate is NOT engaged
-  // (buildProcessedAudioTrack returns null for "native"), so this is pure
-  // WebRTC processing — the correct primary path.
-  return {
-    video,
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-
-      channelCount: { ideal: 1 },
-      sampleRate: { ideal: 48000 },
-
-      advanced: [
-        {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-
-          googEchoCancellation: true,
-          googNoiseSuppression: true,
-          googAutoGainControl: true,
-          googHighpassFilter: true,
-
-          googEchoCancellation2: true,
-          googNoiseSuppression2: true,
-          googAutoGainControl2: true,
-          googLatestEchoCancellation: true,
-        },
-      ],
-    },
+  const baseAudio = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: { ideal: 1 },
+    sampleRate: { ideal: 48000 },
   };
+
+  // DEFAULT (native): browser NS + EC + AGC via the universally-honored booleans.
+  // The custom gate is NOT engaged (buildProcessedAudioTrack returns null for
+  // "native"), so this is pure WebRTC processing — the correct, cross-browser path.
+  let audio = baseAudio;
+  try {
+    if (globalThis.localStorage?.getItem("MAYA_AUDIO_ADVANCED") === "1") {
+      audio = {
+        ...baseAudio,
+        advanced: [
+          {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            googEchoCancellation: true,
+            googNoiseSuppression: true,
+            googAutoGainControl: true,
+            googHighpassFilter: true,
+            googEchoCancellation2: true,
+            googNoiseSuppression2: true,
+            googAutoGainControl2: true,
+            googLatestEchoCancellation: true,
+          },
+        ],
+      };
+    }
+  } catch {}
+
+  return { video, audio };
 };
 
 /**
  * Create RTCPeerConnection with settings favorable for quality.
+ * (Confirmed correct: max-bundle + require are the modern safe defaults; omitting
+ *  iceTransportPolicy keeps "all" = host+srflx+relay, which is what mobile needs.
+ *  The sanitizeIceServers() here is a harmless second pass / defense-in-depth.)
  */
 export const createHighQualityPeerConnection = (iceServers = []) => {
   return new RTCPeerConnection({
@@ -263,18 +290,97 @@ export async function applyAllSendersQuality(pc, preset = getDefaultPreset()) {
  * codec (linked by parameters.apt). We score+sort ONLY the media codecs and
  * re-attach each auxiliary codec right after its parent.
  *
+ * 🔒 iOS<->CHROME BLACK-VIDEO FIX: the old scorer gave EVERY H.264 line the same
+ *    score, so the browser's own capability order survived among them — and
+ *    Chrome/Safari often list a HIGH-profile (profile-level-id=64..) H.264 first.
+ *    Offering high-profile H.264 at the top makes the answerer pick it, and older /
+ *    low-power iOS hardware decoders CANNOT decode high profile -> negotiated
+ *    "H.264" but a black screen. We now rank H.264 BY PROFILE: constrained-
+ *    baseline/baseline (the RFC 7742 mandatory-to-implement WebRTC profile, so it
+ *    is guaranteed on iOS) leads, VP8 is the universal fallback right behind it,
+ *    then main, then high, then VP9, then AV1. Result: iOS always lands on a
+ *    profile it can decode, Chrome<->Chrome still gets H.264-baseline (battery),
+ *    and high profile is never offered ahead of a decodable alternative.
+ *
  * Modes:
- * - "compatible": prefer H264/VP8 (hardware/mobile stable)  <- default
- * - "efficient":  prefer VP9/AV1 (better compression, more CPU)
+ * - "compatible": prefer H264-baseline / VP8 (hardware/mobile stable, max interop)  <- default
+ * - "efficient":  prefer AV1/VP9 (better compression, more CPU) but STILL keep
+ *                 VP8 + H264-baseline in the list so an iOS/old peer that lacks
+ *                 AV1/VP9 falls back to a codec it CAN decode (never black).
  */
+const h264ProfileRank = (c) => {
+  // profile-level-id lives in sdpFmtpLine ("...profile-level-id=42e01f;...") and/or
+  // in parameters['profile-level-id'] depending on the engine.
+  let plid = "";
+  try {
+    plid =
+      (c?.parameters && c.parameters["profile-level-id"]) ||
+      (String(c?.sdpFmtpLine || "").match(/profile-level-id=([0-9a-f]{6})/i) ||
+        [])[1] ||
+      "";
+  } catch {}
+  const hex = String(plid).toUpperCase();
+  const pb = hex.slice(0, 2); // profile_idc byte
+  if (pb === "42") return "baseline"; // 42xx = baseline / constrained-baseline (42e0..)
+  if (pb === "4D") return "main";
+  if (pb === "58") return "extended";
+  if (
+    pb === "64" ||
+    pb === "6E" ||
+    pb === "7A" ||
+    pb === "F0" ||
+    pb === "F4" ||
+    pb === "F8" ||
+    pb === "FC"
+  )
+    return "high";
+  return "unknown";
+};
+
+const codecPriority = (c, mode) => {
+  const m = String(c?.mimeType || "").toLowerCase();
+  if (mode === "efficient") {
+    if (m.includes("av1")) return 600;
+    if (m.includes("vp9")) return 500;
+    if (m.includes("vp8")) return 400;
+    if (m.includes("h264")) {
+      const r = h264ProfileRank(c);
+      if (r === "baseline") return 300;
+      if (r === "main") return 200;
+      if (r === "high" || r === "extended") return 100;
+      return 150; // unknown profile -> above high, below main
+    }
+    return 50;
+  }
+  // "compatible": max interop + mobile battery. H264-baseline first (spec-guaranteed
+  // on iOS, hardware-accelerated), VP8 as the bulletproof fallback, then the rest.
+  if (m.includes("h264")) {
+    const r = h264ProfileRank(c);
+    if (r === "baseline") return 600;
+    if (r === "main") return 400;
+    if (r === "high" || r === "extended") return 300;
+    return 350; // unknown profile: below main, above high
+  }
+  if (m.includes("vp8")) return 500;
+  if (m.includes("vp9")) return 200;
+  if (m.includes("av1")) return 100;
+  return 50;
+};
+
 export function preferVideoCodec(transceiver, mode = "compatible") {
   try {
     if (!transceiver || typeof transceiver.setCodecPreferences !== "function") {
       return;
     }
 
-    const capabilities = RTCRtpReceiver.getCapabilities?.("video");
-    const all = capabilities?.codecs || [];
+    // ✅ sender-caps fallback for engines where receiver.getCapabilities is empty/
+    //    undefined (very old WebKit); if both are empty we leave default order,
+    //    which on iOS is already H264/VP8-friendly.
+    let all = RTCRtpReceiver.getCapabilities?.("video")?.codecs;
+    if (!all || !all.length) {
+      all = RTCRtpSender.getCapabilities?.("video")?.codecs;
+    }
+    all = all || [];
     if (!all.length) return;
 
     const mimeOf = (c) => String(c?.mimeType || "").toLowerCase();
@@ -287,23 +393,9 @@ export function preferVideoCodec(transceiver, mode = "compatible") {
     const aux = all.filter(isAux);
     if (!media.length) return;
 
-    const score = (c) => {
-      const m = mimeOf(c);
-      if (mode === "efficient") {
-        if (m.includes("av1")) return 5;
-        if (m.includes("vp9")) return 4;
-        if (m.includes("vp8")) return 3;
-        if (m.includes("h264")) return 2;
-        return 1;
-      }
-      if (m.includes("h264")) return 5;
-      if (m.includes("vp8")) return 4;
-      if (m.includes("vp9")) return 3;
-      if (m.includes("av1")) return 2;
-      return 1;
-    };
-
-    media.sort((a, b) => score(b) - score(a));
+    // 🔒 profile-aware sort (was a flat mime score that let high-profile H264 float
+    //    to the top via stable-sort ties -> iOS black video).
+    media.sort((a, b) => codecPriority(b, mode) - codecPriority(a, mode));
 
     const ordered = [];
     const usedAux = new Set();
@@ -842,35 +934,26 @@ export async function buildProcessedAudioTrack(micTrack) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   ✅ PERMISSION PRE-FLIGHT — MICROPHONE ONLY (the hard gate).
-   ---------------------------------------------------------------------
-   We deliberately DO NOT probe the camera here. The camera is a SOFT gate
-   owned by acquireLocal, and probing it (getUserMedia -> stop -> acquireLocal
-   getUserMedia again) is an open->stop->open race on the SAME physical device:
-   while the other tab already holds the webcam, that race can hand acquireLocal
-   a track that is immediately muted/ended — which is exactly the "receiver
-   camera reads 'Using now' but the caller never gets video" symptom. Probing
-   the mic only still surfaces the permission prompt BEFORE we ring/accept (so
-   the no-answer / ring timers never overlap a dialog) without EVER opening the
-   camera twice. Returns { mic, cam } where cam is always null here (the camera
-   status is decided later, by acquireLocal, on its single open).
+   ⚠️ DEPRECATED pre-flight (kept only so any stale importer still builds).
+   useCall.js does NOT use this — it uses classifyMic(), which is the same
+   real-getUserMedia probe. The old body trusted navigator.permissions.query as
+   a FAST PATH and returned granted/denied WITHOUT probing, which is exactly the
+   lying-query bug that produced false "Microphone is blocked" panels. The body
+   below is now probe-first (real getUserMedia confirms success; the query only
+   LABELS a failure as site-denied vs os-blocked). Signature/arity/return
+   container are unchanged so call sites don't move.
    ═══════════════════════════════════════════════════════════════════════ */
 const MIC_PROBE = {
   audio: { channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } },
   video: false,
 };
 
-// Resolve one permission kind without leaving the device hot.
 async function resolveKind(name, probeConstraints) {
-  // Fast path: if the browser already knows granted/denied, DON'T probe
-  // (avoids a pointless device blink and gives us the blocked-vs-prompt signal).
+  if (!navigator.mediaDevices?.getUserMedia) return "error"; // insecure ctx / unsupported
+  let siteState = null;
   try {
-    const st = (await navigator.permissions?.query?.({ name }))?.state;
-    if (st === "granted") return "granted";
-    if (st === "denied") return "denied"; // blocked in site settings: no dialog will show
-    // 'prompt' / undefined / unsupported -> fall through and actually prompt
+    siteState = (await navigator.permissions?.query?.({ name }))?.state || null;
   } catch {}
-  if (!navigator.mediaDevices?.getUserMedia) return "error"; // insecure context / unsupported
   try {
     const s = await navigator.mediaDevices.getUserMedia(probeConstraints);
     s.getTracks().forEach((t) => {
@@ -878,10 +961,18 @@ async function resolveKind(name, probeConstraints) {
         t.stop();
       } catch {}
     }); // stop immediately: no hot device
-    return "granted";
+    return "granted"; // a REAL success beats any query claim
   } catch (e) {
     const n = e?.name;
-    if (n === "NotAllowedError" || n === "SecurityError") return "denied";
+    if (
+      n === "NotAllowedError" ||
+      n === "SecurityError" ||
+      n === "PermissionDeniedError"
+    ) {
+      if (siteState === "denied") return "denied"; // site block: lock icon helps
+      if (siteState === "granted") return "os-blocked"; // site ok but OS/hw blocks
+      return "denied"; // unknown query -> safe default guidance
+    }
     if (
       n === "NotFoundError" ||
       n === "DevicesNotFoundError" ||
@@ -889,12 +980,14 @@ async function resolveKind(name, probeConstraints) {
       n === "ConstraintNotSatisfiedError"
     )
       return "no-device";
+    if (n === "NotReadableError" || n === "AbortError") return "occupied";
     return "error";
   }
 }
 
 // Signature/arity unchanged (mediaType kept so call sites don't move); the body
-// now resolves the microphone only, so the camera is opened exactly once.
+// now resolves the microphone with a REAL probe, so the camera is opened exactly
+// once elsewhere and this never lies about the mic.
 export async function requestMediaPermission(_mediaType) {
   const mic = await resolveKind("microphone", MIC_PROBE);
   return { mic, cam: null }; // camera status is decided later, by acquireLocal (single open)

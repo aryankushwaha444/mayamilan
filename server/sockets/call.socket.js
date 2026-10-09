@@ -78,31 +78,244 @@ const safeLogAudit = async (ctx, action, metadata) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// 🔒 CONNECTIVITY-FIX (Cloudflare Realtime TURN): the synchronous builder
+//    below could not talk to Cloudflare (credential minting is an async POST),
+//    so we add an async Cloudflare path FIRST and keep the existing static/HMAC
+//    logic as a FALLBACK. Modes, in priority order:
+//      1) Cloudflare Realtime TURN  (CLOUDFLARE_ACCOUNT_ID + _TURN_SERVICE_ID + _API_TOKEN set)
+//      2) self-hosted coturn HMAC   (TURN_HOST/TURN_URL + TURN_STATIC_AUTH_SECRET)
+//      3) managed static creds      (TURN_URL + TURN_USERNAME + TURN_PASSWORD)
+//      4) STUN-only                 (warn once; mobile/cellular WILL fail)
+//    Credentials are CACHED and de-duplicated in-flight so a burst of call:start
+//    does not hammer the Cloudflare API, and every fetch is bounded by a 10s
+//    AbortController so a Cloudflare outage degrades to STUN instead of hanging
+//    the caller. The API token / secret NEVER leave the server: the browser only
+//    ever receives short-lived username/credential pairs.
+// ═══════════════════════════════════════════════════════════════════════
+const CLOUDFLARE_ACCOUNT_ID = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
+const CLOUDFLARE_TURN_SERVICE_ID = (
+  process.env.CLOUDFLARE_REALTIME_TURN_SERVICE_ID ||
+  process.env.CLOUDFLARE_TURN_SERVICE_ID ||
+  ""
+).trim();
+const CLOUDFLARE_API_TOKEN = (process.env.CLOUDFLARE_API_TOKEN || "").trim();
+const CLOUDFLARE_TURN_TTL_SEC = Math.min(
+  Math.max(
+    parseInt(
+      process.env.CLOUDFLARE_TURN_TTL_SEC ||
+        process.env.TURN_CRED_TTL_SEC ||
+        "3600",
+      10
+    ) || 3600,
+    300
+  ),
+  43200
+);
+const CLOUDFLARE_TURN_ENABLED = Boolean(
+  CLOUDFLARE_ACCOUNT_ID && CLOUDFLARE_TURN_SERVICE_ID && CLOUDFLARE_API_TOKEN
+);
+
+let cfTurnCache = null; // { iceServers, expiresAt }
+let cfTurnInFlight = null; // shared promise -> concurrent callers reuse one fetch
+
+const normalizeIceServer = (s) => {
+  if (!s || typeof s !== "object") return null;
+  const rawUrls = Array.isArray(s.urls)
+    ? s.urls
+    : Array.isArray(s.uris)
+    ? s.uris
+    : typeof s.url === "string"
+    ? [s.url]
+    : [];
+  const urls = rawUrls.map((u) => String(u || "").trim()).filter(Boolean);
+  if (!urls.length) return null;
+  const out = { urls };
+  if (s.username) out.username = String(s.username);
+  if (s.credential) out.credential = String(s.credential);
+  if (s.credentialType) out.credentialType = String(s.credentialType);
+  return out;
+};
+
+async function fetchCloudflareTurnIceServers() {
+  const now = Date.now();
+  if (cfTurnCache && cfTurnCache.expiresAt > now + 30000) {
+    return cfTurnCache.iceServers; // still valid (30s safety margin)
+  }
+  if (cfTurnInFlight) return cfTurnInFlight; // coalesce concurrent requests
+
+  cfTurnInFlight = (async () => {
+    const endpoint =
+      `https://api.cloudflare.com/client/v4/accounts/` +
+      `${encodeURIComponent(CLOUDFLARE_ACCOUNT_ID)}` +
+      `/realtime/turn/services/` +
+      `${encodeURIComponent(CLOUDFLARE_TURN_SERVICE_ID)}` +
+      `/credentials`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ttl: CLOUDFLARE_TURN_TTL_SEC }),
+        signal: controller.signal,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) {
+        const msg =
+          json?.errors?.[0]?.message || json?.message || `HTTP ${res.status}`;
+        throw new Error(`Cloudflare TURN credential error: ${msg}`);
+      }
+      const rawList =
+        json?.result?.iceServers ||
+        json?.result?.turnServers ||
+        json?.result?.uris ||
+        json?.iceServers ||
+        [];
+      const list = (Array.isArray(rawList) ? rawList : [rawList])
+        .map(normalizeIceServer)
+        .filter(Boolean);
+      if (!list.length) {
+        throw new Error(
+          "Cloudflare TURN response did not include usable iceServers"
+        );
+      }
+      const expiresFromApi = json?.result?.expiresAt
+        ? Date.parse(json.result.expiresAt)
+        : NaN;
+      const expiresAt =
+        Number.isFinite(expiresFromApi) && expiresFromApi > now + 30000
+          ? expiresFromApi - 30000
+          : now + Math.max(60000, (CLOUDFLARE_TURN_TTL_SEC - 120) * 1000);
+      cfTurnCache = { iceServers: list, expiresAt };
+      return list;
+    } finally {
+      clearTimeout(timeout);
+      cfTurnInFlight = null;
+    }
+  })();
+
+  return cfTurnInFlight;
+}
+
+// 🔒 CONNECTIVITY-FIX: TURN emission previously required an HMAC secret AND a
+//    hand-listed TURN_URL, so (a) managed/static-credential providers (Xirsys,
+//    OpenAgora, Cloudflare Calls, Twilio) got NO relay -> mobile/cellular failed,
+//    and (b) a single UDP-only turn: URL died on UDP-throttling carriers. Now we
+//    accept EITHER time-limited HMAC (coturn use-auth-secret) OR static
+//    username/password, and we AUTO-BUILD udp + tcp:443 + tls:443 from TURN_HOST
+//    when TURN_URL is empty. We never push a credential-less turn: (it would just
+//    fail auth and waste ICE candidates).
+const TURN_HOST = (process.env.TURN_HOST || "").trim();
+const TURN_PORT = parseInt(process.env.TURN_PORT || "3478", 10);
+const TURN_TLS_PORT = parseInt(process.env.TURN_TLS_PORT || "443", 10);
+const TURN_URL_RAW = process.env.TURN_URL || process.env.TURN_URLS || "";
+const TURN_SECRET =
+  process.env.TURN_STATIC_AUTH_SECRET || process.env.TURN_AUTH_SECRET || "";
+const TURN_USER = process.env.TURN_USERNAME || "";
+const TURN_PASS =
+  process.env.TURN_PASSWORD || process.env.TURN_CREDENTIAL || "";
+
+const turnUrlsFromHost = () => {
+  if (!TURN_HOST) return [];
+  const h = TURN_HOST;
+  return [
+    `turn:${h}:${TURN_PORT}`, // UDP
+    `turn:${h}:${TURN_PORT}?transport=tcp`, // TCP on the TURN port
+    `turn:${h}:${TURN_TLS_PORT}?transport=tcp`, // TCP on 443 (firewall-friendly)
+    `turns:${h}:${TURN_TLS_PORT}`, // TLS (most reliable through corporate/mobile NAT)
+  ];
+};
+
+const stunServers = () => [
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+];
+
 let warnedNoTurn = false;
-const buildIceServers = () => {
-  const urls = (process.env.TURN_URL || "")
-    .split(",")
+let warnedNoTurnCreds = false;
+let warnedCloudflareTurn = false;
+
+// 🔒 CONNECTIVITY-FIX: now ASYNC. Cloudflare first (cached), then the EXACT prior
+//    static/HMAC fallback (same warnings, same STUN-only returns). Callers MUST
+//    `await` this (see call:start) or a Promise leaks into the ICE payload.
+const buildIceServers = async () => {
+  // 1) Preferred: Cloudflare Realtime TURN
+  if (CLOUDFLARE_TURN_ENABLED) {
+    try {
+      const cf = await fetchCloudflareTurnIceServers();
+      return [...stunServers(), ...cf];
+    } catch (e) {
+      if (!warnedCloudflareTurn) {
+        warnedCloudflareTurn = true;
+        console.warn(
+          "⚠️ Cloudflare Realtime TURN credential fetch failed. Falling back to static TURN env if configured:",
+          e?.message || e
+        );
+      }
+      // fall through to static/HMAC fallback below
+    }
+  }
+
+  // 2/3/4) Fallback: self-hosted coturn HMAC / managed static creds / STUN-only
+  //        (logic preserved verbatim from the previous synchronous builder)
+  const servers = stunServers();
+  let urls = TURN_URL_RAW.split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const secret = process.env.TURN_STATIC_AUTH_SECRET;
-  const servers = [
-    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-  ];
-  if (urls.length && secret) {
-    const username = `${Math.floor(Date.now() / 1000) + ICE_TTL_SEC}`;
-    const credential = crypto
-      .createHmac("sha1", secret)
+  if (!urls.length) urls = turnUrlsFromHost();
+
+  if (!urls.length) {
+    if (!warnedNoTurn) {
+      warnedNoTurn = true;
+      console.warn(
+        "⚠️ No TURN configured (Cloudflare env unset, and no TURN_URL/TURN_HOST). 1-to-1 calls will FAIL on symmetric NAT / mobile carriers. Configure Cloudflare Realtime TURN or coturn for production."
+      );
+    }
+    return servers;
+  }
+
+  let username;
+  let credential;
+  if (TURN_SECRET) {
+    // coturn use-auth-secret: username = expiry unix time, credential =
+    // base64(HMAC-SHA1(secret, username)). Pure-timestamp username is valid.
+    username = String(Math.floor(Date.now() / 1000) + ICE_TTL_SEC);
+    credential = crypto
+      .createHmac("sha1", TURN_SECRET)
       .update(username)
       .digest("base64");
-    servers.push({ urls, username, credential });
-  } else if (!warnedNoTurn) {
-    warnedNoTurn = true;
-    console.warn(
-      "⚠️ No TURN configured (TURN_URL + TURN_STATIC_AUTH_SECRET). 1-to-1 calls will FAIL on symmetric NAT / restrictive firewalls. Set TURN env vars for production."
-    );
+  } else if (TURN_USER && TURN_PASS) {
+    // Managed / static-credential provider.
+    username = TURN_USER;
+    credential = TURN_PASS;
+  } else {
+    // Has URLs but no way to authenticate them -> sending them would only burn
+    // ICE candidates on 401s. Fall back to STUN-only and warn once.
+    if (!warnedNoTurnCreds) {
+      warnedNoTurnCreds = true;
+      console.warn(
+        "⚠️ TURN URLs configured but NO credentials (need TURN_STATIC_AUTH_SECRET for HMAC, or TURN_USERNAME+TURN_PASSWORD for static). TURN will NOT be sent; mobile/cellular calls may fail. Calls will use STUN only."
+      );
+    }
+    return servers;
   }
+
+  servers.push({ urls, username, credential });
   return servers;
 };
+
+// Warm-up: pre-populate the Cloudflare cache ~1s after boot so the FIRST call
+// after a Render restart doesn't pay the credential-fetch latency. unref'd so it
+// never holds the event loop open. No-op when Cloudflare isn't configured.
+if (CLOUDFLARE_TURN_ENABLED) {
+  const t = setTimeout(() => {
+    void fetchCloudflareTurnIceServers().catch(() => {});
+  }, 1000);
+  t.unref?.();
+}
 
 const setupRate = new Map();
 const signalRate = new Map();
@@ -123,6 +336,14 @@ const bump = (map, key, limit) => {
 // double-write a Call doc or double-emit a chat row). Keyed by callId + timestamp.
 const CHAT_DONE = new Map();
 
+// 🔒 ATTACKER-FIX: bound offline "missed call" writes. Without this, an
+// authenticated caller could hammer an OFFLINE match 20/min and each attempt
+// wrote a Call doc + a Message row + bumped the conversation -> storage/chat DoS
+// and a flooded inbox when the victim returns. The caller is still told "offline"
+// instantly every time; we just suppress the durable row to <=1 per pair/minute.
+const OFFLINE_COOLDOWN_MS = 60000;
+const offlineCooldown = new Map(); // "caller:callee" -> lastWriteTs
+
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of setupRate.entries())
@@ -131,6 +352,9 @@ setInterval(() => {
     if (now - v.windowStart > 60000) signalRate.delete(k);
   const cutoff = now - 15 * 60 * 1000;
   for (const [k, v] of CHAT_DONE.entries()) if (v < cutoff) CHAT_DONE.delete(k);
+  const ocCut = now - 5 * 60 * 1000;
+  for (const [k, v] of offlineCooldown.entries())
+    if (v < ocCut) offlineCooldown.delete(k);
 }, 60 * 1000).unref?.();
 
 const watchdogs = new Map();
@@ -455,7 +679,7 @@ const registerCallSocket = (io, socket) => {
         });
 
       const callId = newCallId();
-      const iceServers = buildIceServers();
+      const iceServers = await buildIceServers(); // 🔒 CONNECTIVITY-FIX: await the async builder
       createCall({
         callId,
         callerId: me,
@@ -481,7 +705,20 @@ const registerCallSocket = (io, socket) => {
           mediaType,
           conversationId,
         });
-        if (rec) await resolveCall(rec, "missed", "offline", null);
+        if (rec) {
+          // 🔒 ATTACKER-FIX: tell the caller "offline" every time, but only write the
+          // durable missed-call row once per pair per minute (bounds storage/chat spam).
+          const ck = `${me}:${String(to)}`;
+          const last = offlineCooldown.get(ck) || 0;
+          const nowTs = Date.now();
+          if (nowTs - last < OFFLINE_COOLDOWN_MS) {
+            clearRing(rec.callId);
+            takeCall(rec.callId); // drop from registry WITHOUT writing Call/Message
+          } else {
+            offlineCooldown.set(ck, nowTs);
+            await resolveCall(rec, "missed", "offline", null);
+          }
+        }
         return;
       }
 
