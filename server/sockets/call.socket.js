@@ -234,6 +234,22 @@ const stunServers = () => [
   { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
 ];
 
+const describeIce = (arr) => {
+  let turn = 0, turns = 0, total = 0;
+  for (const s of arr || []) {
+    const urls = Array.isArray(s.urls) ? s.urls : s.url ? [s.url] : [];
+    for (const u of urls) {
+      total++;
+      const str = String(u);
+      if (str.startsWith("turns:")) turns++;
+      else if (str.startsWith("turn:")) turn++;
+    }
+  }
+  return `iceServers total=${total} turn=${turn} turns=${turns} relay=${
+    turn + turns > 0 ? "YES" : "NO(=STUN-only, mobile WILL hang)"
+  }`;
+};
+
 let warnedNoTurn = false;
 let warnedNoTurnCreds = false;
 let warnedCloudflareTurn = false;
@@ -678,8 +694,20 @@ const registerCallSocket = (io, socket) => {
           reason: "already_in_call",
         });
 
-      const callId = newCallId();
-      const iceServers = await buildIceServers(); // 🔒 CONNECTIVITY-FIX: await the async builder
+        const callId = newCallId();
+        const iceServers = await buildIceServers(); // 🔒 CONNECTIVITY-FIX: await the async builder
+        console.log(
+          "🧭 call:start ICE:",
+          describeIce(iceServers),
+          "| cloudflareEnabled=",
+          CLOUDFLARE_TURN_ENABLED,
+          "| serviceIdSet=",
+          Boolean(CLOUDFLARE_TURN_SERVICE_ID),
+          "| accountIdSet=",
+          Boolean(CLOUDFLARE_ACCOUNT_ID),
+          "| tokenSet=",
+          Boolean(CLOUDFLARE_API_TOKEN)
+        );
       createCall({
         callId,
         callerId: me,
