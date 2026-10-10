@@ -131,6 +131,7 @@ export function useCall() {
   const cameraTrackRef = useRef(null);
   const screenTrackRef = useRef(null);
   const videoSenderRef = useRef(null);
+  const videoTransceiverRef = useRef(null);
   const audioSenderRef = useRef(null); // ✅ the audio RTCRtpSender
   const audioOutTrackRef = useRef(null); // ✅ the track actually transmitted (cleaned or raw)
   const audioDisposeRef = useRef(null); // ✅ denoiser teardown
@@ -325,6 +326,7 @@ export function useCall() {
     }
     cameraTrackRef.current = null;
     videoSenderRef.current = null;
+    videoTransceiverRef.current = null;
 
     if (isMountedRef.current) {
       setLocalStream(null);
@@ -653,6 +655,7 @@ export function useCall() {
               // The flat applySafeVideoCodecOrder override is GONE (it clobbered this).
               preferVideoCodec(transceiver, "compatible");
               videoSenderRef.current = transceiver.sender;
+              videoTransceiverRef.current = transceiver;
             } else if (track.kind === "audio") {
               audioSenderRef.current = transceiver.sender;
             }
@@ -672,11 +675,8 @@ export function useCall() {
       if (!hasVideoSender && typeof pc.addTransceiver === "function") {
         try {
           const recv = pc.addTransceiver("video", { direction: "recvonly" });
-          // U3: the recvonly ANSWERER transceiver now ALSO gets the profile-aware
-          // order (previously it only got the flat override, never preferVideoCodec),
-          // so a video-off / audio-call-that-adds-video side negotiates a shared,
-          // iOS-decodable codec too.
           preferVideoCodec(recv, "compatible");
+          videoTransceiverRef.current = recv;
         } catch {}
       }
       applyAllSendersQuality(pc, preset).catch(() => {});
@@ -1200,16 +1200,65 @@ export function useCall() {
           () => {}
         );
       } else {
-        try {
-          nt.stop();
-        } catch {}
-        if (isMountedRef.current)
-          toastRef.current?.error?.(
-            "Camera was off when this call connected. Hang up and call again to use video.",
-            "Camera",
-            5000
+        // 🔒 VIDEO-UP-FIX: a side that connected audio-only (camera denied/unavailable/
+        //    occupied at Accept -> recvonly video transceiver, no sender) previously
+        //    dead-ended with "hang up and call again". Instead, upgrade the existing
+        //    recvonly video transceiver to sendrecv (or add one), attach the new track,
+        //    and renegotiate so video starts flowing to the peer WITHOUT hanging up.
+        //    The peer's existing onSignal already answers a remote offer, and the server
+        //    already relays call:signal, so no protocol/server change is required.
+        const pc = pcRef.current;
+        if (!pc) {
+          try {
+            nt.stop();
+          } catch {}
+          if (isMountedRef.current)
+            toastRef.current?.error?.(
+              "No active call to add video to.",
+              "Camera",
+              4000
+            );
+          return;
+        }
+        let tr = videoTransceiverRef.current;
+        if (!tr || !tr.sender) {
+          tr = pc.addTransceiver(nt, { direction: "sendrecv" });
+        } else {
+          try {
+            tr.direction = "sendrecv";
+          } catch {}
+          try {
+            await tr.sender.replaceTrack(nt);
+          } catch {
+            tr = pc.addTransceiver(nt, { direction: "sendrecv" });
+          }
+        }
+        videoTransceiverRef.current = tr;
+        videoSenderRef.current = tr.sender;
+        await applyVideoSenderQuality(tr.sender, preset).catch(() => {});
+        // Renegotiate only from a stable state (avoid glare with an in-flight offer);
+        // a simultaneous peer offer is rare on a manual tap and is caught by onSignal.
+        if (pc.signalingState === "stable") {
+          try {
+            const off = await pc.createOffer();
+            await pc.setLocalDescription(off);
+            socketRef.current?.emit("call:signal", {
+              callId: pc._callId,
+              to: pc._peerId,
+              sdp: pc.localDescription,
+            });
+          } catch (e) {
+            if (isWebRtcDebugEnabled())
+              console.warn("video renegotiate offer failed:", e?.message || e);
+          }
+        } else if (isWebRtcDebugEnabled()) {
+          console.warn(
+            "skipped video renegotiation, signalingState =",
+            pc.signalingState
           );
-        return;
+        }
+        // NO return: fall through to the shared post-processing below (unbind old,
+        // cameraTrackRef=nt, bind, localStream.addTrack(nt), setVideoOff(false), etc.)
       }
       unbindCameraListeners(t);
       if (t) {
