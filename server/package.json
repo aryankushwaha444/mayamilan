@@ -15,7 +15,7 @@
     "snyk:monitor": "snyk monitor",
     "security:check": "npm run audit",
     "precommit": "npm run audit",
-    "prepare": "husky || true"
+    "prepare": "node --input-type=module -e \"if (process.env.NODE_ENV !== 'production') { const { execFileSync } = await import('node:child_process'); execFileSync('npx', ['--no-install', 'husky'], { stdio: 'inherit' }); }\""
   },
   "overrides": {
     "proxy-addr": "^2.0.8"
