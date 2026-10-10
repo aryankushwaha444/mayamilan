@@ -1043,6 +1043,63 @@ export function useCall() {
     return true;
   }, [establishCallerMedia, classifyMic, teardown, finalizeCall]);
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🔒 UX-FIX (auto-resolve): the "Microphone is blocked" panel previously cleared
+  //    ONLY on a manual "continue" press (which re-ran classifyMic). But that block is
+  //    almost always the SITE permission, and Chrome fires a live `change` event on the
+  //    microphone PermissionStatus the instant the user flips the address-bar toggle —
+  //    so while a permission-gate panel is open we subscribe to it and auto-resume the
+  //    pending call the moment the grant lands, with NO button press. Feature-detected
+  //    (unsupported/throwing query -> no listener; "continue" remains the fallback).
+  //    We attach ONLY for permission-gate kinds; occupied/no-device/unknown are
+  //    hardware/app-side and a permission change can't fix them, so we don't spam probes.
+  //    This reuses resolvePermission verbatim (same resume branching for start/accept/
+  //    caller-media, same accurate re-arm), so it adds NO new socket surface and trusts
+  //    NO remote data — it is a passive listener on a browser PermissionStatus object.
+  //    NOTE: on macOS the OS privacy gate is a SEPARATE switch that does NOT fire this
+  //    page's onchange; flipping it still needs the manual ⌘Q-quit-and-reopen below.
+  // ═══════════════════════════════════════════════════════════════════════
+  const resolvePermissionRef = useRef(resolvePermission);
+  useEffect(() => {
+    resolvePermissionRef.current = resolvePermission;
+  }, [resolvePermission]);
+  useEffect(() => {
+    if (!permissionIssue) return;
+    const AUTO_KINDS = new Set([
+      "site-denied",
+      "os-blocked",
+      "prompt",
+      "blocked-unknown",
+    ]);
+    if (!AUTO_KINDS.has(permissionIssue.kind)) return;
+    let status = null;
+    let cancelled = false;
+    const onChange = () => {
+      // let the toggle settle, then re-probe + resume via the SAME path "continue"
+      // uses (handles every pending type, and re-arms the panel with the accurate NEW
+      // kind — e.g. site-denied -> os-blocked — if the macOS gate is ALSO blocking).
+      setTimeout(() => {
+        if (!cancelled) void resolvePermissionRef.current?.();
+      }, 250);
+    };
+    try {
+      navigator.permissions
+        ?.query?.({ name: "microphone" })
+        .then((s) => {
+          if (cancelled || !s) return;
+          status = s;
+          status.onchange = onChange;
+        })
+        .catch(() => {});
+    } catch {}
+    return () => {
+      cancelled = true;
+      try {
+        if (status) status.onchange = null;
+      } catch {}
+    };
+  }, [permissionIssue]);
+
   const clearPermissionIssue = useCallback(() => {
     pendingRef.current = null;
     setPermissionIssue(null);
