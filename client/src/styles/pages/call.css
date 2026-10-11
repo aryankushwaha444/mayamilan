@@ -24,7 +24,11 @@
 .incall-remote {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* ✅ ZOOM-FIX: contain = show the FULL camera frame (true framing). cover was
+     cropping the edges, which read as a "zoom". Black letterbox bars are the
+     correct, unavoidable price of "actual size" when the screen aspect differs
+     from the camera aspect — the stage bg is already #000 so the bars are seamless. */
+  object-fit: contain;
 }
 
 /* #12 responsive PiP so it never overlaps the control bar */
@@ -34,13 +38,17 @@
   bottom: calc(96px + env(safe-area-inset-bottom));
   width: clamp(88px, 26vw, 132px);
   aspect-ratio: 3 / 4;
-  object-fit: cover;
+  /* ✅ ZOOM-FIX: same true-framing rule for the self-preview thumbnail. */
+  object-fit: contain;
   border-radius: 14px;
   border: 2px solid rgba(255, 255, 255, 0.25);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   z-index: 2;
 }
 
+/* NOTE: the avatar <img> below stays object-fit:cover ON PURPOSE — it's a static
+   profile photo in audio mode, not a live camera feed, so cropping it is fine and
+   changing it would be wrong. Do not "fix" this line. */
 .incall-audio-avatar {
   position: absolute;
   inset: 0;
