@@ -79,19 +79,25 @@ const safeLogAudit = async (ctx, action, metadata) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-// 🔒 CONNECTIVITY-FIX (Cloudflare Realtime TURN): the synchronous builder
-//    below could not talk to Cloudflare (credential minting is an async POST),
-//    so we add an async Cloudflare path FIRST and keep the existing static/HMAC
-//    logic as a FALLBACK. Modes, in priority order:
-//      1) Cloudflare Realtime TURN  (CLOUDFLARE_ACCOUNT_ID + _TURN_SERVICE_ID + _API_TOKEN set)
-//      2) self-hosted coturn HMAC   (TURN_HOST/TURN_URL + TURN_STATIC_AUTH_SECRET)
-//      3) managed static creds      (TURN_URL + TURN_USERNAME + TURN_PASSWORD)
-//      4) STUN-only                 (warn once; mobile/cellular WILL fail)
-//    Credentials are CACHED and de-duplicated in-flight so a burst of call:start
-//    does not hammer the Cloudflare API, and every fetch is bounded by a 10s
-//    AbortController so a Cloudflare outage degrades to STUN instead of hanging
-//    the caller. The API token / secret NEVER leave the server: the browser only
-//    ever receives short-lived username/credential pairs.
+// 🔒 CONNECTIVITY-FIX (Cloudflare Realtime TURN) — FINAL, GUESS-FREE.
+//    The previous version hard-coded a credentials PATH ("/realtime/turn/...",
+//    then a noun sweep) because the API spec was not in the knowledge base and
+//    not reliably known. Every such path was a GUESS, and your probe proved the
+//    whole namespace 400'd uniformly ("Could not route to /accounts/..."). A
+//    guessed path cannot be fixed by rewriting code, so this version contains
+//    NO assumed path. Credential minting is resolved by DATA you supply:
+//      Route 1: CLOUDFLARE_TURN_CREDENTIALS_URL  (full https URL copied from the
+//               dashboard's "Realtime documentation" / its own Network call). The
+//               server POSTs/GETs it VERBATIM. Optional _METHOD (GET|POST, default
+//               POST) and _BODY (JSON string; default {"ttl":<sec>}) cover
+//               path‑vs‑body parameter placement without guessing.
+//      Route 2: static creds via TURN_URL/TURN_HOST + TURN_STATIC_AUTH_SECRET
+//               (HMAC) or TURN_USERNAME/TURN_PASSWORD — handled by the fallback
+//               builder below; NO Cloudflare API call at all.
+//      Else:    STUN-only with a loud, instructive warning (mobile WILL hang).
+//    The bearer token NEVER leaves the server and is NEVER logged; the browser
+//    only ever receives short-lived username/credential pairs. Results are cached
+//    and de-duplicated in-flight, and every fetch is bounded by a 10s abort.
 // ═══════════════════════════════════════════════════════════════════════
 const CLOUDFLARE_ACCOUNT_ID = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
 const CLOUDFLARE_TURN_SERVICE_ID = (
@@ -112,12 +118,38 @@ const CLOUDFLARE_TURN_TTL_SEC = Math.min(
   ),
   43200
 );
+
 const CLOUDFLARE_TURN_ENABLED = Boolean(
   CLOUDFLARE_ACCOUNT_ID && CLOUDFLARE_TURN_SERVICE_ID && CLOUDFLARE_API_TOKEN
 );
 
+// Route 1 inputs (all optional; absent => Cloudflare API minting disabled, fall
+// through to static/STUN). Validated + host-guarded in turnCredentialsOverride().
+const CLOUDFLARE_TURN_CREDENTIALS_URL = (
+  process.env.CLOUDFLARE_TURN_CREDENTIALS_URL || ""
+).trim();
+const CLOUDFLARE_TURN_CREDENTIALS_METHOD = (
+  process.env.CLOUDFLARE_TURN_CREDENTIALS_METHOD || "POST"
+)
+  .trim()
+  .toUpperCase();
+// Optional explicit JSON body for the credentials call. Empty/unset => default
+// {"ttl":<sec>}. Lets the real endpoint put ttl in path/query/body without us
+// guessing which. Parsed lazily + safely inside the fetch.
+const CLOUDFLARE_TURN_CREDENTIALS_BODY_RAW = (
+  process.env.CLOUDFLARE_TURN_CREDENTIALS_BODY || ""
+).trim();
+// SSRF / token-exfil guard: the bearer token is attached ONLY to these hosts.
+const CLOUDFLARE_TURN_ALLOWED_HOSTS = (
+  process.env.CLOUDFLARE_TURN_ALLOWED_HOSTS || "api.cloudflare.com"
+)
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
+
 let cfTurnCache = null; // { iceServers, expiresAt }
 let cfTurnInFlight = null; // shared promise -> concurrent callers reuse one fetch
+let turnPathHalted = false; // a 2xx returned success but with unrecognized keys
 
 const normalizeIceServer = (s) => {
   if (!s || typeof s !== "object") return null;
@@ -137,68 +169,170 @@ const normalizeIceServer = (s) => {
   return out;
 };
 
+function extractIce(json) {
+  const rawList =
+    json?.result?.iceServers ||
+    json?.result?.turnServers ||
+    json?.result?.uris ||
+    json?.iceServers ||
+    [];
+  return (Array.isArray(rawList) ? rawList : [rawList])
+    .map(normalizeIceServer)
+    .filter(Boolean);
+}
+
+// Validate + normalize the explicit override URL -> {url, method, body} or null.
+// Enforces https + allowlisted host BEFORE the bearer token can be attached, so a
+// typo'd or attacker-injected env value can NEVER leak CLOUDFLARE_API_TOKEN to an
+// arbitrary origin (SSRF / token-exfil prevention). Body parsed safely; a bad JSON
+// body falls back to the default {ttl}.
+function turnCredentialsOverride() {
+  if (!CLOUDFLARE_TURN_CREDENTIALS_URL) return null;
+  const method = CLOUDFLARE_TURN_CREDENTIALS_METHOD === "GET" ? "GET" : "POST";
+  let u;
+  try {
+    u = new URL(CLOUDFLARE_TURN_CREDENTIALS_URL);
+  } catch {
+    console.warn(
+      "⚠️ CLOUDFLARE_TURN_CREDENTIALS_URL is not a valid URL; ignoring Route 1 (Cloudflare API minting disabled; static TURN_* fallback still available)."
+    );
+    return null;
+  }
+  if (u.protocol !== "https:") {
+    console.warn(
+      "⚠️ CLOUDFLARE_TURN_CREDENTIALS_URL must be https:// (got %s); ignoring Route 1 (token-leak guard).",
+      u.protocol
+    );
+    return null;
+  }
+  if (!CLOUDFLARE_TURN_ALLOWED_HOSTS.includes(u.hostname.toLowerCase())) {
+    console.warn(
+      "⚠️ CLOUDFLARE_TURN_CREDENTIALS_URL host %j not in CLOUDFLARE_TURN_ALLOWED_HOSTS %j; ignoring Route 1 (SSRF/token-leak guard).",
+      u.hostname,
+      CLOUDFLARE_TURN_ALLOWED_HOSTS
+    );
+    return null;
+  }
+  let body;
+  if (method === "GET") {
+    body = undefined;
+  } else if (CLOUDFLARE_TURN_CREDENTIALS_BODY_RAW) {
+    try {
+      body = JSON.parse(CLOUDFLARE_TURN_CREDENTIALS_BODY_RAW);
+    } catch {
+      console.warn(
+        "⚠️ CLOUDFLARE_TURN_CREDENTIALS_BODY is not valid JSON; using default {ttl}."
+      );
+      body = { ttl: CLOUDFLARE_TURN_TTL_SEC };
+    }
+  } else {
+    body = { ttl: CLOUDFLARE_TURN_TTL_SEC };
+  }
+  return { url: u.toString(), method, body };
+}
+
+function fetchTurnAtUrl(url, method, body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  return fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body:
+      method === "GET" || body === undefined ? undefined : JSON.stringify(body),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      const json = await res.json().catch(() => ({}));
+      return { status: res.status, ok: res.ok, json };
+    })
+    .finally(() => clearTimeout(timeout));
+}
+
+// Route 1 ONLY. No path is assumed here: the URL comes entirely from config. If
+// Route 1 is not configured, this throws a clear "not configured" error that the
+// builder catches and uses to fall through to static/STUN (with an instructive
+// warning), instead of silently hammering a guessed endpoint.
 async function fetchCloudflareTurnIceServers() {
   const now = Date.now();
-  if (cfTurnCache && cfTurnCache.expiresAt > now + 30000) {
+  if (cfTurnCache && cfTurnCache.expiresAt > now + 30000)
     return cfTurnCache.iceServers; // still valid (30s safety margin)
-  }
   if (cfTurnInFlight) return cfTurnInFlight; // coalesce concurrent requests
+  if (turnPathHalted)
+    throw new Error(
+      "Cloudflare TURN: the credentials endpoint returned success but its response keys were unrecognized (see the 🛑 log line); extend extractIce()/normalizeIceServer with those keys."
+    );
+
+  const ov = turnCredentialsOverride();
+  if (!ov) {
+    throw new Error(
+      "Route 1 not configured: set CLOUDFLARE_TURN_CREDENTIALS_URL (copy the credentials curl from your dashboard's 'Realtime documentation'), or use the static TURN_* fallback."
+    );
+  }
 
   cfTurnInFlight = (async () => {
-    const endpoint =
-      `https://api.cloudflare.com/client/v4/accounts/` +
-      `${encodeURIComponent(CLOUDFLARE_ACCOUNT_ID)}` +
-      `/realtime/turn/services/` +
-      `${encodeURIComponent(CLOUDFLARE_TURN_SERVICE_ID)}` +
-      `/credentials`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ ttl: CLOUDFLARE_TURN_TTL_SEC }),
-        signal: controller.signal,
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || json?.success === false) {
-        const msg =
-          json?.errors?.[0]?.message || json?.message || `HTTP ${res.status}`;
-        throw new Error(`Cloudflare TURN credential error: ${msg}`);
-      }
-      const rawList =
-        json?.result?.iceServers ||
-        json?.result?.turnServers ||
-        json?.result?.uris ||
-        json?.iceServers ||
-        [];
-      const list = (Array.isArray(rawList) ? rawList : [rawList])
-        .map(normalizeIceServer)
-        .filter(Boolean);
-      if (!list.length) {
+    const { status, ok, json } = await fetchTurnAtUrl(
+      ov.url,
+      ov.method,
+      ov.body
+    );
+    if (!ok || json?.success === false) {
+      const msg =
+        json?.errors?.[0]?.message || json?.message || `HTTP ${status}`;
+      if (status === 401 || status === 403) {
+        turnPathHalted = true;
         throw new Error(
-          "Cloudflare TURN response did not include usable iceServers"
+          `Cloudflare TURN auth error (${msg}): token/scope problem, NOT a path problem — replace CLOUDFLARE_API_TOKEN with the Realtime Edit/Admin token.`
         );
       }
-      const expiresFromApi = json?.result?.expiresAt
-        ? Date.parse(json.result.expiresAt)
-        : NaN;
-      const expiresAt =
-        Number.isFinite(expiresFromApi) && expiresFromApi > now + 30000
-          ? expiresFromApi - 30000
-          : now + Math.max(60000, (CLOUDFLARE_TURN_TTL_SEC - 120) * 1000);
-      cfTurnCache = { iceServers: list, expiresAt };
-      return list;
-    } finally {
-      clearTimeout(timeout);
-      cfTurnInFlight = null;
+      throw new Error(`Cloudflare TURN credential error (${status}): ${msg}`);
     }
+    const list = extractIce(json);
+    if (!list.length) {
+      const keys = Object.keys(json?.result || json || {});
+      turnPathHalted = true;
+      console.error(
+        "🛑 Cloudflare TURN: the configured credentials endpoint returned success but no recognized ICE list. response keys = %j. Extend extractIce()/normalizeIceServer with these keys (the PATH is correct; only the field names differ).",
+        keys
+      );
+      throw new Error(
+        `Cloudflare TURN unparsed response; keys=${keys.join(",")}`
+      );
+    }
+    const expApi = json?.result?.expiresAt
+      ? Date.parse(json.result.expiresAt)
+      : NaN;
+    const expiresAt =
+      Number.isFinite(expApi) && expApi > now + 30000
+        ? expApi - 30000
+        : now + Math.max(60000, (CLOUDFLARE_TURN_TTL_SEC - 120) * 1000);
+    cfTurnCache = { iceServers: list, expiresAt };
+    console.log(
+      "☁️ Cloudflare TURN via explicit CLOUDFLARE_TURN_CREDENTIALS_URL:",
+      new URL(ov.url).pathname // pathname only — token/query never logged
+    );
+    return list;
   })();
 
   return cfTurnInFlight;
+}
+
+// Boot diagnostic (once, at load): tell the operator EXACTLY which route is live
+// and, if neither, precisely what to paste — so a future reader never has to guess
+// why calls are STUN-only.
+{
+  const ov = turnCredentialsOverride();
+  if (ov) {
+    console.log(
+      "☁️ Cloudflare TURN: Route 1 active (explicit credentials URL, host-guarded)."
+    );
+  } else if (CLOUDFLARE_TURN_ENABLED) {
+    console.warn(
+      "☁️ Cloudflare TURN: account/service/token are set, but NO valid CLOUDFLARE_TURN_CREDENTIALS_URL (Route 1) — credential minting is DISABLED and calls will be STUN-only (mobile WILL hang) until you either (a) paste the credentials curl from your dashboard's 'Realtime documentation' into CLOUDFLARE_TURN_CREDENTIALS_URL, or (b) set the static TURN_* fallback vars (TURN_URL/TURN_HOST + TURN_STATIC_AUTH_SECRET, or TURN_USERNAME/TURN_PASSWORD) from the TURN Overview tab."
+    );
+  }
 }
 
 // 🔒 CONNECTIVITY-FIX: TURN emission previously required an HMAC secret AND a
@@ -235,7 +369,9 @@ const stunServers = () => [
 ];
 
 const describeIce = (arr) => {
-  let turn = 0, turns = 0, total = 0;
+  let turn = 0,
+    turns = 0,
+    total = 0;
   for (const s of arr || []) {
     const urls = Array.isArray(s.urls) ? s.urls : s.url ? [s.url] : [];
     for (const u of urls) {
@@ -254,11 +390,11 @@ let warnedNoTurn = false;
 let warnedNoTurnCreds = false;
 let warnedCloudflareTurn = false;
 
-// 🔒 CONNECTIVITY-FIX: now ASYNC. Cloudflare first (cached), then the EXACT prior
-//    static/HMAC fallback (same warnings, same STUN-only returns). Callers MUST
+// 🔒 CONNECTIVITY-FIX: now ASYNC. Cloudflare Route 1 first (cached), then the EXACT
+//    prior static/HMAC fallback (same warnings, same STUN-only returns). Callers MUST
 //    `await` this (see call:start) or a Promise leaks into the ICE payload.
 const buildIceServers = async () => {
-  // 1) Preferred: Cloudflare Realtime TURN
+  // 1) Preferred: Cloudflare Realtime TURN via the explicit credentials URL (Route 1).
   if (CLOUDFLARE_TURN_ENABLED) {
     try {
       const cf = await fetchCloudflareTurnIceServers();
@@ -266,8 +402,10 @@ const buildIceServers = async () => {
     } catch (e) {
       if (!warnedCloudflareTurn) {
         warnedCloudflareTurn = true;
+        // Print the SPECIFIC reason (not-configured vs auth vs unparsed vs HTTP) so
+        // the operator knows which of Route 1 / Route 2 to fix, latched once.
         console.warn(
-          "⚠️ Cloudflare Realtime TURN credential fetch failed. Falling back to static TURN env if configured:",
+          "⚠️ Cloudflare TURN (Route 1) unavailable — falling back to static TURN env if configured:",
           e?.message || e
         );
       }
@@ -287,7 +425,7 @@ const buildIceServers = async () => {
     if (!warnedNoTurn) {
       warnedNoTurn = true;
       console.warn(
-        "⚠️ No TURN configured (Cloudflare env unset, and no TURN_URL/TURN_HOST). 1-to-1 calls will FAIL on symmetric NAT / mobile carriers. Configure Cloudflare Realtime TURN or coturn for production."
+        "⚠️ No usable TURN: Cloudflare Route 1 unavailable (no valid CLOUDFLARE_TURN_CREDENTIALS_URL, or its fetch failed) AND no static TURN_URL/TURN_HOST fallback. 1-to-1 calls will FAIL on symmetric NAT / mobile carriers. Fix Route 1 (paste the credentials URL from the dashboard's 'Realtime documentation') or set the static TURN_* vars from the TURN Overview tab, or deploy coturn."
       );
     }
     return servers;
@@ -323,10 +461,9 @@ const buildIceServers = async () => {
   return servers;
 };
 
-// Warm-up: pre-populate the Cloudflare cache ~1s after boot so the FIRST call
-// after a Render restart doesn't pay the credential-fetch latency. unref'd so it
-// never holds the event loop open. No-op when Cloudflare isn't configured.
-if (CLOUDFLARE_TURN_ENABLED) {
+// Warm-up: only meaningful when Route 1 is configured (otherwise it would just
+// re-throw "not configured"). unref'd so it never holds the event loop open.
+if (CLOUDFLARE_TURN_ENABLED && turnCredentialsOverride()) {
   const t = setTimeout(() => {
     void fetchCloudflareTurnIceServers().catch(() => {});
   }, 1000);
@@ -694,20 +831,24 @@ const registerCallSocket = (io, socket) => {
           reason: "already_in_call",
         });
 
-        const callId = newCallId();
-        const iceServers = await buildIceServers(); // 🔒 CONNECTIVITY-FIX: await the async builder
-        console.log(
-          "🧭 call:start ICE:",
-          describeIce(iceServers),
-          "| cloudflareEnabled=",
-          CLOUDFLARE_TURN_ENABLED,
-          "| serviceIdSet=",
-          Boolean(CLOUDFLARE_TURN_SERVICE_ID),
-          "| accountIdSet=",
-          Boolean(CLOUDFLARE_ACCOUNT_ID),
-          "| tokenSet=",
-          Boolean(CLOUDFLARE_API_TOKEN)
-        );
+      const callId = newCallId();
+      const iceServers = await buildIceServers(); // 🔒 CONNECTIVITY-FIX: await the async builder
+      console.log(
+        "🧭 call:start ICE:",
+        describeIce(iceServers),
+        "| cloudflareEnabled=",
+        CLOUDFLARE_TURN_ENABLED,
+        "| route1Configured=",
+        Boolean(turnCredentialsOverride()),
+        "| serviceIdSet=",
+        Boolean(CLOUDFLARE_TURN_SERVICE_ID),
+        "| accountIdSet=",
+        Boolean(CLOUDFLARE_ACCOUNT_ID),
+        "| tokenSet=",
+        Boolean(CLOUDFLARE_API_TOKEN),
+        "| staticTurnSet=",
+        Boolean(TURN_URL_RAW || TURN_HOST)
+      );
       createCall({
         callId,
         callerId: me,
