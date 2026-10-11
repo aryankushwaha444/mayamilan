@@ -87,6 +87,21 @@ const safeText = (v, fallback = "") => {
   return c.slice(0, 80) || fallback;
 };
 
+// ✅ CAMERA-ZOOM-FIX: shared style that shows the FULL camera frame (no crop/zoom).
+//    object-fit:cover fills the box but crops the sensor's real field of view, which
+//    is exactly the "shown size not actual size" symptom; contain preserves the true
+//    framing (letterboxing if the box aspect differs from the camera). transform:none
+//    defeats any stray scale() in the stylesheet. Inline style beats a non-!important
+//    class rule; if your CSS sets object-fit/transform with !important, change it
+//    there too (inline cannot override !important).
+const VIDEO_FIT_STYLE = {
+  width: "100%",
+  height: "100%",
+  objectFit: "contain",
+  transform: "none",
+  background: "#000",
+};
+
 let OVERLAY_MOUNT_COUNT = 0;
 
 export default function InCallOverlay() {
@@ -641,6 +656,7 @@ export default function InCallOverlay() {
             autoPlay
             playsInline
             controls={false}
+            style={VIDEO_FIT_STYLE} // ✅ CAMERA-ZOOM-FIX: full frame, no crop/zoom
           />
         ) : (
           <div className="incall-audio-avatar" aria-hidden="true">
@@ -668,6 +684,7 @@ export default function InCallOverlay() {
             playsInline
             controls={false}
             muted
+            style={VIDEO_FIT_STYLE} // ✅ CAMERA-ZOOM-FIX: full frame in PiP too
           />
         )}
 
