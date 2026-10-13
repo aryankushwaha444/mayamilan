@@ -1,35 +1,59 @@
-/* safe-area.css — iOS/Android notch + home-indicator insets as variables */
+/* ============================================================
+   SAFE AREA — iPhone notch / Dynamic Island / Android gestures
+   ============================================================ */
+
 :root {
-  --sat: env(safe-area-inset-top, 0px);
-  --sar: env(safe-area-inset-right, 0px);
-  --sab: env(safe-area-inset-bottom, 0px);
-  --sal: env(safe-area-inset-left, 0px);
+  /* Safe defaults for browsers/devices without env() support */
+  --sat: 0px;
+  --sar: 0px;
+  --sab: 0px;
+  --sal: 0px;
+
+  /* Navbar height tokens used by navbar.css */
+  --navbar-h: 76px;
 }
 
-/* TOP BAR = the element holding the Maya~Milan logo + icons + ☰.
-     Replace `.navbar` with your real class (check styles/layout/navbar.css;
-     you load Bootstrap, so it may literally be `.navbar` or a custom wrapper). */
-.navbar,
-.app-header,
-.topbar {
-  /* push logo/icons BELOW the status bar / Dynamic Island.
-       Replace 0.5rem with whatever top padding the bar already had. */
-  padding-top: max(0.5rem, var(--sat));
-  /* keep side insets so landscape/notch never clips the logo or the ☰ */
-  padding-left: max(1rem, var(--sal));
-  padding-right: max(1rem, var(--sar));
-  /* the bar's OWN background must paint the inset strip, else you see
-       white/transparent behind the clock. Use your real navbar bg color/var. */
-  background: var(--navbar-bg, #ffffff);
+/* Modern browsers / iOS / Android PWAs */
+@supports (padding-top: env(safe-area-inset-top)) {
+  :root {
+    --sat: env(safe-area-inset-top, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+  }
 }
 
-/* BOTTOM ACTION BAR = the ✕ /  / ♥ row on Discover (and any fixed footer).
-     Clear the home indicator + side insets. */
+/* Mobile/tablet navbar height */
+@media (max-width: 991px) {
+  :root {
+    --navbar-h: 68px;
+  }
+}
+
+/* ============================================================
+      GENERIC BOTTOM SAFE AREA
+      ============================================================
+      This helps fixed footers / bottom action rows avoid the
+      iPhone home indicator. Keep selectors narrow so it does not
+      fight call.css or page-specific components.
+   */
+.site-footer,
+footer,
 .bottom-actions,
 .discover-actions,
-.app-footer,
 .fixed-bottom {
   padding-bottom: max(0.75rem, var(--sab));
-  padding-left: max(1rem, var(--sal));
-  padding-right: max(1rem, var(--sar));
+  padding-left: max(0.75rem, var(--sal));
+  padding-right: max(0.75rem, var(--sar));
+}
+
+/* ============================================================
+      DYNAMIC VIEWPORT HEIGHT
+      ============================================================
+      Better for mobile browsers / PWAs than plain 100vh.
+      Fallback order matters: vh first, dvh second.
+   */
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
 }

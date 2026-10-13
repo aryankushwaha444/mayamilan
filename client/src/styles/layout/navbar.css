@@ -3,7 +3,8 @@
    ============================================================ */
 
 body {
-  padding-top: 76px;
+  padding-top: calc(var(--navbar-h, 76px) + var(--sat, 0px));
+  padding-bottom: max(0px, var(--sab, 0px));
 }
 
 .site-navbar {
@@ -13,6 +14,15 @@ body {
   right: 0;
   z-index: 1000;
   width: 100%;
+  box-sizing: border-box;
+
+  /* Push navbar content below iPhone status bar / Dynamic Island */
+  padding-top: var(--sat, 0px);
+
+  /* Preserve landscape notch / gesture insets */
+  padding-left: var(--sal, 0px);
+  padding-right: var(--sar, 0px);
+
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
@@ -21,13 +31,12 @@ body {
 
 .navbar-container {
   width: min(1400px, calc(100% - 40px));
-  min-height: 76px;
+  min-height: var(--navbar-h, 76px);
   margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 35px;
 }
-
 /* ── Brand ─ */
 .navbar-brand-custom {
   flex-shrink: 0;
@@ -725,12 +734,12 @@ body {
 
 @media (max-width: 991px) {
   body {
-    padding-top: 68px;
+    padding-top: calc(var(--navbar-h, 68px) + var(--sat, 0px));
   }
 
   .navbar-container {
     position: relative;
-    min-height: 68px;
+    min-height: var(--navbar-h, 68px);
     width: min(100%, calc(100% - 28px));
   }
 
@@ -752,7 +761,11 @@ body {
     border-radius: 16px;
     background: white;
     box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
-    max-height: calc(100vh - 110px);
+
+    /* Safe mobile menu height on iPhone / Android / tablets */
+    max-height: calc(100vh - var(--navbar-h, 68px) - var(--sat, 0px) - 24px);
+    max-height: calc(100dvh - var(--navbar-h, 68px) - var(--sat, 0px) - 24px);
+
     overflow-y: auto;
   }
 
@@ -846,11 +859,19 @@ body {
   .profile-dropdown,
   .facebook-style-dropdown {
     position: fixed;
-    top: 70px;
-    left: 10px;
-    right: 10px;
+
+    /* Open below the real navbar height + iPhone notch/status area */
+    top: calc(var(--navbar-h, 68px) + var(--sat, 0px) + 2px);
+
+    /* Respect landscape notch / gesture insets */
+    left: max(10px, var(--sal, 0px));
+    right: max(10px, var(--sar, 0px));
+
     width: auto;
-    max-height: calc(100vh - 80px);
+
+    /* Use dynamic viewport height where supported */
+    max-height: calc(100vh - var(--navbar-h, 68px) - var(--sat, 0px) - 16px);
+    max-height: calc(100dvh - var(--navbar-h, 68px) - var(--sat, 0px) - 16px);
   }
 
   .navbar-auth-buttons {
