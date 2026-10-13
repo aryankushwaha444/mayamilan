@@ -13,6 +13,7 @@ import "bootstrap-icons/font/bootstrap-icons.css";
 import "./styles/base/variables.css";
 import "./styles/base/reset.css";
 import "./styles/base/animations.css";
+import "./styles/base/safe-area.css";
 
 import "./styles/layout/navbar.css";
 import "./styles/layout/footer.css";

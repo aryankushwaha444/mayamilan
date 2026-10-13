@@ -1,0 +1,35 @@
+/* safe-area.css — iOS/Android notch + home-indicator insets as variables */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+}
+
+/* TOP BAR = the element holding the Maya~Milan logo + icons + ☰.
+     Replace `.navbar` with your real class (check styles/layout/navbar.css;
+     you load Bootstrap, so it may literally be `.navbar` or a custom wrapper). */
+.navbar,
+.app-header,
+.topbar {
+  /* push logo/icons BELOW the status bar / Dynamic Island.
+       Replace 0.5rem with whatever top padding the bar already had. */
+  padding-top: max(0.5rem, var(--sat));
+  /* keep side insets so landscape/notch never clips the logo or the ☰ */
+  padding-left: max(1rem, var(--sal));
+  padding-right: max(1rem, var(--sar));
+  /* the bar's OWN background must paint the inset strip, else you see
+       white/transparent behind the clock. Use your real navbar bg color/var. */
+  background: var(--navbar-bg, #ffffff);
+}
+
+/* BOTTOM ACTION BAR = the ✕ /  / ♥ row on Discover (and any fixed footer).
+     Clear the home indicator + side insets. */
+.bottom-actions,
+.discover-actions,
+.app-footer,
+.fixed-bottom {
+  padding-bottom: max(0.75rem, var(--sab));
+  padding-left: max(1rem, var(--sal));
+  padding-right: max(1rem, var(--sar));
+}
