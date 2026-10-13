@@ -48,10 +48,17 @@ function sitemapPlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), sitemapPlugin()], // ✅ Added sitemapPlugin
+  plugins: [react(), sitemapPlugin()],
+
+  // Explicit public directory for PWA files:
+  // public/manifest.webmanifest
+  // public/push-sw.js
+  // public/icons/*
+  publicDir: "public",
 
   build: {
-    // Generate sourcemaps for error tracking (hidden from browser)
+    // Generate sourcemaps for error tracking (hidden from browser).
+    // If you do NOT use Sentry/error tracking, set this to false for stricter production hygiene.
     sourcemap: "hidden",
 
     // Warn at 500KB — fix the split, don't raise the limit

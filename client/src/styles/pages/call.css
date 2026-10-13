@@ -109,14 +109,18 @@
   justify-content: center;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .incall-btn.active {
   background: rgba(255, 255, 255, 0.28);
 }
+
 .incall-accept {
   background: #22c55e;
 }
+
 .incall-reject,
 .incall-end {
   background: #ef4444;
@@ -139,6 +143,8 @@
   cursor: pointer;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .incall-btn:disabled {

@@ -1,0 +1,31 @@
+{
+  "id": "/",
+  "name": "Maya Milan — Trusted Dating Platform",
+  "short_name": "Maya Milan",
+  "description": "Maya Milan is a dating platform for meeting genuine people, discovering meaningful connections, chatting in real time, and building relationships.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#ec4899",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["social", "dating", "communication"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

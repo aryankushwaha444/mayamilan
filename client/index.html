@@ -3,9 +3,24 @@
   <head>
     <!-- BASIC / SEO -->
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <meta name="theme-color" content="#ec4899" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+    <!-- PWA / MOBILE INSTALL -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="Maya Milan" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="manifest" href="/manifest.webmanifest" />
 
     <meta
       name="google-site-verification"
@@ -28,10 +43,17 @@
     <link rel="canonical" href="https://mayamilan.vercel.app/" />
 
     <!-- GOOGLE ANALYTICS 4 -->
+    <!--
+      SECURITY NOTE:
+      Third-party analytics increases attack surface and privacy exposure.
+      I kept it because your app already uses it. For maximum client hardening,
+      remove GA/GTM or load it only after explicit user consent.
+    -->
     <script
       async
       src="https://www.googletagmanager.com/gtag/js?id=G-X80HBDH82J"
       crossorigin="anonymous"
+      referrerpolicy="strict-origin-when-cross-origin"
     ></script>
     <script src="/analytics.js" defer></script>
 
@@ -83,18 +105,35 @@
     <!-- ICONS -->
     <link rel="icon" type="image/png" href="/images/logo.png" />
     <link rel="apple-touch-icon" href="/images/logo.png" />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="192x192"
+      href="/icons/icon-192.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="512x512"
+      href="/icons/icon-512.png"
+    />
 
-    <!-- RESOURCE HINTS — ✅ Fixed: matches actual production origin -->
+    <!-- RESOURCE HINTS -->
     <link rel="preconnect" href="https://mayamilan.vercel.app" />
     <link rel="dns-prefetch" href="https://mayamilan.vercel.app" />
+
     <link rel="preconnect" href="https://res.cloudinary.com" />
     <link rel="dns-prefetch" href="https://res.cloudinary.com" />
+
     <link
       rel="preconnect"
       href="https://www.googletagmanager.com"
       crossorigin
     />
     <link rel="dns-prefetch" href="https://www.googletagmanager.com" />
+
+    <link rel="preconnect" href="https://www.google-analytics.com" />
+    <link rel="dns-prefetch" href="https://www.google-analytics.com" />
 
     <!-- STRUCTURED DATA -->
     <script type="application/ld+json">

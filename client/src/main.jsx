@@ -49,15 +49,22 @@ import { useRealtimeAlerts } from "./hooks/useRealtimeAlerts";
 import { usePushSubscription } from "./hooks/usePushSubscription";
 
 // ═══════════════════════════════════════════
-// SERVICE WORKER REGISTRATION
+// PWA SERVICE WORKER REGISTRATION
 // ═══════════════════════════════════════════
-if ("serviceWorker" in navigator) {
+//
+// SECURITY / STABILITY NOTES:
+// - Register only in production.
+// - Use one service worker only: /push-sw.js.
+// - Do not register /push-sw.js and another generated SW at the same scope.
+// - The SW must not cache /api or /socket.io.
+//
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
   window.addEventListener("load", () => {
-    if (import.meta.env.PROD) {
-      navigator.serviceWorker.register("/push-sw.js").catch(() => {
-        // Silent failure — push is optional, not critical
+    navigator.serviceWorker
+      .register("/push-sw.js", { scope: "/" })
+      .catch(() => {
+        // Silent failure — PWA/push is optional, calling should still work.
       });
-    }
   });
 }
 
