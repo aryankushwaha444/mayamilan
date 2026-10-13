@@ -15,21 +15,25 @@ body {
   z-index: 1000;
   width: 100%;
   box-sizing: border-box;
-
-  /* keep logo/icons below the status bar / Dynamic Island (from last fix) */
   padding-top: var(--sat, 0px);
   padding-left: var(--sal, 0px);
   padding-right: var(--sar, 0px);
 
-  /* ✅ BLUR-FIX: opaque background, NO backdrop-filter.
-     The old translucent white + blur(18px) hazed the top strip AND put the
-     logo/icons/text inside a filtered layer that iOS renders soft on Retina.
-     Opaque white = crisp on iPhone, iPad, Android and desktop alike. */
-  background: #ffffff;
+  background: transparent; /* content layer stays UNfiltered => crisp */
+  box-shadow: none;
+}
 
+/* the frost lives here, behind the content, not on it */
+.site-navbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   border-bottom: 1px solid #f1f5f9;
-  /* subtle separation so the still-solid bar reads as a distinct layer */
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03), 0 6px 18px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
 }
 
 .navbar-container {
