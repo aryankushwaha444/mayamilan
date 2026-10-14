@@ -814,8 +814,9 @@ export const login = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+};
 
-  // ═══════════════════════════════════════════
+// ═══════════════════════════════════════════
 // MOBILE GOOGLE LOGIN (Receives idToken directly)
 // ═══════════════════════════════════════════
 
@@ -890,8 +891,6 @@ export const mobileGoogleLogin = async (req, res, next) => {
     });
     res.status(401).json({ success: false, message: "Invalid Google token or login failed" });
   }
-};
-
 };
 
 // ═══════════════════════════════════════════
