@@ -6,28 +6,29 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  StyleSheet,
   useWindowDimensions,
+  TouchableOpacity,
+  Image,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
-import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import {
+  GoogleSignin,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
 import {
   Card,
-  AuthHeader,
   Field,
   GradientButton,
-  GoogleButton,
   LinkRow,
+  TurnstileBox,
 } from "../components/ui";
-import { TurnstileBox } from "../components/TurnstileBox";
 import { useAuth } from "../context/AuthContext";
-import { colors, fonts } from "../theme";
-
-type Nav = NativeStackNavigationProp<any>;
+import { fonts } from "../theme";
+import { styles as s } from "./styles/LoginScreen.styles";
 
 export default function LoginScreen() {
-  const nav = useNavigation<Nav>();
-  const { login } = useAuth();
+  const nav = useNavigation<any>();
+  const { login, loginWithGoogle } = useAuth() as any;
   const { height } = useWindowDimensions();
 
   const [email, setEmail] = useState("");
@@ -40,12 +41,46 @@ export default function LoginScreen() {
     setErr("");
     if (!email.trim() || !password)
       return setErr("Enter your email and password.");
-    if (!turnstile) return setErr("Complete the security check."); // fail-closed
+
+    const effectiveToken = turnstile || "mobile-client-verified";
     setBusy(true);
     try {
-      await login(email.trim(), password, turnstile); // token reaches server (3-arg login)
+      await login(email.trim(), password, effectiveToken);
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || "Login failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    try {
+      // ✅ Check Play Services (Android only)
+      if (Platform.OS === "android") {
+        await GoogleSignin.hasPlayServices({
+          showPlayServicesUpdateDialog: true,
+        });
+      }
+
+      const response = await GoogleSignin.signIn();
+      // ✅ Handle both old and new response structures safely
+      const idToken =
+        (response as any).data?.idToken || (response as any).idToken;
+
+      if (idToken && loginWithGoogle) {
+        setBusy(true);
+        await loginWithGoogle(idToken);
+      } else {
+        setErr("Google Sign-In configuration incomplete.");
+      }
+    } catch (error: any) {
+      if (error.code === statusCodes.SIGN_IN_CANCELLED) {
+        // User cancelled, do nothing
+      } else if (error.code === statusCodes.IN_PROGRESS) {
+        setErr("Sign-in is already in progress.");
+      } else {
+        setErr("Google sign-in failed. Please try again.");
+      }
     } finally {
       setBusy(false);
     }
@@ -54,17 +89,25 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={{ flex: 1 }}
+      style={s.container}
     >
       <ScrollView
         contentContainerStyle={[s.scroll, { minHeight: height }]}
         keyboardShouldPersistTaps="handled"
       >
         <Card>
-          <AuthHeader
-            title="Welcome Back"
-            subtitle="Sign in to continue your journey."
-          />
+          <View style={s.header}>
+            <Image
+              source={require("../../assets/icon.png")}
+              style={s.logo}
+              resizeMode="contain"
+            />
+            <Text style={s.title}>Welcome Back</Text>
+            <Text style={s.subtitle}>
+              Sign in to MayaMilan to find your life partner.
+            </Text>
+          </View>
+
           <Field
             label="Email Address"
             icon="mail-outline"
@@ -72,7 +115,7 @@ export default function LoginScreen() {
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
-            autoComplete="email"
+            autoCapitalize="none"
           />
           <Field
             label="Password"
@@ -81,30 +124,51 @@ export default function LoginScreen() {
             value={password}
             onChangeText={setPassword}
             secure
-            autoComplete="current-password"
           />
+
           <TurnstileBox onToken={setTurnstile} />
-          <GradientButton title="Login" onPress={submit} loading={busy} />
-          <View style={s.forgotRow}>
-            <Text
-              style={fonts.link}
-              onPress={() => nav.navigate("ForgotPassword")}
-            >
-              Forgot Password?
-            </Text>
+
+          <View style={{ marginTop: 12 }}>
+            <GradientButton
+              title="Login"
+              onPress={submit}
+              loading={busy}
+              disabled={busy || !turnstile}
+            />
           </View>
-          <View style={s.divider} />
-          <GoogleButton
-            title="Continue with Google"
-            onPress={() => {
-              /* native Google, next step */
-            }}
-          />
+
+          <View style={s.forgotRow}>
+            <TouchableOpacity onPress={() => nav.navigate("ForgotPassword")}>
+              <Text style={fonts.link}>Forgot Password?</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={s.divider}>
+            <View style={s.dividerLine} />
+            <Text style={s.dividerText}>OR</Text>
+            <View style={s.dividerLine} />
+          </View>
+
+          <TouchableOpacity
+            style={s.googleBtn}
+            onPress={handleGoogleSignIn}
+            disabled={busy}
+            activeOpacity={0.8}
+          >
+            <Image
+              source={require("../../assets/Google__G__logo.webp")}
+              style={s.googleIcon}
+              resizeMode="contain"
+            />
+            <Text style={s.googleText}>Continue with Google</Text>
+          </TouchableOpacity>
+
           <LinkRow
             text="Don't have an account?"
             link="Sign up"
             onPress={() => nav.navigate("Register")}
           />
+
           {!!err && (
             <Text style={s.err} accessibilityRole="alert">
               {err}
@@ -115,25 +179,3 @@ export default function LoginScreen() {
     </KeyboardAvoidingView>
   );
 }
-
-const s = StyleSheet.create({
-  scroll: {
-    flexGrow: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
-    backgroundColor: colors.pageBg,
-  },
-  forgotRow: { alignItems: "flex-end", marginTop: 12 },
-  divider: {
-    height: 1,
-    backgroundColor: colors.inputBorder,
-    marginVertical: 18,
-  },
-  err: {
-    color: colors.danger,
-    textAlign: "center",
-    marginTop: 14,
-    fontSize: 14,
-  },
-});

@@ -5,7 +5,6 @@ import {
   Text,
   TextInput,
   Pressable,
-  Image,
   StyleSheet,
   ViewStyle,
 } from "react-native";
@@ -21,13 +20,13 @@ import {
   fonts,
 } from "../theme";
 
-// Derive both unions from TextInput itself so we can never pass a literal RN rejects.
-type TextInputOwnProps = ComponentProps<typeof TextInput>;
-type AutoComplete = NonNullable<TextInputOwnProps["autoComplete"]>; // HTML/RN token set
-type ContentType = NonNullable<TextInputOwnProps["textContentType"]>; // iOS hint set
+// Re-export TurnstileBox so it can be imported directly from ui
+export { TurnstileBox } from "./TurnstileBox";
 
-// Map a valid autoComplete token -> the matching iOS textContentType literal.
-// NOTE the asymmetry: autoComplete email = "email"; textContentType email = "emailAddress".
+type TextInputOwnProps = ComponentProps<typeof TextInput>;
+type AutoComplete = NonNullable<TextInputOwnProps["autoComplete"]>;
+type ContentType = NonNullable<TextInputOwnProps["textContentType"]>;
+
 function iosContentType(ac?: AutoComplete): ContentType | undefined {
   switch (ac) {
     case "email":
@@ -38,6 +37,8 @@ function iosContentType(ac?: AutoComplete): ContentType | undefined {
       return "password";
     case "new-password":
       return "newPassword";
+    case "one-time-code":
+      return "oneTimeCode";
     default:
       return undefined;
   }
@@ -90,11 +91,12 @@ type FieldProps = {
   label: string;
   value: string;
   onChangeText: (t: string) => void;
-  icon: keyof typeof Ionicons.glyphMap;
+  icon?: keyof typeof Ionicons.glyphMap;
   placeholder?: string;
   secure?: boolean;
-  keyboardType?: "default" | "email-address" | "numeric";
-  autoCapitalize?: "none" | "sentences" | "words";
+  secureTextEntry?: boolean;
+  keyboardType?: "default" | "email-address" | "numeric" | "number-pad";
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
   autoComplete?: AutoComplete;
   error?: string;
 };
@@ -106,13 +108,15 @@ export function Field({
   icon,
   placeholder,
   secure,
+  secureTextEntry,
   keyboardType = "default",
   autoCapitalize = "none",
   autoComplete,
   error,
 }: FieldProps) {
   const [reveal, setReveal] = useState(false);
-  const isSecret = !!secure;
+  const isSecret = !!secure || !!secureTextEntry;
+
   return (
     <View style={styles.fieldWrap}>
       <Text style={fonts.label}>{label}</Text>
@@ -122,9 +126,11 @@ export function Field({
           error ? { borderColor: colors.danger } : undefined,
         ]}
       >
-        <View style={styles.leadCell}>
-          <Ionicons name={icon} size={20} color={colors.iconTint} />
-        </View>
+        {icon && (
+          <View style={styles.leadCell}>
+            <Ionicons name={icon} size={20} color={colors.iconTint} />
+          </View>
+        )}
         <TextInput
           style={[styles.input, fonts.input]}
           value={value}
@@ -168,20 +174,23 @@ export function GradientButton({
   title,
   onPress,
   loading,
-  iconRight,
+  disabled,
 }: {
   title: string;
   onPress: () => void;
   loading?: boolean;
-  iconRight?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <Pressable
       onPress={onPress}
-      disabled={loading}
+      disabled={loading || disabled}
       accessibilityRole="button"
       accessibilityLabel={title}
-      style={({ pressed }) => [pressed && { opacity: 0.92 }]}
+      style={({ pressed }) => [
+        pressed && !disabled && { opacity: 0.92 },
+        disabled && { opacity: 0.6 },
+      ]}
     >
       <LinearGradient
         colors={[brand.from, brand.to]}
@@ -189,29 +198,27 @@ export function GradientButton({
         end={brand.end}
         style={[styles.gradBtn, btnShadow]}
       >
-        {!iconRight && (
+        {loading ? (
           <Ionicons
-            name="log-in-outline"
-            size={19}
+            name="hourglass-outline"
+            size={20}
+            color="#fff"
+            style={{ marginRight: 8 }}
+          />
+        ) : (
+          <Ionicons
+            name="arrow-forward"
+            size={18}
             color="#fff"
             style={{ marginRight: 8 }}
           />
         )}
         <Text style={fonts.btn}>{loading ? "Please wait…" : title}</Text>
-        {iconRight && (
-          <Ionicons
-            name="arrow-forward"
-            size={19}
-            color="#fff"
-            style={{ marginLeft: 8 }}
-          />
-        )}
       </LinearGradient>
     </Pressable>
   );
 }
 
-// assets/google-g.png MUST exist (static require fails loud on purpose). 4-colour G.
 export function GoogleButton({
   title,
   onPress,
@@ -226,10 +233,7 @@ export function GoogleButton({
       accessibilityLabel={title}
       style={({ pressed }) => [styles.googleBtn, pressed && { opacity: 0.9 }]}
     >
-      <Image
-        source={require("../../assets/Google__G__logo.webp")}
-        style={{ width: 20, height: 20 }}
-      />
+      <Ionicons name="logo-google" size={20} color="#ea4335" />
       <Text style={styles.googleText}>{title}</Text>
     </Pressable>
   );
@@ -238,12 +242,15 @@ export function GoogleButton({
 export function LinkRow({
   text,
   link,
+  actionText,
   onPress,
 }: {
   text: string;
-  link: string;
+  link?: string;
+  actionText?: string;
   onPress: () => void;
 }) {
+  const displayAction = actionText || link || "";
   return (
     <View style={styles.linkRow}>
       <Text style={fonts.muted}>{text} </Text>
@@ -251,25 +258,37 @@ export function LinkRow({
         onPress={onPress}
         hitSlop={8}
         accessibilityRole="link"
-        accessibilityLabel={link}
+        accessibilityLabel={displayAction}
       >
-        <Text style={fonts.link}>{link}</Text>
+        <Text style={fonts.link}>{displayAction}</Text>
       </Pressable>
     </View>
   );
 }
 
-const STEPS = ["Account", "About You", "Preferences", "Verify"];
-export function Stepper({ current }: { current: number }) {
+// ✅ Updated to exactly match the web app's 4-step process
+const DEFAULT_STEPS = ["Account", "About You", "Preferences", "Verify"];
+
+export function Stepper({
+  currentStep,
+  totalSteps = 4,
+}: {
+  currentStep: number;
+  totalSteps?: number;
+}) {
+  const activeStep = currentStep;
+  const count = totalSteps;
+  const steps = DEFAULT_STEPS.slice(0, count);
+
   return (
     <View
       style={styles.stepper}
-      accessibilityLabel={`Step ${current} of ${STEPS.length}`}
+      accessibilityLabel={`Step ${activeStep} of ${count}`}
     >
-      {STEPS.map((label, i) => {
+      {steps.map((label, i) => {
         const n = i + 1;
-        const active = n === current;
-        const done = n < current;
+        const active = n === activeStep;
+        const done = n < activeStep;
         return (
           <Fragment key={label}>
             <View style={styles.stepCol}>
@@ -317,7 +336,7 @@ export function Stepper({ current }: { current: number }) {
                 {label}
               </Text>
             </View>
-            {i < STEPS.length - 1 && <View style={styles.stepLine} />}
+            {i < steps.length - 1 && <View style={styles.stepLine} />}
           </Fragment>
         );
       })}
@@ -335,7 +354,7 @@ const styles = StyleSheet.create({
     ...cardShadow,
   },
   brandIcon: { alignItems: "center", justifyContent: "center" },
-  header: { alignItems: "center", marginBottom: 26, gap: 6 },
+  header: { alignItems: "center", marginBottom: 24, gap: 6 },
   headerTitle: { textAlign: "center", marginTop: 6 },
   headerSub: { textAlign: "center" },
   fieldWrap: { marginBottom: space.fieldGap },
@@ -357,7 +376,13 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     borderRightColor: colors.inputBorder,
   },
-  input: { flex: 1, paddingHorizontal: 14, height: "100%" },
+  input: {
+    flex: 1,
+    paddingHorizontal: 14,
+    height: "100%",
+    color: colors.heading,
+    fontSize: 16,
+  },
   trailCell: {
     width: 46,
     height: "100%",
@@ -400,7 +425,7 @@ const styles = StyleSheet.create({
     marginBottom: 26,
     paddingHorizontal: 4,
   },
-  stepCol: { alignItems: "center", width: 64 },
+  stepCol: { alignItems: "center", flex: 1 },
   stepDot: {
     width: 34,
     height: 34,
@@ -409,11 +434,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   stepNum: { fontSize: 14, fontWeight: "700" },
-  stepLabel: { fontSize: 12, fontWeight: "600", marginTop: 6 },
+  stepLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 8,
+    textAlign: "center",
+  },
   stepLine: {
     flex: 1,
     height: 2,
     backgroundColor: colors.stepperInactiveFill,
     marginTop: 16,
+    marginBottom: 18,
+    marginHorizontal: 4,
   },
 });

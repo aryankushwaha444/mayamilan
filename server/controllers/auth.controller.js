@@ -10,6 +10,7 @@ import Like from "../models/Like.js";
 import Conversation from "../models/Conversation.js";
 import Notification from "../models/Notification.js";
 import { getIO } from "../sockets/socket.js";
+import { OAuth2Client } from 'google-auth-library';
 import {
   generateOTP,
   saveOTP,
@@ -813,6 +814,84 @@ export const login = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+
+  // ═══════════════════════════════════════════
+// MOBILE GOOGLE LOGIN (Receives idToken directly)
+// ═══════════════════════════════════════════
+
+const googleClient = new OAuth2Client(process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID);
+
+export const mobileGoogleLogin = async (req, res, next) => {
+  try {
+    const { idToken } = req.body;
+
+    if (!idToken || typeof idToken !== "string") {
+      return res.status(400).json({ success: false, message: "ID token is required" });
+    }
+
+    // 1. Verify the token with Google
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name, picture } = payload;
+
+    // 2. Find or create user in MongoDB
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      user = await User.create({
+        name: name || "Google User",
+        email,
+        googleId,
+        photos: picture ? [{ url: picture, isPrimary: true }] : [],
+        isVerified: true, // Google emails are inherently verified
+        oauthProvider: "google",
+      });
+    } else {
+      // Link Google ID to existing local account if not already set
+      if (!user.googleId) {
+        user.googleId = googleId;
+        user.oauthProvider = "google";
+        if (!user.isVerified) user.isVerified = true;
+        await user.save();
+      }
+    }
+
+    // 3. Security checks
+    if (!user.isActive) {
+      return res.status(403).json({ success: false, message: "Your account is inactive" });
+    }
+
+    // 4. Generate JWT and session (uses your existing secure helper)
+    const { accessToken, signingKey } = await createSessionAndTokens(user, req, res);
+
+    await logAudit(req, "login_success", {
+      email: user.email,
+      userId: user._id,
+      provider: "google",
+    });
+
+    // 5. Send success response to mobile app
+    res.status(200).json({
+      success: true,
+      message: "Login successful",
+      accessToken,
+      signingKey,
+      user: formatUserResponse(user),
+    });
+  } catch (error) {
+    console.error("Google mobile login error:", error);
+    await logAudit(req, "login_failed", {
+      reason: "google_token_invalid",
+      error: error.message,
+    });
+    res.status(401).json({ success: false, message: "Invalid Google token or login failed" });
+  }
+};
+
 };
 
 // ═══════════════════════════════════════════

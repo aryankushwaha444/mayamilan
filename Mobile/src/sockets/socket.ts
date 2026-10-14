@@ -1,9 +1,7 @@
 // src/sockets/socket.ts
 import io, { Socket } from "socket.io-client";
 import { getToken } from "../lib/secureStore";
-
-const SOCKET_URL =
-  process.env.EXPO_PUBLIC_SOCKET_URL ?? "https://mayamilan.onrender.com";
+import { API_BASE_URL } from "../api/client";
 
 let socket: Socket | null = null;
 
@@ -12,8 +10,10 @@ export async function connectSocket(): Promise<Socket | null> {
   if (!token) return null;
   if (socket?.connected) return socket;
 
-  socket = io(SOCKET_URL, {
-    transports: ["websocket"], // wss:// automatically because URL is https
+  const socketHost = process.env.EXPO_PUBLIC_SOCKET_URL || API_BASE_URL;
+
+  socket = io(socketHost, {
+    transports: ["websocket"],
     auth: { token },
     reconnection: true,
     reconnectionDelay: 1000,

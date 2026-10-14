@@ -24,6 +24,7 @@ import {
   reactivateAccount,
   completeOAuth2FA,
   upsertSessionForUser,
+  mobileGoogleLogin,
 } from "../controllers/auth.controller.js";
 
 import {
@@ -150,6 +151,15 @@ router.post(
   checkIpReputationMiddleware,
   jsonLimit("1kb"),
   login
+);
+
+// ✅ ADD THIS ROUTE FOR MOBILE GOOGLE SIGN-IN
+router.post(
+  "/google",
+  loginLimiter,
+  checkIpReputationMiddleware,
+  jsonLimit("1kb"),
+  mobileGoogleLogin
 );
 
 router.post("/login/2fa", loginLimiter, jsonLimit("500b"), loginWith2FA);
