@@ -16,7 +16,7 @@
         min-height: 70px;
         overflow: hidden;
         background: transparent;
-        font-family: system-ui, sans-serif;
+        font-family: -apple-system, system-ui, sans-serif;
       }
       #cf {
         width: 100%;
@@ -27,74 +27,75 @@
   <body>
     <div id="cf"></div>
     <script>
-      (function () {
-        var params = new URLSearchParams(window.location.search);
-        var SITEKEY = params.get("sitekey");
-        var NONCE = params.get("nonce");
-        var delivered = { ok: false, error: false, expired: false };
+      var params = new URLSearchParams(window.location.search);
+      var SITEKEY = params.get("sitekey");
+      var NONCE = params.get("nonce");
+      var delivered = { ok: false, error: false, expired: false };
 
-        console.log("[Turnstile] Loaded with sitekey:", SITEKEY);
+      console.log(
+        "[Turnstile] Loaded with sitekey:",
+        SITEKEY ? SITEKEY.substring(0, 10) + "..." : "MISSING"
+      );
 
-        function post(kind, token) {
+      function post(kind, token) {
+        if (
+          window.ReactNativeWebView &&
+          typeof window.ReactNativeWebView.postMessage === "function"
+        ) {
+          window.ReactNativeWebView.postMessage(
+            JSON.stringify({
+              channel: "mayamilan-turnstile",
+              nonce: NONCE,
+              kind: kind,
+              token: token || "",
+            })
+          );
+        }
+      }
+
+      function terminal(kind, token) {
+        if (delivered[kind]) return;
+        delivered[kind] = true;
+        post(kind, token);
+      }
+
+      window.mmTurnstileReady = function () {
+        try {
           if (
-            window.ReactNativeWebView &&
-            typeof window.ReactNativeWebView.postMessage === "function"
+            !window.turnstile ||
+            typeof window.turnstile.render !== "function"
           ) {
-            window.ReactNativeWebView.postMessage(
-              JSON.stringify({
-                channel: "mayamilan-turnstile",
-                nonce: NONCE,
-                kind: kind,
-                token: token || "",
-              })
-            );
+            console.error("[Turnstile] API unavailable");
+            terminal("error", "api_unavailable");
+            return;
           }
+          console.log("[Turnstile] Rendering widget...");
+          window.turnstile.render("#cf", {
+            sitekey: SITEKEY,
+            theme: "light",
+            size: "flexible",
+            callback: function (token) {
+              console.log("[Turnstile] Success!");
+              if (typeof token === "string" && token.trim().length > 0) {
+                terminal("ok", token);
+              } else {
+                terminal("error", "invalid_token");
+              }
+            },
+            "error-callback": function (errCode) {
+              console.error("[Turnstile] Error:", errCode);
+              terminal("error", errCode || "widget_error");
+            },
+            "expired-callback": function () {
+              console.log("[Turnstile] Expired");
+              terminal("expired", "");
+            },
+          });
+        } catch (e) {
+          console.error("[Turnstile] Exception:", e);
+          terminal("error", "render_exception");
         }
-
-        function terminal(kind, token) {
-          if (delivered[kind]) return;
-          delivered[kind] = true;
-          post(kind, token);
-        }
-
-        window.mmTurnstileReady = function () {
-          try {
-            if (
-              !window.turnstile ||
-              typeof window.turnstile.render !== "function"
-            ) {
-              console.error("[Turnstile] API unavailable");
-              terminal("error", "api_unavailable");
-              return;
-            }
-            console.log("[Turnstile] Rendering widget...");
-            window.turnstile.render("#cf", {
-              sitekey: SITEKEY,
-              theme: "light",
-              size: "flexible",
-              callback: function (token) {
-                console.log("[Turnstile] Success!");
-                if (typeof token === "string" && token.trim().length > 0) {
-                  terminal("ok", token);
-                } else {
-                  terminal("error", "invalid_token");
-                }
-              },
-              "error-callback": function (errCode) {
-                console.error("[Turnstile] Error:", errCode);
-                terminal("error", errCode || "widget_error");
-              },
-              "expired-callback": function () {
-                console.log("[Turnstile] Expired");
-                terminal("expired", "");
-              },
-            });
-          } catch (e) {
-            console.error("[Turnstile] Exception:", e);
-            terminal("error", "render_exception");
-          }
-        };
-      })();
+      };
     </script>
     <script
       src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=mmTurnstileReady"
