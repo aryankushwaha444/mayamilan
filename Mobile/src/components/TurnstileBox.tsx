@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -13,37 +6,28 @@ import {
   Text,
   View,
 } from "react-native";
-
-import {
-  WebView,
-  type WebViewMessageEvent,
-} from "react-native-webview";
+import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
 import { colors, radius } from "../theme";
 
-// This is the PUBLIC site key, not the Cloudflare secret key.
-const TURNSTILE_SITEKEY =
-  process.env.EXPO_PUBLIC_TURNSTILE_SITEKEY?.trim() ?? "";
+const SITE_KEY = process.env.EXPO_PUBLIC_TURNSTILE_SITEKEY?.trim() ?? "";
 
-const CF_ORIGIN = "https://challenges.cloudflare.com";
-const TURNSTILE_BASE_URL = "https://mayamilan.vercel.app/";
-
-const BOOTSTRAP_TIMEOUT_MS = 30_000;
-const MAX_TOKEN_LEN = 2048;
-const MAX_MESSAGE_LEN = MAX_TOKEN_LEN + 1024;
+const BASE_URL = "https://mayamilan.vercel.app/";
+const CHANNEL = "mayamilan-turnstile";
+const TIMEOUT_MS = 90_000;
+const MAX_TOKEN_LENGTH = 2048;
 
 type Status = "loading" | "ready" | "expired" | "error";
-type MessageKind = "ok" | "error" | "expired";
 
-type TurnstileMessage = {
-  channel: "mayamilan-turnstile";
+type ChallengeMessage = {
+  channel: string;
   nonce: string;
-  kind: MessageKind;
+  kind: "ok" | "error" | "expired" | "diagnostic";
   token: string;
+  errorCode?: string;
 };
 
 function createNonce(): string {
-  // Correlation value only; it is not a security credential.
   return (
     Date.now().toString(36) +
     "-" +
@@ -53,231 +37,70 @@ function createNonce(): string {
   );
 }
 
-function buildHtml(sitekey: string, nonce: string): string {
-  const safeSitekey = JSON.stringify(sitekey);
-  const safeNonce = JSON.stringify(nonce);
-  const safeOrigin = JSON.stringify(CF_ORIGIN);
+function createChallengeUrl(siteKey: string, nonce: string): string {
+  const url = new URL("mobile-turnstile.html", BASE_URL);
 
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, maximum-scale=1"
-  >
-  <meta name="referrer" content="strict-origin-when-cross-origin">
+  url.searchParams.set("sitekey", siteKey);
+  url.searchParams.set("nonce", nonce);
 
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      min-height: 70px;
-      overflow: hidden;
-      background: transparent;
-      font-family: -apple-system, system-ui, sans-serif;
-    }
-
-    #cf {
-      width: 100%;
-      min-height: 65px;
-    }
-  </style>
-</head>
-
-<body>
-  <div id="cf"></div>
-
-  <script>
-    (function () {
-      "use strict";
-
-      var CHANNEL = "mayamilan-turnstile";
-      var NONCE = ${safeNonce};
-      var SITEKEY = ${safeSitekey};
-      var CF_ORIGIN = ${safeOrigin};
-
-      var tokenDelivered = false;
-      var errorDelivered = false;
-      var expiredDelivered = false;
-      var widgetRendered = false;
-
-      function post(kind, token) {
-        try {
-          if (
-            !window.ReactNativeWebView ||
-            typeof window.ReactNativeWebView.postMessage !== "function"
-          ) {
-            return;
-          }
-
-          window.ReactNativeWebView.postMessage(
-            JSON.stringify({
-              channel: CHANNEL,
-              nonce: NONCE,
-              kind: kind,
-              token: typeof token === "string" ? token : ""
-            })
-          );
-        } catch (error) {
-          console.error("Turnstile message delivery failed.");
-        }
-      }
-
-      function terminal(kind, token) {
-        if (kind === "ok") {
-          if (tokenDelivered) return;
-          tokenDelivered = true;
-        } else if (kind === "error") {
-          if (errorDelivered) return;
-          errorDelivered = true;
-        } else if (kind === "expired") {
-          if (expiredDelivered) return;
-          expiredDelivered = true;
-        }
-
-        post(kind, token);
-      }
-
-      window.mmTurnstileReady = function () {
-        try {
-          if (widgetRendered) return;
-
-          if (
-            !window.turnstile ||
-            typeof window.turnstile.render !== "function"
-          ) {
-            console.error("Turnstile API is unavailable.");
-            terminal("error", "");
-            return;
-          }
-
-          widgetRendered = true;
-
-          window.turnstile.render("#cf", {
-            sitekey: SITEKEY,
-            theme: "light",
-            size: "flexible",
-
-            callback: function (token) {
-              if (
-                typeof token !== "string" ||
-                token.trim().length === 0 ||
-                token.length > ${MAX_TOKEN_LEN}
-              ) {
-                terminal("error", "");
-                return;
-              }
-
-              // This token must still be verified by the backend.
-              terminal("ok", token);
-            },
-
-            "error-callback": function (code) {
-              console.error("Turnstile challenge error:", code);
-              terminal("error", "");
-            },
-
-            "expired-callback": function () {
-              terminal("expired", "");
-            }
-          });
-        } catch (error) {
-          console.error("Turnstile initialization failed.");
-          terminal("error", "");
-        }
-      };
-
-      // Detect failure to download the Cloudflare API script.
-      window.addEventListener(
-        "error",
-        function (event) {
-          var target = event && event.target;
-
-          if (
-            target &&
-            target.tagName === "SCRIPT" &&
-            typeof target.src === "string" &&
-            target.src.indexOf(CF_ORIGIN + "/turnstile/") === 0
-          ) {
-            console.error("Could not load the Turnstile API script.");
-            terminal("error", "");
-          }
-        },
-        true
-      );
-
-      // Catch unexpected JavaScript failures.
-      window.addEventListener("unhandledrejection", function () {
-        console.error("Turnstile encountered an asynchronous error.");
-      });
-    })();
-  </script>
-
-  <script
-    src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=mmTurnstileReady"
-    async
-    defer
-  ></script>
-</body>
-</html>`;
+  return url.toString();
 }
 
 function parseMessage(
   raw: string,
   expectedNonce: string
-): TurnstileMessage | null {
-  if (typeof raw !== "string" || raw.length > MAX_MESSAGE_LEN) {
+): ChallengeMessage | null {
+  if (typeof raw !== "string" || raw.length > MAX_TOKEN_LENGTH + 1024) {
     return null;
   }
 
-  let parsed: unknown;
-
   try {
-    parsed = JSON.parse(raw);
+    const value: unknown = JSON.parse(raw);
+
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const message = value as Record<string, unknown>;
+
+    if (
+      message.channel !== CHANNEL ||
+      message.nonce !== expectedNonce ||
+      !["ok", "error", "expired", "diagnostic"].includes(
+        String(message.kind)
+      ) ||
+      typeof message.token !== "string" ||
+      message.token.length > MAX_TOKEN_LENGTH
+    ) {
+      return null;
+    }
+
+    if (message.kind === "ok" && message.token.trim().length === 0) {
+      return null;
+    }
+
+    if (message.kind !== "ok" && message.token !== "") {
+      return null;
+    }
+
+    if (
+      message.errorCode !== undefined &&
+      typeof message.errorCode !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      channel: CHANNEL,
+      nonce: expectedNonce,
+      kind: message.kind as ChallengeMessage["kind"],
+      token: message.token,
+      errorCode:
+        typeof message.errorCode === "string" ? message.errorCode : undefined,
+    };
   } catch {
     return null;
   }
-
-  if (!parsed || typeof parsed !== "object") {
-    return null;
-  }
-
-  const value = parsed as Record<string, unknown>;
-
-  if (
-    value.channel !== "mayamilan-turnstile" ||
-    value.nonce !== expectedNonce ||
-    (value.kind !== "ok" &&
-      value.kind !== "error" &&
-      value.kind !== "expired") ||
-    typeof value.token !== "string"
-  ) {
-    return null;
-  }
-
-  if (value.token.length > MAX_TOKEN_LEN) {
-    return null;
-  }
-
-  if (value.kind !== "ok" && value.token !== "") {
-    return null;
-  }
-
-  if (
-    value.kind === "ok" &&
-    value.token.trim().length === 0
-  ) {
-    return null;
-  }
-
-  return {
-    channel: "mayamilan-turnstile",
-    nonce: expectedNonce,
-    kind: value.kind,
-    token: value.token,
-  };
 }
 
 export function TurnstileBox({
@@ -286,16 +109,12 @@ export function TurnstileBox({
   onToken: (token: string) => void;
 }) {
   const [nonce, setNonce] = useState(createNonce);
+  const [status, setStatus] = useState<Status>(SITE_KEY ? "loading" : "error");
 
-  const [status, setStatus] = useState<Status>(
-    TURNSTILE_SITEKEY ? "loading" : "error"
-  );
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const timerRef =
-    useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const onTokenRef = useRef(onToken);
   const mountedRef = useRef(true);
+  const onTokenRef = useRef(onToken);
 
   useEffect(() => {
     onTokenRef.current = onToken;
@@ -308,224 +127,170 @@ export function TurnstileBox({
     }
   }, []);
 
-  const clearToken = useCallback(() => {
-    onTokenRef.current("");
-  }, []);
-
-  const failClosed = useCallback(
+  const fail = useCallback(
     (nextStatus: Status) => {
       clearTimer();
 
       if (!mountedRef.current) return;
 
       setStatus(nextStatus);
-      clearToken();
+      onTokenRef.current("");
     },
-    [clearTimer, clearToken]
+    [clearTimer]
   );
 
-  const startTimer = useCallback(() => {
-    clearTimer();
-
-    if (!TURNSTILE_SITEKEY) {
-      failClosed("error");
-      return;
-    }
-
-    timerRef.current = setTimeout(() => {
-      console.error(
-        "[Turnstile] Timed out waiting for challenge completion."
-      );
-      failClosed("error");
-    }, BOOTSTRAP_TIMEOUT_MS);
-  }, [clearTimer, failClosed]);
-
-  const html = useMemo(
-    () =>
-      TURNSTILE_SITEKEY
-        ? buildHtml(TURNSTILE_SITEKEY, nonce)
-        : "",
-    [nonce]
-  );
-
-  // Keep refs and timers synchronized with the component lifecycle.
   useEffect(() => {
     mountedRef.current = true;
 
     return () => {
       mountedRef.current = false;
       clearTimer();
-      clearToken();
+      onTokenRef.current("");
     };
-  }, [clearTimer, clearToken]);
+  }, [clearTimer]);
 
-  // Start a fresh timeout for each challenge.
   useEffect(() => {
-    if (!TURNSTILE_SITEKEY) {
-      failClosed("error");
-      return;
-    }
-
-    startTimer();
-
-    return clearTimer;
-  }, [nonce, startTimer, clearTimer, failClosed]);
-
-  const retry = useCallback(() => {
-    if (!TURNSTILE_SITEKEY) {
-      failClosed("error");
-      return;
-    }
-
-    clearToken();
     clearTimer();
+    onTokenRef.current("");
+
+    if (!SITE_KEY) {
+      setStatus("error");
+      console.error("[Turnstile] Missing EXPO_PUBLIC_TURNSTILE_SITEKEY.");
+      return;
+    }
+
     setStatus("loading");
 
-    // A new nonce forces a fresh WebView document.
-    setNonce(createNonce());
-  }, [clearToken, clearTimer, failClosed]);
+    timerRef.current = setTimeout(() => {
+      console.error("[Turnstile] No terminal challenge result after timeout.");
+      fail("error");
+    }, TIMEOUT_MS);
+
+    return clearTimer;
+  }, [nonce, clearTimer, fail]);
 
   const handleMessage = useCallback(
     (event: WebViewMessageEvent) => {
-      const message = parseMessage(
-        event.nativeEvent.data,
-        nonce
-      );
+      const raw = event.nativeEvent.data;
 
-      // Ignore malformed messages and stale documents.
-      if (!message) return;
+      console.log("[Turnstile] Raw WebView message:", raw);
 
-      clearTimer();
+      const message = parseMessage(raw, nonce);
 
-      if (message.kind === "expired") {
-        failClosed("expired");
+      if (!message) {
+        console.warn("[Turnstile] Ignored invalid or unexpected message.");
         return;
       }
 
+      if (message.kind === "diagnostic") {
+        console.log("[Turnstile] Diagnostic:", message.errorCode ?? "unknown");
+        return;
+      }
+
+      clearTimer();
+
       if (message.kind === "error") {
         console.error(
-          "[Turnstile] Cloudflare reported a challenge error."
+          "[Turnstile] Error code:",
+          message.errorCode ?? "unknown"
         );
-        failClosed("error");
+        fail("error");
+        return;
+      }
+
+      if (message.kind === "expired") {
+        fail("expired");
         return;
       }
 
       setStatus("ready");
       onTokenRef.current(message.token);
     },
-    [nonce, clearTimer, failClosed]
+    [nonce, clearTimer, fail]
   );
+
+  const retry = useCallback(() => {
+    clearTimer();
+    onTokenRef.current("");
+    setStatus("loading");
+    setNonce(createNonce());
+  }, [clearTimer]);
 
   return (
     <View style={styles.box}>
-      {TURNSTILE_SITEKEY ? (
+      {SITE_KEY ? (
         <WebView
           key={nonce}
           source={{
-            html,
-            baseUrl: TURNSTILE_BASE_URL,
+            uri: createChallengeUrl(SITE_KEY, nonce),
           }}
-          originWhitelist={["*"]}
+          originWhitelist={["https://*"]}
           javaScriptEnabled
           domStorageEnabled
           thirdPartyCookiesEnabled
-          sharedCookiesEnabled={false}
-          setSupportMultipleWindows={false}
-          javaScriptCanOpenWindowsAutomatically={false}
+          sharedCookiesEnabled
           allowFileAccess={false}
           allowFileAccessFromFileURLs={false}
           allowUniversalAccessFromFileURLs={false}
+          setSupportMultipleWindows={false}
+          javaScriptCanOpenWindowsAutomatically={false}
           mixedContentMode="never"
           scrollEnabled={false}
           bounces={false}
           style={styles.web}
-          onShouldStartLoadWithRequest={(request) => {
-            try {
-              const url = new URL(request.url);
-
-              // Permit the blank initial WebKit document.
-              if (url.protocol === "about:") {
-                return true;
-              }
-
-              // Permit only HTTPS requests for the app origin
-              // or Cloudflare's Turnstile origin.
-              return (
-                url.protocol === "https:" &&
-                (
-                  url.origin === CF_ORIGIN ||
-                  url.origin ===
-                    new URL(TURNSTILE_BASE_URL).origin
-                )
-              );
-            } catch (error) {
-              console.warn(
-                "[Turnstile] Blocked an invalid navigation URL."
-              );
-              return false;
-            }
-          }}
           onMessage={handleMessage}
-          onError={(event) => {
-            console.error(
-              "[Turnstile WebView error]",
-              JSON.stringify(event.nativeEvent)
-            );
-            failClosed("error");
-          }}
-          onHttpError={(event) => {
-            console.error(
-              "[Turnstile HTTP error]",
-              JSON.stringify(event.nativeEvent)
-            );
-
-            if (event.nativeEvent.statusCode >= 400) {
-              failClosed("error");
-            }
+          onLoadStart={() => {
+            console.log("[Turnstile] Hosted page load started.");
           }}
           onLoadProgress={({ nativeEvent }) => {
             console.log(
-              "[Turnstile load progress]",
+              "[Turnstile] WebView load progress:",
               nativeEvent.progress
             );
           }}
-          onRenderProcessGone={(event) => {
+          onLoadEnd={() => {
+            console.log("[Turnstile] Hosted page loaded; waiting for token.");
+          }}
+          onError={({ nativeEvent }) => {
             console.error(
-              "[Turnstile renderer process exited]",
-              JSON.stringify(event.nativeEvent)
+              "[Turnstile] WebView error:",
+              nativeEvent.description
             );
-            failClosed("error");
+            fail("error");
+          }}
+          onHttpError={({ nativeEvent }) => {
+            console.error(
+              "[Turnstile] HTTP error:",
+              nativeEvent.statusCode,
+              nativeEvent.url
+            );
+          }}
+          onRenderProcessGone={({ nativeEvent }) => {
+            console.error("[Turnstile] Android renderer exited:", nativeEvent);
+            fail("error");
           }}
           onContentProcessDidTerminate={() => {
-            console.error(
-              "[Turnstile] iOS WebView content process terminated."
-            );
-            failClosed("error");
+            console.error("[Turnstile] iOS WebView process terminated.");
+            fail("error");
           }}
         />
       ) : null}
 
       {status === "loading" && (
-        <View
-          style={styles.overlay}
-          accessibilityLiveRegion="polite"
-        >
+        <View pointerEvents="none" style={styles.overlay}>
           <ActivityIndicator color={colors.iconTint} />
-          <Text style={styles.loading}>Verifying…</Text>
+          <Text style={styles.loading}>Verifying security…</Text>
         </View>
       )}
 
       {(status === "error" || status === "expired") && (
-        <View
-          style={styles.overlay}
-          accessibilityLiveRegion="assertive"
-        >
+        <View pointerEvents="box-none" style={styles.overlay}>
           <Text style={styles.errText}>
-            {!TURNSTILE_SITEKEY
+            {!SITE_KEY
               ? "Security check is not configured."
               : status === "expired"
-                ? "Security check expired."
-                : "Security check unavailable."}
+              ? "Security check expired. Retry."
+              : "Security check unavailable. Retry."}
           </Text>
 
           <Pressable
@@ -544,7 +309,7 @@ export function TurnstileBox({
 
 const styles = StyleSheet.create({
   box: {
-    height: 78,
+    height: 82,
     borderRadius: radius.chip,
     overflow: "hidden",
     borderWidth: 1,
@@ -553,12 +318,10 @@ const styles = StyleSheet.create({
     marginBottom: 18,
     position: "relative",
   },
-
   web: {
     flex: 1,
     backgroundColor: "transparent",
   },
-
   overlay: {
     position: "absolute",
     left: 0,
@@ -572,25 +335,21 @@ const styles = StyleSheet.create({
     zIndex: 2,
     paddingHorizontal: 12,
   },
-
   loading: {
     color: colors.subtext,
     fontSize: 13,
   },
-
   errText: {
     color: colors.danger,
     fontSize: 13,
     textAlign: "center",
   },
-
   retryBtn: {
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: colors.iconTint,
   },
-
   retryText: {
     color: "#fff",
     fontSize: 12,

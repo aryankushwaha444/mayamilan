@@ -1,53 +1,81 @@
-// src/api/client.ts
+/* src/api/client.ts */
+
 import axios from "axios";
 import { Platform } from "react-native";
 import * as Device from "expo-device";
+import * as SecureStore from "expo-secure-store";
+
 import { getToken, clearToken } from "../lib/secureStore";
 
-/**
- * MayaMilan Unified API Client
- * Used identically by both Android and iOS apps.
- * Supports auto-resolving local dev server and deployed production backend.
- */
+const DEVICE_ID_KEY = "maya_milan_device_id";
 
-const getInitialBaseUrl = (): string => {
-  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
-  if (envUrl) return envUrl.replace(/\/+$/, "");
+async function getDeviceId(): Promise<string> {
+  let deviceId = await SecureStore.getItemAsync(DEVICE_ID_KEY);
 
-  // In local development, Android emulator connects to host via 10.0.2.2, while iOS connects to localhost
-  if (__DEV__) {
-    // Default fallback to live backend, or set to local emulator
-    return "https://mayamilan.onrender.com";
+  if (!deviceId) {
+    // A persistent device identifier, not an authentication credential.
+    // This does not require expo-crypto.
+    const randomPart =
+      Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+
+    deviceId = `mobile-${Platform.OS}-${Date.now().toString(36)}-${randomPart}`;
+
+    await SecureStore.setItemAsync(DEVICE_ID_KEY, deviceId);
   }
-  return "https://mayamilan.onrender.com";
-};
+
+  return deviceId;
+}
+
+function getInitialBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+
+  const url = (envUrl || "https://mayamilan.onrender.com").replace(/\/+$/, "");
+
+  if (!/^https:\/\/[^/]+$/i.test(url)) {
+    throw new Error(
+      "EXPO_PUBLIC_API_URL must be an HTTPS origin without a trailing path."
+    );
+  }
+
+  return url;
+}
 
 export let API_BASE_URL = getInitialBaseUrl();
 
-export const setApiBaseUrl = (newUrl: string) => {
-  API_BASE_URL = newUrl.replace(/\/+$/, "");
-  api.defaults.baseURL = API_BASE_URL;
-};
+export function setApiBaseUrl(newUrl: string): void {
+  const url = newUrl.trim().replace(/\/+$/, "");
 
-const deviceId = `mobile-${Platform.OS}-${Device.modelName || "device"}`;
+  if (!/^https:\/\/[^/]+$/i.test(url)) {
+    throw new Error("API URL must be a valid HTTPS origin.");
+  }
+
+  API_BASE_URL = url;
+  api.defaults.baseURL = url;
+}
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 25000,
-  withCredentials: false,
   headers: {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "X-Device-Id": deviceId,
-    "X-Device-Info": `${Platform.OS} ${Platform.Version || ""} (${Device.modelName || "Device"})`,
   },
 });
 
+// Attach the existing bearer token and persistent device identifier.
 api.interceptors.request.use(async (config) => {
-  const token = await getToken();
+  const [token, deviceId] = await Promise.all([getToken(), getDeviceId()]);
+
   if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+    config.headers.set("Authorization", `Bearer ${token}`);
   }
+
+  config.headers.set("X-Device-Id", deviceId);
+  config.headers.set(
+    "X-Device-Info",
+    `${Platform.OS} ${Platform.Version || ""} (${Device.modelName || "Device"})`
+  );
+
   return config;
 });
 
@@ -57,6 +85,7 @@ api.interceptors.response.use(
     if (error?.response?.status === 401) {
       await clearToken();
     }
+
     return Promise.reject(error);
   }
 );
