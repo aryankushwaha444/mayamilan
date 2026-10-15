@@ -1,4 +1,3 @@
-<!-- public/mobile-turnstile.html -->
 <!DOCTYPE html>
 <html>
   <head>
@@ -13,69 +12,137 @@
         margin: 0;
         padding: 0;
         width: 100%;
-        min-height: 70px;
+        min-height: 100px;
         overflow: hidden;
-        background: transparent;
+        background: #f8f9fa;
         font-family: -apple-system, system-ui, sans-serif;
       }
       #cf {
         width: 100%;
         min-height: 65px;
+        margin: 10px 0;
+      }
+      #status {
+        padding: 10px;
+        font-size: 12px;
+        color: #666;
+        text-align: center;
+        background: #fff;
+        border-top: 1px solid #e0e0e0;
       }
     </style>
   </head>
   <body>
     <div id="cf"></div>
+    <div id="status">Initializing Turnstile...</div>
+
     <script>
       var params = new URLSearchParams(window.location.search);
       var SITEKEY = params.get("sitekey");
       var NONCE = params.get("nonce");
       var delivered = { ok: false, error: false, expired: false };
+      var statusEl = document.getElementById("status");
 
-      console.log(
-        "[Turnstile] Loaded with sitekey:",
-        SITEKEY ? SITEKEY.substring(0, 10) + "..." : "MISSING"
+      function updateStatus(msg) {
+        console.log("[Turnstile Status]", msg);
+        if (statusEl) statusEl.textContent = msg;
+      }
+
+      updateStatus(
+        "Loading with sitekey: " +
+          (SITEKEY ? SITEKEY.substring(0, 10) + "..." : "MISSING")
       );
 
-      function post(kind, token) {
+      function postToReactNative(kind, token) {
+        var message = JSON.stringify({
+          channel: "mayamilan-turnstile",
+          nonce: NONCE,
+          kind: kind,
+          token: token || "",
+        });
+
+        // Method 1: React Native WebView bridge
         if (
           window.ReactNativeWebView &&
           typeof window.ReactNativeWebView.postMessage === "function"
         ) {
-          window.ReactNativeWebView.postMessage(
-            JSON.stringify({
-              channel: "mayamilan-turnstile",
-              nonce: NONCE,
-              kind: kind,
-              token: token || "",
-            })
-          );
+          updateStatus("Sending via ReactNativeWebView...");
+          try {
+            window.ReactNativeWebView.postMessage(message);
+            console.log("[Turnstile] ✅ Sent via ReactNativeWebView");
+            return true;
+          } catch (e) {
+            console.error("[Turnstile] ❌ ReactNativeWebView failed:", e);
+          }
         }
+
+        // Method 2: Fallback - try window.webkit.messageHandlers (iOS WKWebView)
+        if (
+          window.webkit &&
+          window.webkit.messageHandlers &&
+          window.webkit.messageHandlers.ReactNativeWebView
+        ) {
+          updateStatus("Sending via webkit.messageHandlers...");
+          try {
+            window.webkit.messageHandlers.ReactNativeWebView.postMessage(
+              message
+            );
+            console.log("[Turnstile] ✅ Sent via webkit.messageHandlers");
+            return true;
+          } catch (e) {
+            console.error("[Turnstile] ❌ webkit.messageHandlers failed:", e);
+          }
+        }
+
+        // Method 3: Last resort - change URL hash (React Native can detect this)
+        updateStatus("Fallback: Setting URL hash...");
+        try {
+          window.location.hash = "turnstile-" + kind + "-" + (token || "empty");
+          console.log("[Turnstile] ✅ Set URL hash as fallback");
+          return true;
+        } catch (e) {
+          console.error("[Turnstile] ❌ URL hash fallback failed:", e);
+        }
+
+        updateStatus("❌ All methods failed");
+        return false;
       }
 
       function terminal(kind, token) {
-        if (delivered[kind]) return;
+        if (delivered[kind]) {
+          console.log("[Turnstile] Already delivered " + kind + ", skipping");
+          return;
+        }
         delivered[kind] = true;
-        post(kind, token);
+        updateStatus("Terminal: " + kind);
+        postToReactNative(kind, token);
       }
 
       window.mmTurnstileReady = function () {
+        updateStatus("Turnstile API loaded, rendering widget...");
+
         try {
           if (
             !window.turnstile ||
             typeof window.turnstile.render !== "function"
           ) {
+            updateStatus("❌ Turnstile API not available");
             console.error("[Turnstile] API unavailable");
             terminal("error", "api_unavailable");
             return;
           }
-          console.log("[Turnstile] Rendering widget...");
+
+          updateStatus("Rendering widget...");
           window.turnstile.render("#cf", {
             sitekey: SITEKEY,
             theme: "light",
             size: "flexible",
             callback: function (token) {
-              console.log("[Turnstile] Success!");
+              updateStatus("✅ Challenge solved!");
+              console.log(
+                "[Turnstile] Success callback with token length:",
+                token.length
+              );
               if (typeof token === "string" && token.trim().length > 0) {
                 terminal("ok", token);
               } else {
@@ -83,19 +150,27 @@
               }
             },
             "error-callback": function (errCode) {
-              console.error("[Turnstile] Error:", errCode);
+              updateStatus(" Error: " + errCode);
+              console.error("[Turnstile] Error callback:", errCode);
               terminal("error", errCode || "widget_error");
             },
             "expired-callback": function () {
-              console.log("[Turnstile] Expired");
+              updateStatus(" Expired");
+              console.log("[Turnstile] Expired callback");
               terminal("expired", "");
             },
           });
         } catch (e) {
-          console.error("[Turnstile] Exception:", e);
+          updateStatus("❌ Exception: " + e.message);
+          console.error("[Turnstile] Render exception:", e);
           terminal("error", "render_exception");
         }
       };
+
+      // Log when page is fully loaded
+      window.addEventListener("load", function () {
+        updateStatus("Page loaded, waiting for Turnstile API...");
+      });
     </script>
     <script
       src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=mmTurnstileReady"
