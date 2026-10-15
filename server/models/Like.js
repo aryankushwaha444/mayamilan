@@ -46,6 +46,7 @@ likeSchema.statics.getUnreadLikesCount = async function (
     to: userId,
     from: { $nin: matchedUserIds },
     isHidden: false,
+    resultedInMatch: false,
   });
 };
 

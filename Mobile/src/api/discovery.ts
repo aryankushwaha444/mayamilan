@@ -28,6 +28,8 @@ export interface CandidateUser {
   maritalStatus?: string;
   familyType?: string;
   matchScore?: number;
+  isLiked?: boolean;
+  isMatched?: boolean;
 }
 
 export interface DiscoveryQuery {
@@ -47,16 +49,12 @@ export async function getDiscoveryCandidates(params?: DiscoveryQuery) {
 }
 
 export async function likeCandidate(userId: string) {
-  const { data } = await api.post(`/api/likes/${userId}`);
+  // ✅ SECURITY: encodeURIComponent prevents path traversal attacks
+  const { data } = await api.post(`/api/likes/${encodeURIComponent(userId)}`);
   return data;
 }
 
 export async function unlikeCandidate(userId: string) {
-  const { data } = await api.delete(`/api/likes/${userId}`);
-  return data;
-}
-
-export async function superLikeCandidate(userId: string) {
-  const { data } = await api.post(`/api/likes/${userId}`, { superLike: true });
+  const { data } = await api.delete(`/api/likes/${encodeURIComponent(userId)}`);
   return data;
 }

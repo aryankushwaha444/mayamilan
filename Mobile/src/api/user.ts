@@ -154,7 +154,7 @@ export async function reportUser(userId: string, message: string) {
   return data;
 }
 
-export async function blockUser(userId: string) {
+export async function toggleBlockUser(userId: string) {
   const id = validateUserId(userId);
   const { data } = await api.post(`/api/users/${id}/block`);
   return data;

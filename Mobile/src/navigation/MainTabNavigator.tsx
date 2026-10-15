@@ -71,7 +71,7 @@ export default function MainTabNavigator() {
         name="Feed"
         component={FeedScreen}
         options={{
-          tabBarLabel: "Community",
+          tabBarLabel: "Feeds",
           tabBarIcon: ({ color, size, focused }) => (
             <Ionicons
               name={focused ? "newspaper" : "newspaper-outline"}

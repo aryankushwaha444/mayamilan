@@ -843,13 +843,17 @@ export const mobileGoogleLogin = async (req, res, next) => {
     let user = await User.findOne({ email });
 
     if (!user) {
+      // ✅ ESSENTIAL FIX: Your User.js model requires 'gender' and 'relationshipGoal'. 
+      // Google does not provide these, so we must provide safe defaults to prevent a 500 Mongoose ValidationError.
       user = await User.create({
         name: name || "Google User",
         email,
         googleId,
         photos: picture ? [{ url: picture, isPrimary: true }] : [],
-        isVerified: true, // Google emails are inherently verified
+        isVerified: true,
         oauthProvider: "google",
+        gender: "prefer-not-to-say", 
+        relationshipGoal: "not-sure"
       });
     } else {
       // Link Google ID to existing local account if not already set

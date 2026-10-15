@@ -540,30 +540,48 @@ export const getSentLikes = async (req, res, next) => {
 };
 
 // ═══════════════════════════════════════════
-// GET RECEIVED LIKES  (unchanged — grace‑safe)
+// GET RECEIVED LIKES
 // ═══════════════════════════════════════════
 
 export const getReceivedLikes = async (req, res, next) => {
   try {
-    const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const limit = Math.min(parseInt(req.query.limit) || LIKES_PER_PAGE, 50);
+    const userId = req.user._id;
+
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || LIKES_PER_PAGE, 1),
+      50
+    );
+
     const skip = (page - 1) * limit;
 
+    // Only likes that should appear in the "Liked You" section.
+    const filter = {
+      to: userId,
+      isHidden: false,
+      resultedInMatch: false,
+    };
+
     const [likes, total] = await Promise.all([
-      Like.find({ to: req.user._id })
-        .populate("from", "name dateOfBirth gender photos location occupation")
+      Like.find(filter)
+        .populate(
+          "from",
+          "name dateOfBirth gender photos location occupation"
+        )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
-      Like.countDocuments({ to: req.user._id }),
+
+      Like.countDocuments(filter),
     ]);
 
+    // Exclude records whose sender no longer exists.
     const validLikes = likes.filter((like) => like.from !== null);
 
     res.status(200).json({
       success: true,
-      count: validLikes.length,
+      count: total,
       likes: validLikes,
       pagination: {
         page,
