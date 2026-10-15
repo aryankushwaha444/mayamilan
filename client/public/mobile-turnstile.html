@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>Maya Milan Security Check</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        min-height: 75px;
+        background: transparent;
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+      }
+
+      #cf {
+        width: 100%;
+        min-height: 65px;
+      }
+
+      #error {
+        color: #b91c1c;
+        font-size: 13px;
+        padding: 8px;
+        display: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="cf"></div>
+    <div id="error">Security verification could not start. Please retry.</div>
+
+    <script>
+      (function () {
+        "use strict";
+
+        const params = new URLSearchParams(window.location.search);
+        const sitekey = params.get("sitekey") || "";
+        const nonce = params.get("nonce") || "";
+        const channel = "mayamilan-turnstile";
+
+        let completed = false;
+        let widgetId = null;
+
+        function send(kind, token = "", errorCode = "") {
+          if (completed) return;
+
+          if (kind === "ok" || kind === "error" || kind === "expired") {
+            completed = true;
+          }
+
+          const bridge = window.ReactNativeWebView;
+
+          if (!bridge || typeof bridge.postMessage !== "function") {
+            console.log("[Turnstile] Native bridge unavailable:", kind);
+            return;
+          }
+
+          bridge.postMessage(
+            JSON.stringify({
+              channel,
+              nonce,
+              kind,
+              token,
+              errorCode: errorCode
+                ? String(errorCode).slice(0, 200)
+                : undefined,
+            })
+          );
+        }
+
+        function diagnostic(message) {
+          console.log("[Turnstile]", message);
+          send("diagnostic", "", message);
+        }
+
+        function showError(message) {
+          const element = document.getElementById("error");
+          if (element) element.style.display = "block";
+          diagnostic(message);
+        }
+
+        if (!sitekey || !nonce) {
+          showError("missing_configuration");
+          send("error", "", "missing_configuration");
+          return;
+        }
+
+        window.mmTurnstileReady = function () {
+          if (completed) return;
+
+          if (
+            !window.turnstile ||
+            typeof window.turnstile.render !== "function"
+          ) {
+            showError("api_unavailable");
+            send("error", "", "api_unavailable");
+            return;
+          }
+
+          try {
+            diagnostic("api_ready");
+
+            widgetId = window.turnstile.render("#cf", {
+              sitekey: sitekey,
+              theme: "light",
+              size: "flexible",
+              retry: "auto",
+              "refresh-expired": "auto",
+              "refresh-timeout": "auto",
+
+              callback: function (token) {
+                if (
+                  typeof token !== "string" ||
+                  !token.trim() ||
+                  token.length > 2048
+                ) {
+                  showError("invalid_token");
+                  send("error", "", "invalid_token");
+                  return;
+                }
+
+                diagnostic("token_received");
+                send("ok", token);
+              },
+
+              "error-callback": function (code) {
+                const errorCode = String(code || "unknown");
+                showError("challenge_error=" + errorCode);
+                send("error", "", errorCode);
+              },
+
+              "expired-callback": function () {
+                diagnostic("token_expired");
+                send("expired");
+              },
+
+              "timeout-callback": function () {
+                diagnostic("challenge_timeout");
+              },
+            });
+
+            diagnostic("render_called");
+          } catch (error) {
+            console.error("[Turnstile] Render exception:", error);
+            showError("render_failed");
+            send("error", "", "render_failed");
+          }
+        };
+
+        window.addEventListener("error", function (event) {
+          if (event.message) {
+            diagnostic(
+              "javascript_error=" + String(event.message).slice(0, 150)
+            );
+          }
+        });
+
+        window.addEventListener("unhandledrejection", function (event) {
+          diagnostic(
+            "promise_error=" + String(event.reason || "unknown").slice(0, 150)
+          );
+        });
+
+        diagnostic("html_ready");
+
+        setTimeout(function () {
+          if (!window.turnstile && !completed) {
+            showError("api_not_available_after_15_seconds");
+          }
+        }, 15000);
+      })();
+    </script>
+
+    <script
+      src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=mmTurnstileReady"
+      async
+      defer
+      onerror="(function(){var p=new URLSearchParams(location.search);var b=window.ReactNativeWebView;if(b){b.postMessage(JSON.stringify({channel:'mayamilan-turnstile',nonce:p.get('nonce'),kind:'error',token:'',errorCode:'script_load_failed'}));}var e=document.getElementById('error');if(e)e.style.display='block';})()"
+    ></script>
+  </body>
+</html>
