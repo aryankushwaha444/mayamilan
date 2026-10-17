@@ -5,11 +5,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { Platform, View, StyleSheet } from "react-native";
 import { colors, brand } from "../theme";
 
-import DiscoverScreen from "../screens/DiscoverScreen";
-import MatchesScreen from "../screens/MatchesScreen";
-import FeedScreen from "../screens/FeedScreen";
-import NotificationsScreen from "../screens/NotificationsScreen";
-import ProfileScreen from "../screens/ProfileScreen";
+import DiscoverScreen from "../screens/main/DiscoverScreen";
+import MatchesScreen from "../screens/main/MatchesScreen";
+import FeedScreen from "../screens/main/FeedScreen";
+import NotificationsScreen from "../screens/main/NotificationsScreen";
+import ProfileScreen from "../screens/main/ProfileScreen";
 
 const Tab = createBottomTabNavigator();
 

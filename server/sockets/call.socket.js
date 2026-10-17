@@ -1035,7 +1035,9 @@ const registerCallSocket = (io, socket) => {
       const rec = getCall(callId);
       if (!rec || rec.state === "ended" || rec.state === "ringing") return;
       if (rec.callerId !== me && rec.calleeId !== me) return;
-      markConnected(callId);
+
+      const who = rec.callerId === me ? "caller" : "callee";
+      markConnected(callId, who);
     } catch (e) {
       console.error("call:connected error:", e);
     }

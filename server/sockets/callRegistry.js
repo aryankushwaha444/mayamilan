@@ -26,11 +26,17 @@ export const createCall = ({
     createdAt: Date.now(),
     acceptedAt: null,
     connectedAt: null,
-    callerSocketId: callerSocketId || null, // ✅ which socket is driving the caller side
-    calleeSocketId: null, // set on accept (which tab accepted)
+    connectedConfirmations: {
+      caller: false,
+      callee: false,
+    },
+    callerSocketId: callerSocketId || null,
+    calleeSocketId: null,
   };
+
   byId.set(callId, record);
   byPair.set(pairKey(callerId, calleeId), callId);
+
   return record;
 };
 
@@ -39,6 +45,7 @@ export const getCall = (callId) => byId.get(callId) || null;
 export const findActiveBetween = (a, b) => {
   const id = byPair.get(pairKey(a, b));
   if (!id) return null;
+
   const rec = byId.get(id);
   return rec && rec.state !== "ended" ? rec : null;
 };
@@ -46,14 +53,16 @@ export const findActiveBetween = (a, b) => {
 export const listActiveForUser = (uid) => {
   const u = String(uid);
   const out = [];
+
   for (const rec of byId.values()) {
-    if (rec.state !== "ended" && (rec.callerId === u || rec.calleeId === u))
+    if (rec.state !== "ended" && (rec.callerId === u || rec.calleeId === u)) {
       out.push(rec);
+    }
   }
+
   return out;
 };
 
-// ✅ which of THIS user's active calls are owned by a given socket (for disconnect scoping)
 export const listActiveForSocket = (uid, socketId) =>
   listActiveForUser(uid).filter(
     (r) => r.callerSocketId === socketId || r.calleeSocketId === socketId
@@ -61,29 +70,62 @@ export const listActiveForSocket = (uid, socketId) =>
 
 export const setCalleeSocket = (callId, socketId, acceptedAt) => {
   const rec = byId.get(callId);
+
   if (rec && rec.state !== "ended") {
     rec.calleeSocketId = socketId || null;
     rec.acceptedAt = acceptedAt || Date.now();
   }
+
   return rec;
 };
 
-export const markConnected = (callId) => {
+export const markConnected = (callId, who) => {
   const rec = byId.get(callId);
-  if (rec && rec.state !== "ended") {
-    rec.state = "connected";
+
+  if (!rec || rec.state === "ended") return rec;
+
+  rec.state = "connected";
+
+  if (!rec.connectedConfirmations) {
+    rec.connectedConfirmations = {
+      caller: false,
+      callee: false,
+    };
+  }
+
+  if (who === "caller" || who === "callee") {
+    rec.connectedConfirmations[who] = true;
+  } else {
+    // Backward-compatible internal call: treat as both confirmed.
+    rec.connectedConfirmations.caller = true;
+    rec.connectedConfirmations.callee = true;
+  }
+
+  // SECURITY: duration starts only after BOTH participants report media connected.
+  if (
+    !rec.connectedAt &&
+    rec.connectedConfirmations.caller &&
+    rec.connectedConfirmations.callee
+  ) {
     rec.connectedAt = Date.now();
   }
+
   return rec;
 };
 
 export const takeCall = (callId) => {
   const rec = byId.get(callId);
+
   if (!rec) return null;
+
   byId.delete(callId);
-  if (byPair.get(pairKey(rec.callerId, rec.calleeId)) === callId)
+
+  if (byPair.get(pairKey(rec.callerId, rec.calleeId)) === callId) {
     byPair.delete(pairKey(rec.callerId, rec.calleeId));
+  }
+
   rec.state = "ended";
+
   return rec;
 };
 
