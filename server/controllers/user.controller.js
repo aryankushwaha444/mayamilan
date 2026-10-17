@@ -8,9 +8,6 @@ import Conversation from "../models/Conversation.js";
 import { invalidateUserCache } from "../utils/cache.js";
 import { sendPushToMany, getMatchIds } from "../utils/push.js";
 import { getIO } from "../sockets/socket.js";
-// ✅ #3: the teardown helpers live in call.socket.js (NOT callRegistry.js — my prior
-// diff had the wrong path and would have crashed boot). No cycle: call.socket.js does
-// not import user.controller.js or socket.js.
 import {
   findActiveCallForTeardown,
   takeCallForTeardown,
@@ -32,11 +29,85 @@ const ALLOWED_IMAGE_MIME = [
   "image/heif",
 ];
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+
 const MAX_BIO_LENGTH = 500;
+const MAX_NAME_LENGTH = 80;
+const MAX_OCCUPATION_LENGTH = 120;
+const MAX_EDUCATION_LENGTH = 160;
+const MAX_RELATIONSHIP_GOAL_LENGTH = 160;
+const MAX_INTEREST_LENGTH = 40;
+const MAX_INTERESTS = 20;
+const MAX_LOCATION_STRING = 80;
+const MAX_GENDER_LENGTH = 20;
+
 const MAX_REPORT_LENGTH = 1000;
 const BLOCKED_USERS_PER_PAGE = 20;
 const MAX_BLOCKED_LIMIT = 100;
+const MAX_BLOCKED_USERS = 500;
 const REPORT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+const MAX_AUDIT_REASON_LENGTH = 80;
+
+const MIN_AGE = 18;
+const MAX_AGE = 120;
+
+const MAX_OBJECT_KEYS = 50;
+const MAX_ARRAY_LENGTH = 50;
+const MAX_DEPTH = 6;
+const MAX_PREFERENCE_DEPTH = 3;
+const MAX_PREFERENCE_STRING = 120;
+const MAX_KEY_LENGTH = 40;
+
+const PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]/g;
+
+const SENSITIVE_PROFILE_KEYS = [
+  "password",
+  "email",
+  "role",
+  "isBanned",
+  "isActive",
+  "deletedAt",
+  "scheduledDeletionAt",
+  "lastLoginIp",
+  "lastLoginCountry",
+  "lastLoginCity",
+  "lastLoginDevice",
+  "twoFactorEnabled",
+  "twoFactorSecret",
+  "backupCodes",
+  "reactivationAttempts",
+  "emailBlockedUntil",
+  "emailVerificationToken",
+  "emailVerificationExpire",
+  "resetPasswordToken",
+  "resetPasswordExpire",
+  "refreshToken",
+  "refreshTokens",
+  "oauthProvider",
+  "oauthId",
+  "hiddenConversations",
+  "blockedUsers",
+  "preferences",
+  "sessions",
+  "devices",
+  "pushTokens",
+  "fcmTokens",
+  "__v",
+];
+
+const SENSITIVE_KEY_PATTERN =
+  /password|token|secret|otp|verification|refresh|backup|session|device|ip|blockedusers|hiddenconversations|preferences|twofactor|reactivation|emailblocked|oauth|role|isbanned|isactive|deletedat|schedule/i;
+
+const ALLOWED_PHOTO_HOSTS = new Set([
+  "res.cloudinary.com",
+  ...(process.env.ALLOWED_PHOTO_HOSTS
+    ? process.env.ALLOWED_PHOTO_HOSTS.split(",")
+        .map((h) => h.trim().toLowerCase())
+        .filter(Boolean)
+    : []),
+]);
 
 // ═══════════════════════════════════════════
 // HELPERS
@@ -60,109 +131,340 @@ const safeInvalidateCache = async (userId, prefixes) => {
   }
 };
 
+const stripControlChars = (value) =>
+  typeof value === "string" ? value.replace(CONTROL_CHARS_RE, "") : value;
+
+const cleanKey = (value) => {
+  if (typeof value !== "string") return "";
+  return value.replace(CONTROL_CHARS_RE, "").trim().slice(0, MAX_KEY_LENGTH);
+};
+
+const cleanText = (value, max) => {
+  if (value === undefined || value === null) return "";
+
+  let s = typeof value === "string" ? value : String(value);
+  s = stripControlChars(s);
+
+  try {
+    s = sanitize(s);
+  } catch {
+    s = String(s);
+  }
+
+  s = String(s).replace(/\s+/g, " ").trim();
+
+  if (typeof max === "number" && s.length > max) {
+    s = s.slice(0, max);
+  }
+
+  return s;
+};
+
+const isAllowedPhotoUrl = (url) => {
+  if (typeof url !== "string" || !url) return false;
+
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+
+    const host = u.hostname.toLowerCase();
+
+    return (
+      ALLOWED_PHOTO_HOSTS.has(host) ||
+      host === "res.cloudinary.com" ||
+      host.endsWith(".cloudinary.com")
+    );
+  } catch {
+    return false;
+  }
+};
+
+const toPublicPhoto = (photo) => {
+  if (!photo) return null;
+
+  const url =
+    typeof photo === "string"
+      ? photo
+      : typeof photo?.url === "string"
+      ? photo.url
+      : null;
+
+  if (!isAllowedPhotoUrl(url)) return null;
+
+  return {
+    url,
+    isPrimary: !!photo?.isPrimary,
+  };
+};
+
+const toPublicPhotos = (photos) => {
+  if (!Array.isArray(photos)) return [];
+  return photos.map(toPublicPhoto).filter(Boolean);
+};
+
+const sanitizeCoordinates = (value) => {
+  if (!Array.isArray(value) || value.length !== 2) return undefined;
+
+  const lat = Number(value[0]);
+  const lng = Number(value[1]);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return undefined;
+  if (lat < -90 || lat > 90) return undefined;
+  if (lng < -180 || lng > 180) return undefined;
+
+  return [lat, lng];
+};
+
+const sanitizePrimitiveValue = (value, maxString = MAX_PREFERENCE_STRING) => {
+  if (typeof value === "string") return cleanText(value, maxString);
+  if (typeof value === "number")
+    return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "boolean") return value;
+  if (value === null) return null;
+  return undefined;
+};
+
+const sanitizeStructuredValue = (value, depth = 0) => {
+  if (depth > MAX_PREFERENCE_DEPTH) return undefined;
+
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_ARRAY_LENGTH)
+      .map((v) => sanitizeStructuredValue(v, depth + 1))
+      .filter((v) => v !== undefined);
+  }
+
+  if (value && typeof value === "object" && value.constructor === Object) {
+    const out = {};
+    let count = 0;
+
+    for (const rawKey of Object.keys(value)) {
+      if (count >= MAX_OBJECT_KEYS) break;
+      if (PROTO_KEYS.has(rawKey) || String(rawKey).startsWith("$")) continue;
+
+      const key = cleanKey(rawKey);
+      if (!key) continue;
+
+      const cleaned = sanitizeStructuredValue(value[rawKey], depth + 1);
+      if (cleaned === undefined) continue;
+
+      out[key] = cleaned;
+      count += 1;
+    }
+
+    return count > 0 ? out : undefined;
+  }
+
+  return sanitizePrimitiveValue(value);
+};
+
+const stripDangerousKeys = (val, depth = 0) => {
+  if (depth > MAX_DEPTH) return undefined;
+
+  if (Array.isArray(val)) {
+    return val
+      .slice(0, MAX_ARRAY_LENGTH)
+      .map((v) => stripDangerousKeys(v, depth + 1))
+      .filter((v) => v !== undefined);
+  }
+
+  if (val && typeof val === "object" && val.constructor === Object) {
+    const out = {};
+    let count = 0;
+
+    for (const k of Object.keys(val)) {
+      if (count >= MAX_OBJECT_KEYS) break;
+      if (PROTO_KEYS.has(k) || k.startsWith("$")) continue;
+
+      const cleaned = stripDangerousKeys(val[k], depth + 1);
+      if (cleaned === undefined) continue;
+
+      out[k] = cleaned;
+      count += 1;
+    }
+
+    return out;
+  }
+
+  return val;
+};
+
 const validateImageFile = (file) => {
+  if (!file) throw new Error("Missing file");
+
   if (!ALLOWED_IMAGE_MIME.includes(file.mimetype)) {
     throw new Error(`Invalid file type: ${file.mimetype}`);
   }
+
   if (file.size > MAX_IMAGE_SIZE) {
     throw new Error(
       `File too large. Maximum: ${MAX_IMAGE_SIZE / 1024 / 1024}MB`
     );
   }
-};
 
-// ✅ #5: deep-clean attacker JSON before it reaches Mongoose $set. Drops prototype-pollution
-// carriers AND Mongo operator keys ($gt/$ne/$where/...) at every depth, so a crafted profile
-// body can't trigger a CastError -> 500 (and can't smuggle operators into a Mixed field).
-// Passes primitives / Date / ObjectId / Buffer through untouched (only plain objects & arrays
-// are recursed, via constructor === Object).
-const PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const stripDangerousKeys = (val, depth = 0) => {
-  if (depth > 8) return undefined;
-  if (Array.isArray(val))
-    return val.map((v) => stripDangerousKeys(v, depth + 1));
-  if (val && typeof val === "object" && val.constructor === Object) {
-    const out = {};
-    for (const k of Object.keys(val)) {
-      if (PROTO_KEYS.has(k) || k.startsWith("$")) continue;
-      out[k] = stripDangerousKeys(val[k], depth + 1);
-    }
-    return out;
+  if (!Buffer.isBuffer(file.buffer) || file.buffer.length < 12) {
+    throw new Error("Invalid image buffer");
   }
-  return val;
+
+  const startsWith = (buf, bytes, offset = 0) =>
+    bytes.every((b, i) => buf[offset + i] === b);
+
+  const mime = String(file.mimetype || "").toLowerCase();
+  const buf = file.buffer;
+
+  const hasValidSignature = (() => {
+    if (mime.includes("jpeg") || mime.includes("jpg")) {
+      return startsWith(buf, [0xff, 0xd8, 0xff]);
+    }
+
+    if (mime.includes("png")) {
+      return startsWith(buf, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    }
+
+    if (mime.includes("webp")) {
+      return (
+        buf.slice(0, 4).toString("ascii") === "RIFF" &&
+        buf.slice(8, 12).toString("ascii") === "WEBP"
+      );
+    }
+
+    if (mime.includes("heic") || mime.includes("heif")) {
+      if (buf.slice(4, 8).toString("ascii") !== "ftyp") return false;
+
+      const brand = buf.slice(8, 12).toString("ascii").toLowerCase();
+      return ["heic", "heim", "heix", "heif", "mif1", "msf1"].includes(brand);
+    }
+
+    return false;
+  })();
+
+  if (!hasValidSignature) {
+    throw new Error("Invalid image content");
+  }
 };
 
 const sanitizeProfileFields = (updates) => {
   const sanitized = {};
-  const stringFields = [
-    "name",
-    "bio",
-    "occupation",
-    "education",
-    "relationshipGoal",
-  ];
 
-  stringFields.forEach((field) => {
+  const stringFieldCaps = {
+    name: MAX_NAME_LENGTH,
+    bio: MAX_BIO_LENGTH,
+    occupation: MAX_OCCUPATION_LENGTH,
+    education: MAX_EDUCATION_LENGTH,
+    relationshipGoal: MAX_RELATIONSHIP_GOAL_LENGTH,
+  };
+
+  for (const [field, max] of Object.entries(stringFieldCaps)) {
     if (updates[field] !== undefined) {
-      sanitized[field] =
-        typeof updates[field] === "string"
-          ? sanitize(updates[field].trim())
-          : updates[field];
+      sanitized[field] = cleanText(updates[field], max);
     }
-  });
-
-  if (updates.interests && Array.isArray(updates.interests)) {
-    sanitized.interests = updates.interests
-      .filter((i) => typeof i === "string")
-      .map((i) => sanitize(i.trim()))
-      .filter((i) => i.length > 0)
-      .slice(0, 20);
   }
 
-  // ✅ location must be a plain object; coordinates only accepted as a real Array (an
-  // injected {"$ne":null} object is dropped -> no CastError). city/country coerced to string.
+  if (updates.gender !== undefined) {
+    sanitized.gender = cleanText(updates.gender, MAX_GENDER_LENGTH);
+  }
+
+  if (Array.isArray(updates.interests)) {
+    const interests = Array.from(
+      new Set(
+        updates.interests
+          .filter((i) => typeof i === "string")
+          .map((i) => cleanText(i, MAX_INTEREST_LENGTH))
+          .filter((i) => i.length > 0)
+      )
+    ).slice(0, MAX_INTERESTS);
+
+    sanitized.interests = interests;
+  }
+
   if (
     updates.location &&
     typeof updates.location === "object" &&
     updates.location.constructor === Object
   ) {
-    sanitized.location = {
-      city: updates.location.city
-        ? sanitize(String(updates.location.city))
-        : undefined,
-      country: updates.location.country
-        ? sanitize(String(updates.location.country))
-        : undefined,
-      coordinates: Array.isArray(updates.location.coordinates)
-        ? updates.location.coordinates
-        : undefined,
-    };
+    const location = {};
+
+    const city = cleanText(updates.location.city, MAX_LOCATION_STRING);
+    const country = cleanText(updates.location.country, MAX_LOCATION_STRING);
+    const coordinates = sanitizeCoordinates(updates.location.coordinates);
+
+    if (city) location.city = city;
+    if (country) location.country = country;
+    if (coordinates) location.coordinates = coordinates;
+
+    sanitized.location = location;
   }
 
-  // preferences is a Mixed/Object field -> no strict cast to error on; nested $/proto keys
-  // are removed by stripDangerousKeys() applied to the whole result in updateMyProfile.
   if (
     updates.preferences &&
     typeof updates.preferences === "object" &&
     updates.preferences.constructor === Object
   ) {
-    sanitized.preferences = updates.preferences;
-  }
-
-  // ✅ #5 scalar type-guards: an operator object ({"$gt":...}) must never reach the Date/enum cast.
-  if (
-    updates.dateOfBirth !== undefined &&
-    (typeof updates.dateOfBirth === "string" ||
-      typeof updates.dateOfBirth === "number" ||
-      updates.dateOfBirth instanceof Date)
-  ) {
-    sanitized.dateOfBirth = updates.dateOfBirth;
-  }
-  if (updates.gender !== undefined && typeof updates.gender === "string") {
-    sanitized.gender = updates.gender;
+    const preferences = sanitizeStructuredValue(updates.preferences, 0);
+    if (preferences !== undefined) {
+      sanitized.preferences = preferences;
+    }
   }
 
   return sanitized;
+};
+
+const validateDateOfBirth = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return { ok: false, message: "Invalid date of birth" };
+  }
+
+  const now = new Date();
+
+  if (date.getTime() > now.getTime()) {
+    return { ok: false, message: "Date of birth cannot be in the future" };
+  }
+
+  let age = now.getFullYear() - date.getFullYear();
+  const monthDiff = now.getMonth() - date.getMonth();
+
+  if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < date.getDate())) {
+    age -= 1;
+  }
+
+  if (age < MIN_AGE || age > MAX_AGE) {
+    return {
+      ok: false,
+      message: `Age must be between ${MIN_AGE} and ${MAX_AGE}`,
+    };
+  }
+
+  return { ok: true, date };
+};
+
+const buildPublicProfile = (user) => {
+  const publicUser = { ...user };
+
+  for (const key of SENSITIVE_PROFILE_KEYS) {
+    delete publicUser[key];
+  }
+
+  for (const key of Object.keys(publicUser)) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      delete publicUser[key];
+    }
+  }
+
+  publicUser.photos = toPublicPhotos(user.photos);
+
+  if (publicUser.location && typeof publicUser.location === "object") {
+    publicUser.location = {
+      city:
+        cleanText(publicUser.location.city, MAX_LOCATION_STRING) || undefined,
+      country:
+        cleanText(publicUser.location.country, MAX_LOCATION_STRING) ||
+        undefined,
+    };
+  }
+
+  return publicUser;
 };
 
 // ═══════════════════════════════════════════
@@ -231,8 +533,17 @@ export const updateMyProfile = async (req, res, next) => {
         .json({ success: false, message: "No valid fields to update" });
     }
 
-    // ✅ #5: sanitize then deep-strip operator/proto carriers before $set.
-    const updates = stripDangerousKeys(sanitizeProfileFields(rawUpdates));
+    const updates = sanitizeProfileFields(rawUpdates);
+
+    if ("dateOfBirth" in rawUpdates) {
+      const dobResult = validateDateOfBirth(rawUpdates.dateOfBirth);
+      if (!dobResult.ok) {
+        return res
+          .status(400)
+          .json({ success: false, message: dobResult.message });
+      }
+      updates.dateOfBirth = dobResult.date;
+    }
 
     if (updates.bio && updates.bio.length > MAX_BIO_LENGTH) {
       return res.status(400).json({
@@ -241,27 +552,39 @@ export const updateMyProfile = async (req, res, next) => {
       });
     }
 
+    const safeUpdates = stripDangerousKeys(updates);
+
+    if (Object.keys(safeUpdates).length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "No valid fields to update" });
+    }
+
     const user = await User.findByIdAndUpdate(
       req.user._id,
-      { $set: updates },
+      { $set: safeUpdates },
       { new: true, runValidators: true }
     )
       .select("-password")
       .lean();
 
-    if (!user)
+    if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
 
     await safeLogAudit(req, "profile_updated", {
       userId: user._id,
-      fields: Object.keys(updates),
+      fields: Object.keys(safeUpdates),
     });
 
     const matchIds = await getMatchIds(req.user._id);
+
     if (matchIds.length > 0 && matchIds.length <= 100) {
       try {
+        const publicPhotos = toPublicPhotos(user.photos);
+
         sendPushToMany(matchIds, {
           title: `${user.name} updated their profile ✨`,
           body: "Tap to see what's new",
@@ -274,8 +597,8 @@ export const updateMyProfile = async (req, res, next) => {
             io.to(`user:${matchId}`).emit("profile_updated", {
               userId: user._id.toString(),
               name: user.name,
-              photos: user.photos || [],
-              updatedFields: Object.keys(updates),
+              photos: publicPhotos,
+              updatedFields: Object.keys(safeUpdates),
             });
           });
         }
@@ -289,9 +612,11 @@ export const updateMyProfile = async (req, res, next) => {
       "feed",
     ]);
 
-    res
-      .status(200)
-      .json({ success: true, message: "Profile updated successfully", user });
+    res.status(200).json({
+      success: true,
+      message: "Profile updated successfully",
+      user,
+    });
   } catch (error) {
     next(error);
   }
@@ -320,10 +645,11 @@ export const getUserProfile = async (req, res, next) => {
       .select("-password")
       .lean();
 
-    if (!user)
+    if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found or inactive" });
+    }
 
     const [me, sentLike, match] = await Promise.all([
       User.findById(currentUserId).select("blockedUsers").lean(),
@@ -337,6 +663,7 @@ export const getUserProfile = async (req, res, next) => {
     const iBlocked = (me?.blockedUsers || []).some(
       (id) => id.toString() === userId
     );
+
     const blockedMe = (user.blockedUsers || []).some(
       (id) => id.toString() === currentUserId.toString()
     );
@@ -349,32 +676,7 @@ export const getUserProfile = async (req, res, next) => {
       });
     }
 
-    const SENSITIVE_PROFILE_KEYS = [
-      "email",
-      "role",
-      "isBanned",
-      "isActive",
-      "deletedAt",
-      "scheduledDeletionAt",
-      "lastLoginIp",
-      "lastLoginCountry",
-      "lastLoginCity",
-      "twoFactorEnabled",
-      "reactivationAttempts",
-      "emailBlockedUntil",
-      "oauthProvider",
-      "oauthId",
-      "hiddenConversations",
-      "blockedUsers",
-    ];
-    const publicUser = { ...user };
-    for (const key of SENSITIVE_PROFILE_KEYS) delete publicUser[key];
-    if (publicUser.location) {
-      publicUser.location = {
-        city: publicUser.location?.city ?? "",
-        country: publicUser.location?.country ?? "",
-      };
-    }
+    const publicUser = buildPublicProfile(user);
 
     res.status(200).json({
       success: true,
@@ -397,17 +699,20 @@ export const uploadProfilePhoto = async (req, res, next) => {
   let cloudinaryPublicId = null;
 
   try {
-    if (!req.file)
+    if (!req.file) {
       return res
         .status(400)
         .json({ success: false, message: "Please select an image" });
+    }
+
     validateImageFile(req.file);
 
     const user = await User.findById(req.user._id);
-    if (!user)
+    if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
 
     if (user.photos.length >= MAX_PHOTOS) {
       return res.status(400).json({
@@ -430,12 +735,18 @@ export const uploadProfilePhoto = async (req, res, next) => {
           ],
           allowed_formats: ["jpg", "jpeg", "png", "webp", "heic", "heif"],
         },
-        (error, result) => (error ? reject(error) : resolve(result))
+        (error, uploaded) => (error ? reject(error) : resolve(uploaded))
       );
+
       stream.end(req.file.buffer);
     });
 
     cloudinaryPublicId = result.public_id;
+
+    if (!isAllowedPhotoUrl(result.secure_url)) {
+      throw new Error("Disallowed photo URL returned by storage provider");
+    }
+
     const isPrimary = user.photos.length === 0;
 
     user.photos.push({
@@ -443,7 +754,7 @@ export const uploadProfilePhoto = async (req, res, next) => {
       publicId: result.public_id,
       isPrimary,
       uploadedAt: new Date(),
-      hash: req.file.fileHash,
+      hash: req.file.fileHash || null,
     });
 
     await user.save();
@@ -475,7 +786,7 @@ export const uploadProfilePhoto = async (req, res, next) => {
       maxPhotos: MAX_PHOTOS,
     });
   } catch (error) {
-    if (cloudinaryPublicId)
+    if (cloudinaryPublicId) {
       cloudinary.uploader
         .destroy(cloudinaryPublicId)
         .catch((e) =>
@@ -485,6 +796,8 @@ export const uploadProfilePhoto = async (req, res, next) => {
             e.message
           )
         );
+    }
+
     next(error);
   }
 };
@@ -498,16 +811,18 @@ export const deleteProfilePhoto = async (req, res, next) => {
     const { publicId } = req.params;
 
     const user = await User.findById(req.user._id);
-    if (!user)
+    if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
 
     const photo = user.photos.find((p) => p.publicId === publicId);
-    if (!photo)
+    if (!photo) {
       return res
         .status(404)
         .json({ success: false, message: "Photo not found" });
+    }
 
     const wasPrimary = photo.isPrimary;
 
@@ -561,16 +876,18 @@ export const setPrimaryPhoto = async (req, res, next) => {
     const { publicId } = req.params;
 
     const user = await User.findById(req.user._id);
-    if (!user)
+    if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
 
     const photo = user.photos.find((p) => p.publicId === publicId);
-    if (!photo)
+    if (!photo) {
       return res
         .status(404)
         .json({ success: false, message: "Photo not found" });
+    }
 
     user.photos.forEach((p) => (p.isPrimary = false));
     photo.isPrimary = true;
@@ -580,6 +897,7 @@ export const setPrimaryPhoto = async (req, res, next) => {
       userId: user._id,
       newPrimaryPublicId: publicId,
     });
+
     await safeInvalidateCache(req.user._id, [
       "profile",
       "my-profile",
@@ -606,26 +924,37 @@ export const reorderPhotos = async (req, res, next) => {
   try {
     const { publicIds } = req.body;
 
-    if (!Array.isArray(publicIds))
+    if (!Array.isArray(publicIds)) {
       return res
         .status(400)
         .json({ success: false, message: "publicIds must be an array" });
+    }
 
     const user = await User.findById(req.user._id);
-    if (!user)
+    if (!user) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
 
     const seen = new Set();
     const ordered = [];
+
     for (const id of publicIds) {
+      if (typeof id !== "string") {
+        return res.status(400).json({
+          success: false,
+          message: "publicIds must contain strings only",
+        });
+      }
+
       if (seen.has(id)) {
         return res.status(400).json({
           success: false,
           message: "Duplicate publicId in reorder payload",
         });
       }
+
       const existing = user.photos.find((p) => p.publicId === id);
       if (!existing) {
         return res.status(400).json({
@@ -633,9 +962,11 @@ export const reorderPhotos = async (req, res, next) => {
           message: "Some photo IDs are invalid or not owned by you",
         });
       }
+
       seen.add(id);
       ordered.push(existing);
     }
+
     if (ordered.length !== user.photos.length) {
       return res.status(400).json({
         success: false,
@@ -643,6 +974,7 @@ export const reorderPhotos = async (req, res, next) => {
           "publicIds must reorder ALL current photos (no drops, no additions)",
       });
     }
+
     if (ordered.length > MAX_PHOTOS) {
       return res.status(400).json({
         success: false,
@@ -657,6 +989,7 @@ export const reorderPhotos = async (req, res, next) => {
       userId: user._id,
       photoCount: user.photos.length,
     });
+
     await safeInvalidateCache(req.user._id, ["profile", "my-profile"]);
 
     res.status(200).json({
@@ -678,20 +1011,32 @@ export const reportUser = async (req, res, next) => {
     const { userId } = req.params;
     const { message, reason = "other" } = req.body;
 
-    if (!isValidObjectId(userId))
+    if (!isValidObjectId(userId)) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid user ID format" });
-    if (!message || !message.trim())
+    }
+
+    if (!message || !String(message).trim()) {
       return res
         .status(400)
         .json({ success: false, message: "Report message is required" });
-    if (userId === req.user._id.toString())
+    }
+
+    if (userId === req.user._id.toString()) {
       return res
         .status(400)
         .json({ success: false, message: "You cannot report yourself" });
+    }
 
-    const cleanMessage = sanitize(message.trim());
+    const cleanMessage = cleanText(message, MAX_REPORT_LENGTH);
+
+    if (!cleanMessage) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Report message is required" });
+    }
+
     if (cleanMessage.length > MAX_REPORT_LENGTH) {
       return res.status(400).json({
         success: false,
@@ -700,10 +1045,11 @@ export const reportUser = async (req, res, next) => {
     }
 
     const target = await User.findById(userId);
-    if (!target || !target.isActive)
+    if (!target || !target.isActive) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
 
     const recentReport = await Report.findOne({
       reporter: req.user._id,
@@ -729,6 +1075,7 @@ export const reportUser = async (req, res, next) => {
       "hate_speech",
       "other",
     ];
+
     const cleanReason = validReasons.includes(reason) ? reason : "other";
 
     await Report.create({
@@ -763,24 +1110,38 @@ export const reportUser = async (req, res, next) => {
 export const toggleBlock = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const { reason = "other" } = req.body || {};
+    const rawReason = req.body?.reason ?? "other";
 
-    if (!isValidObjectId(userId))
+    if (!isValidObjectId(userId)) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid user ID format" });
-    if (userId === req.user._id.toString())
+    }
+
+    if (userId === req.user._id.toString()) {
       return res
         .status(400)
         .json({ success: false, message: "You cannot block yourself" });
+    }
 
     const targetOid = new mongoose.Types.ObjectId(userId);
 
-    const me = await User.findById(req.user._id);
-    if (!me)
+    const [me, target] = await Promise.all([
+      User.findById(req.user._id),
+      User.findById(targetOid).select("_id isActive deletedAt").lean(),
+    ]);
+
+    if (!me) {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
+
+    if (!target) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Target user not found" });
+    }
 
     const alreadyBlocked = me.blockedUsers.some(
       (id) => id.toString() === userId
@@ -792,22 +1153,34 @@ export const toggleBlock = async (req, res, next) => {
         (id) => id.toString() !== userId
       );
       await me.save();
+
       await safeLogAudit(req, "user_unblocked", {
         userId: req.user._id,
         targetUserId: userId,
       });
     } else {
       // ── BLOCK ──
+      if (me.blockedUsers.length >= MAX_BLOCKED_USERS) {
+        return res.status(400).json({
+          success: false,
+          message: `You can block at most ${MAX_BLOCKED_USERS} users.`,
+        });
+      }
+
       me.blockedUsers.push(targetOid);
       await me.save();
 
       const io = getIO();
+      const cleanReason =
+        cleanText(rawReason, MAX_AUDIT_REASON_LENGTH) || "other";
+
       await Promise.allSettled([
         (async () => {
           const match = await Match.findOne({
             users: { $all: [req.user._id, targetOid] },
             isActive: true,
           }).lean();
+
           await Match.findOneAndUpdate(
             { users: { $all: [req.user._id, targetOid] }, isActive: true },
             {
@@ -818,6 +1191,7 @@ export const toggleBlock = async (req, res, next) => {
               },
             }
           );
+
           if (io && match) {
             io.to(`user:${userId}`).emit("match_removed", {
               matchId: match._id,
@@ -826,12 +1200,14 @@ export const toggleBlock = async (req, res, next) => {
             });
           }
         })(),
+
         Like.deleteMany({
           $or: [
             { from: req.user._id, to: targetOid },
             { from: targetOid, to: req.user._id },
           ],
         }),
+
         Conversation.findOneAndUpdate(
           { participants: { $all: [req.user._id, targetOid] } },
           {
@@ -839,30 +1215,40 @@ export const toggleBlock = async (req, res, next) => {
             $addToSet: { hiddenBy: { $each: [req.user._id, targetOid] } },
           }
         ),
-        // ✅ #3 §5: a block MUST tear down any live/ringing call between the pair,
-        //    else media keeps flowing after the victim blocks. Best-effort (allSettled)
-        //    so a teardown failure never turns a successful block into a 500.
+
         (async () => {
           try {
             const rec = findActiveCallForTeardown(req.user._id, targetOid);
             if (!rec) return;
+
             takeCallForTeardown(rec.callId);
-            await persistCallForTeardown(
-              rec,
-              rec.connectedAt ? "ended" : "missed",
-              "blocked"
-            );
+
+            const endedAt = new Date();
+            const status = rec.connectedAt ? "ended" : "missed";
+
+            const connectedAtMs = rec.connectedAt
+              ? new Date(rec.connectedAt).getTime()
+              : 0;
+
+            const durationMs =
+              Number.isFinite(connectedAtMs) && connectedAtMs > 0
+                ? Math.max(0, endedAt.getTime() - connectedAtMs)
+                : 0;
+
+            await persistCallForTeardown(rec, status, "blocked");
+
             if (io) {
               const peer =
                 rec.callerId === req.user._id.toString()
                   ? rec.calleeId
                   : rec.callerId;
+
               io.to(`user:${peer}`).emit("call:ended", {
                 callId: rec.callId,
                 by: "server",
                 reason: "blocked",
-                status: "ended",
-                durationMs: 0,
+                status,
+                durationMs,
               });
             }
           } catch (e) {
@@ -874,7 +1260,7 @@ export const toggleBlock = async (req, res, next) => {
       await safeLogAudit(req, "user_blocked", {
         userId: req.user._id,
         targetUserId: userId,
-        reason,
+        reason: cleanReason,
       });
     }
 
@@ -896,6 +1282,7 @@ export const toggleBlock = async (req, res, next) => {
     const fresh = await User.findById(req.user._id)
       .select("blockedUsers")
       .lean();
+
     const isBlocked = (fresh?.blockedUsers || []).some(
       (id) => id.toString() === userId
     );
@@ -919,10 +1306,12 @@ export const toggleBlock = async (req, res, next) => {
 export const getBlockStatus = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    if (!isValidObjectId(userId))
+
+    if (!isValidObjectId(userId)) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid user ID format" });
+    }
 
     const [me, other] = await Promise.all([
       User.findById(req.user._id).select("blockedUsers").lean(),
@@ -948,6 +1337,7 @@ export const getBlockStatus = async (req, res, next) => {
 export const getBlockedUsers = async (req, res, next) => {
   try {
     const { search, page = 1, limit = BLOCKED_USERS_PER_PAGE } = req.query;
+
     const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
     const limitNumber = Math.min(
       Math.max(parseInt(limit, 10) || BLOCKED_USERS_PER_PAGE, 1),
@@ -956,6 +1346,7 @@ export const getBlockedUsers = async (req, res, next) => {
     const skip = (pageNumber - 1) * limitNumber;
 
     const me = await User.findById(req.user._id).select("blockedUsers").lean();
+
     if (!me || me.blockedUsers.length === 0) {
       return res.status(200).json({
         success: true,
@@ -970,9 +1361,12 @@ export const getBlockedUsers = async (req, res, next) => {
     }
 
     const query = { _id: { $in: me.blockedUsers } };
-    if (search && search.trim()) {
-      const safe = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      query.name = { $regex: safe, $options: "i" };
+
+    if (search && String(search).trim()) {
+      const safe = cleanText(search, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (safe) {
+        query.name = { $regex: safe, $options: "i" };
+      }
     }
 
     const [blockedUsers, total] = await Promise.all([
@@ -987,7 +1381,10 @@ export const getBlockedUsers = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      blockedUsers,
+      blockedUsers: blockedUsers.map((u) => ({
+        ...u,
+        photos: toPublicPhotos(u.photos),
+      })),
       pagination: {
         page: pageNumber,
         limit: limitNumber,
@@ -1007,8 +1404,11 @@ export const getBlockedUsers = async (req, res, next) => {
 
 export const searchBlockableUsers = async (req, res, next) => {
   try {
-    const q = (req.query.q || "").trim();
-    if (q.length < 2) return res.status(200).json({ success: true, users: [] });
+    const q = cleanText(req.query.q || "", 80);
+
+    if (q.length < 2) {
+      return res.status(200).json({ success: true, users: [] });
+    }
 
     const safe = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const me = await User.findById(req.user._id).select("blockedUsers").lean();
@@ -1017,8 +1417,6 @@ export const searchBlockableUsers = async (req, res, next) => {
       _id: { $ne: req.user._id },
       isActive: true,
       deletedAt: null,
-      // ✅ #6: exclude users who already blocked ME — otherwise name-search lets a
-      //    blocked person confirm their identity/existence (privacy/stalking leak).
       blockedUsers: { $ne: req.user._id },
       name: { $regex: safe, $options: "i" },
     })
@@ -1035,6 +1433,7 @@ export const searchBlockableUsers = async (req, res, next) => {
       success: true,
       users: users.map((u) => ({
         ...u,
+        photos: toPublicPhotos(u.photos),
         isBlocked: blockedSet.has(u._id.toString()),
       })),
     });
