@@ -87,7 +87,7 @@ export default {
         "expo-build-properties",
         {
           ios: {
-            buildReactNativeFromSource: true,
+            buildReactNativeFromSource: false,
             enableSceneSupport: true,
           },
         },

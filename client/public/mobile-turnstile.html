@@ -1,181 +1,255 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
+    <meta name="referrer" content="same-origin" />
+
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://*.challenges.cloudflare.com;
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: https://challenges.cloudflare.com https://*.challenges.cloudflare.com;
+        font-src 'self' data:;
+        connect-src 'self' https://challenges.cloudflare.com https://*.challenges.cloudflare.com;
+        frame-src https://challenges.cloudflare.com https://*.challenges.cloudflare.com;
+        child-src https://challenges.cloudflare.com https://*.challenges.cloudflare.com;
+        worker-src 'self' blob: https://challenges.cloudflare.com https://*.challenges.cloudflare.com;
+        object-src 'none';
+        base-uri 'none';
+        form-action 'none';
+      "
+    />
+
+    <title>Maya Milan Verification</title>
+
     <style>
+      :root {
+        color-scheme: light;
+      }
+
       html,
       body {
         margin: 0;
         padding: 0;
         width: 100%;
-        min-height: 100px;
-        overflow: hidden;
-        background: #f8f9fa;
-        font-family: -apple-system, system-ui, sans-serif;
+        min-height: 100%;
+        background: #ffffff;
+        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
       }
-      #cf {
+
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+
+      .wrap {
         width: 100%;
-        min-height: 65px;
-        margin: 10px 0;
+        max-width: 360px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
       }
+
+      #widget {
+        width: 100%;
+        display: flex;
+        justify-content: center;
+      }
+
       #status {
-        padding: 10px;
-        font-size: 12px;
-        color: #666;
+        font-size: 13px;
+        font-weight: 600;
+        color: #475569;
         text-align: center;
-        background: #fff;
-        border-top: 1px solid #e0e0e0;
+      }
+
+      #status.error {
+        color: #b91c1c;
+      }
+
+      #status.success {
+        color: #15803d;
       }
     </style>
   </head>
+
   <body>
-    <div id="cf"></div>
-    <div id="status">Initializing Turnstile...</div>
+    <div class="wrap">
+      <div id="widget"></div>
+      <div id="status">Initializing verification…</div>
+    </div>
 
     <script>
-      var params = new URLSearchParams(window.location.search);
-      var SITEKEY = params.get("sitekey");
-      var NONCE = params.get("nonce");
-      var delivered = { ok: false, error: false, expired: false };
-      var statusEl = document.getElementById("status");
+      (function () {
+        var statusEl = document.getElementById("status");
+        var done = false;
+        var timeoutMs = 30000;
+        var timer = null;
 
-      function updateStatus(msg) {
-        console.log("[Turnstile Status]", msg);
-        if (statusEl) statusEl.textContent = msg;
-      }
-
-      updateStatus(
-        "Loading with sitekey: " +
-          (SITEKEY ? SITEKEY.substring(0, 10) + "..." : "MISSING")
-      );
-
-      function postToReactNative(kind, token) {
-        var message = JSON.stringify({
-          channel: "mayamilan-turnstile",
-          nonce: NONCE,
-          kind: kind,
-          token: token || "",
-        });
-
-        // Method 1: React Native WebView bridge
-        if (
-          window.ReactNativeWebView &&
-          typeof window.ReactNativeWebView.postMessage === "function"
-        ) {
-          updateStatus("Sending via ReactNativeWebView...");
+        function readNonce() {
           try {
-            window.ReactNativeWebView.postMessage(message);
-            console.log("[Turnstile] ✅ Sent via ReactNativeWebView");
-            return true;
+            var hash = String(window.location.hash || "").replace(/^#/, "");
+            var parts = hash.split("&");
+
+            for (var i = 0; i < parts.length; i++) {
+              var kv = parts[i].split("=");
+              var key = decodeURIComponent(kv[0] || "");
+              var value = decodeURIComponent(kv[1] || "");
+
+              if (key === "tn") return value;
+            }
+          } catch (e) {}
+
+          return "";
+        }
+
+        function readSitekey() {
+          try {
+            var params = new URLSearchParams(window.location.search);
+            return String(params.get("sitekey") || "").trim();
           } catch (e) {
-            console.error("[Turnstile] ❌ ReactNativeWebView failed:", e);
+            return "";
           }
         }
 
-        // Method 2: Fallback - try window.webkit.messageHandlers (iOS WKWebView)
-        if (
-          window.webkit &&
-          window.webkit.messageHandlers &&
-          window.webkit.messageHandlers.ReactNativeWebView
-        ) {
-          updateStatus("Sending via webkit.messageHandlers...");
+        var sitekey = readSitekey();
+        var nonce = readNonce();
+
+        function send(payload) {
           try {
-            window.webkit.messageHandlers.ReactNativeWebView.postMessage(
-              message
-            );
-            console.log("[Turnstile] ✅ Sent via webkit.messageHandlers");
-            return true;
-          } catch (e) {
-            console.error("[Turnstile] ❌ webkit.messageHandlers failed:", e);
-          }
+            if (
+              window.ReactNativeWebView &&
+              typeof window.ReactNativeWebView.postMessage === "function"
+            ) {
+              window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+            }
+          } catch (e) {}
+
+          try {
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage(payload, window.location.origin);
+            }
+          } catch (e) {}
         }
 
-        // Method 3: Last resort - change URL hash (React Native can detect this)
-        updateStatus("Fallback: Setting URL hash...");
-        try {
-          window.location.hash = "turnstile-" + kind + "-" + (token || "empty");
-          console.log("[Turnstile] ✅ Set URL hash as fallback");
-          return true;
-        } catch (e) {
-          console.error("[Turnstile] ❌ URL hash fallback failed:", e);
+        function setStatus(text, kind) {
+          if (!statusEl) return;
+          statusEl.textContent = text;
+          statusEl.className = kind || "";
         }
 
-        updateStatus("❌ All methods failed");
-        return false;
-      }
+        function fail(error, code) {
+          if (done) return;
+          done = true;
 
-      function terminal(kind, token) {
-        if (delivered[kind]) {
-          console.log("[Turnstile] Already delivered " + kind + ", skipping");
+          if (timer) clearTimeout(timer);
+
+          send({
+            type: "turnstile-error",
+            error: String(error || "Turnstile verification failed"),
+            code: code ? String(code) : undefined,
+            nonce: nonce,
+            origin: window.location.origin,
+          });
+
+          setStatus("Verification failed. Please retry.", "error");
+        }
+
+        if (!sitekey) {
+          fail("Missing Turnstile sitekey", "missing-sitekey");
           return;
         }
-        delivered[kind] = true;
-        updateStatus("Terminal: " + kind);
-        postToReactNative(kind, token);
-      }
 
-      window.mmTurnstileReady = function () {
-        updateStatus("Turnstile API loaded, rendering widget...");
+        timer = setTimeout(function () {
+          fail("Turnstile timed out", "timeout");
+        }, timeoutMs);
 
-        try {
-          if (
-            !window.turnstile ||
-            typeof window.turnstile.render !== "function"
-          ) {
-            updateStatus("❌ Turnstile API not available");
-            console.error("[Turnstile] API unavailable");
-            terminal("error", "api_unavailable");
-            return;
+        window.onTurnstileLoad = function () {
+          try {
+            if (
+              !window.turnstile ||
+              typeof window.turnstile.render !== "function"
+            ) {
+              fail("Turnstile API unavailable", "api-unavailable");
+              return;
+            }
+
+            window.turnstile.render("#widget", {
+              sitekey: sitekey,
+              appearance: "always",
+              execution: "render",
+              theme: "light",
+              size: "normal",
+
+              callback: function (token) {
+                if (done) return;
+                done = true;
+
+                if (timer) clearTimeout(timer);
+
+                send({
+                  type: "turnstile-token",
+                  token: token,
+                  nonce: nonce,
+                  origin: window.location.origin,
+                });
+
+                setStatus("Verified.", "success");
+              },
+
+              "error-callback": function (code) {
+                fail("Turnstile failed", code);
+              },
+
+              "expired-callback": function () {
+                if (done) return;
+
+                send({
+                  type: "turnstile-error",
+                  error: "Turnstile expired",
+                  code: "expired",
+                  nonce: nonce,
+                  origin: window.location.origin,
+                });
+
+                setStatus("Verification expired. Please retry.", "error");
+              },
+            });
+
+            send({
+              type: "turnstile-ready",
+              nonce: nonce,
+              origin: window.location.origin,
+            });
+          } catch (e) {
+            fail("Turnstile render failed", "render-failed");
           }
+        };
 
-          updateStatus("Rendering widget...");
-          window.turnstile.render("#cf", {
-            sitekey: SITEKEY,
-            theme: "light",
-            size: "flexible",
-            callback: function (token) {
-              updateStatus("✅ Challenge solved!");
-              console.log(
-                "[Turnstile] Success callback with token length:",
-                token.length
-              );
-              if (typeof token === "string" && token.trim().length > 0) {
-                terminal("ok", token);
-              } else {
-                terminal("error", "invalid_token");
-              }
-            },
-            "error-callback": function (errCode) {
-              updateStatus(" Error: " + errCode);
-              console.error("[Turnstile] Error callback:", errCode);
-              terminal("error", errCode || "widget_error");
-            },
-            "expired-callback": function () {
-              updateStatus(" Expired");
-              console.log("[Turnstile] Expired callback");
-              terminal("expired", "");
-            },
-          });
-        } catch (e) {
-          updateStatus("❌ Exception: " + e.message);
-          console.error("[Turnstile] Render exception:", e);
-          terminal("error", "render_exception");
-        }
-      };
+        var script = document.createElement("script");
+        script.src =
+          "https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad&render=explicit";
+        script.async = true;
+        script.defer = true;
 
-      // Log when page is fully loaded
-      window.addEventListener("load", function () {
-        updateStatus("Page loaded, waiting for Turnstile API...");
-      });
+        script.onerror = function () {
+          fail("Turnstile script failed to load", "script-load-failed");
+        };
+
+        document.head.appendChild(script);
+      })();
     </script>
-    <script
-      src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=mmTurnstileReady"
-      async
-      defer
-    ></script>
   </body>
 </html>

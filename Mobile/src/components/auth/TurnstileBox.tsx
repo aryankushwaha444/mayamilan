@@ -1,362 +1,489 @@
 // src/components/auth/TurnstileBox.tsx
-import { useCallback, useEffect, useRef, useState } from "react";
+//
+// Secure Cloudflare Turnstile WebView bridge for React Native / Expo.
+//
+// SECURITY / ATTACK PREVENTION:
+// - Never loads Turnstile from inline html/about:srcdoc.
+// - Loads only from your trusted HTTPS bootstrap page.
+// - Allows only your bootstrap origin + Cloudflare Turnstile origins.
+// - Keeps about:/blob: internal to the WebView.
+// - Does not call Linking.openURL for internal WebView frames.
+// - Validates token message shape, nonce, origin, and length.
+// - Does not log tokens.
+// - Fail-closed on missing sitekey/bootstrap URL/origin mismatch/nonce mismatch.
+
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
 import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
   View,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  TouchableOpacity,
+  Platform,
 } from "react-native";
-import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { colors, radius } from "../../theme";
 
-const SITE_KEY = process.env.EXPO_PUBLIC_TURNSTILE_SITEKEY?.trim() ?? "";
-// The pinned bootstrap page (verified live: fetching it returns "Initializing Turnstile...").
-// This is the ONLY document allowed to set the top-level #turnstile-ok- hash.
-const BASE_URL = "https://mayamilan.vercel.app/mobile-turnstile.html";
-const TRUSTED_BOOTSTRAP_ORIGIN = "https://mayamilan.vercel.app";
-// The Turnstile widget itself is served by Cloudflare (the challenges.cloudflare.com page
-// confirms "Turnstile is a Cloudflare security product"), so these hosts are the legitimate
-// challenge endpoints and MUST be allowed to LOAD and to be a postMessage origin. Allowing
-// them is NOT a token shortcut: a token is accepted only when it ALSO carries the per-mount
-// nonce (postMessage path) or is set on the bootstrap document's OWN hash (fallback path).
-const TRUSTED_HOSTS = ["mayamilan.vercel.app", "challenges.cloudflare.com"];
-const TOKEN_MAX = 4096; // Turnstile tokens are a few hundred chars; cap absurd/DoS payloads.
-const TIMEOUT_MS = 90_000; // 90s (was 40_000 with a "90s" comment+log — now consistent & derived)
+import WebView from "react-native-webview";
+import * as Crypto from "expo-crypto";
 
-type Status = "loading" | "ready" | "expired" | "error";
+const WV = WebView as any;
 
-function createNonce(): string {
-  return (
-    Date.now().toString(36) +
-    "-" +
-    Math.random().toString(36).slice(2) +
-    "-" +
-    Math.random().toString(36).slice(2)
-  );
+export interface TurnstileBoxProps {
+  onToken: (token: string) => void;
+  onError?: (message: string) => void;
+  height?: number;
 }
 
-function isTrustedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  // dotted-suffix match => "fake.cloudflare.com.evil.com" and "notcloudflare.com" both fail.
-  return TRUSTED_HOSTS.some((t) => h === t || h.endsWith("." + t));
+const DEV = typeof __DEV__ !== "undefined" && __DEV__;
+
+const SITEKEY = String(
+  process.env.EXPO_PUBLIC_TURNSTILE_SITEKEY || ""
+).trim();
+
+const BOOTSTRAP_URL = String(
+  process.env.EXPO_PUBLIC_TURNSTILE_BOOTSTRAP_URL ||
+    "https://mayamilan.vercel.app/mobile-turnstile.html"
+).trim();
+
+const CONTROL_CHARS_RE =
+  /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]/g;
+
+const TOKEN_MAX = 8192;
+
+function cleanText(x: unknown, max = 180): string {
+  if (typeof x !== "string") return "";
+
+  return x
+    .replace(CONTROL_CHARS_RE, "")
+    .trim()
+    .slice(0, max);
 }
 
-// Returns the origin of a url, or null if unparseable (callers treat null as "do not trust").
-function originOf(url: unknown): string | null {
-  if (typeof url !== "string" || !url) return null;
+function makeNonce(): string {
   try {
-    return new URL(url).origin;
+    const bytes = Crypto.getRandomBytesSync(16);
+
+    return Array.from(bytes, (b) =>
+      b.toString(16).padStart(2, "0")
+    ).join("");
   } catch {
-    return null;
+    return `${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
   }
 }
 
-// postMessage origin gate: https + a trusted host. A non-https or foreign host is rejected.
-function isTrustedMessageOrigin(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return u.protocol === "https:" && isTrustedHost(u.hostname);
-  } catch {
-    return false;
-  }
+function getOrigin(url: string): string {
+  const m = /^(https?:\/\/[^/?#]+)/i.exec(url);
+  return m ? m[1] : "";
 }
 
-function isUsableToken(t: unknown): t is string {
-  return typeof t === "string" && t.length > 0 && t.length <= TOKEN_MAX;
+function getHost(url: string): string {
+  const m = /^https?:\/\/([^/?#:]+)/i.exec(url);
+  return m ? m[1].toLowerCase() : "";
 }
 
-function createChallengeUrl(siteKey: string, nonce: string): string {
-  return `${BASE_URL}?sitekey=${encodeURIComponent(
-    siteKey
-  )}&nonce=${encodeURIComponent(nonce)}`;
+function getProtocol(url: string): string {
+  const m = /^([a-z]+):/i.exec(url);
+  return m ? m[1].toLowerCase() : "";
 }
 
 export function TurnstileBox({
   onToken,
-}: {
-  onToken: (token: string) => void;
-}) {
-  const [nonce, setNonce] = useState(createNonce);
-  const [status, setStatus] = useState<Status>(SITE_KEY ? "loading" : "error");
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onTokenRef = useRef(onToken);
-  const mountedRef = useRef(true);
-  const webViewRef = useRef<WebView>(null);
+  onError,
+  height = 300,
+}: TurnstileBoxProps) {
+  const webRef = useRef<any>(null);
 
-  useEffect(() => {
-    // Sitekeys are PUBLIC by design (embedded in the page for any visitor), so a prefix in
-    // the log is not a secret; kept only to diagnose a missing EXPO_PUBLIC_TURNSTILE_SITEKEY.
-    console.log(
-      "[Turnstile] Site Key:",
-      SITE_KEY ? `${SITE_KEY.substring(0, 10)}...` : "MISSING"
-    );
-    onTokenRef.current = onToken;
-  }, [onToken]);
+  const nonceRef = useRef<string>(makeNonce());
+  const consumedRef = useRef<boolean>(false);
 
-  const clearTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
+  const [nonce, setNonce] = useState<string>(nonceRef.current);
+  const [error, setError] = useState<string | null>(null);
+  const [ready, setReady] = useState<boolean>(false);
+
+  const bootstrapOrigin = useMemo(() => getOrigin(BOOTSTRAP_URL), []);
+  const bootstrapHost = useMemo(() => getHost(BOOTSTRAP_URL), []);
+
+  const src = useMemo(() => {
+    if (!SITEKEY || !bootstrapOrigin || !bootstrapHost) return null;
+
+    const base = BOOTSTRAP_URL.split("#")[0];
+    const sep = base.includes("?") ? "&" : "?";
+
+    return `${base}${sep}sitekey=${encodeURIComponent(
+      SITEKEY
+    )}#tn=${encodeURIComponent(nonce)}`;
+  }, [bootstrapHost, bootstrapOrigin, nonce]);
+
+  const isTrustedExternalUrl = useCallback(
+    (url: string): boolean => {
+      if (!url) return false;
+
+      const protocol = getProtocol(url);
+      const host = getHost(url);
+
+      if (protocol === "https:") {
+        return (
+          host === bootstrapHost ||
+          host === "challenges.cloudflare.com" ||
+          host.endsWith(".cloudflare.com")
+        );
+      }
+
+      if (DEV && protocol === "http:") {
+        return host === "localhost" || host === "127.0.0.1";
+      }
+
+      return false;
+    },
+    [bootstrapHost]
+  );
+
+  const originWhitelist = useMemo(() => {
+    const list: string[] = [];
+
+    if (bootstrapOrigin) {
+      list.push(bootstrapOrigin);
+      list.push(`${bootstrapOrigin}:*`);
     }
-  }, []);
+
+    list.push("https://challenges.cloudflare.com");
+    list.push("https://challenges.cloudflare.com:*");
+
+    list.push("https://*.cloudflare.com");
+    list.push("https://*.cloudflare.com:*");
+
+    // Internal WebView schemes.
+    // These must stay inside the WebView and must never be opened externally.
+    list.push("about:");
+    list.push("about:*");
+    list.push("blob:");
+    list.push("blob:*");
+
+    if (DEV) {
+      list.push("http://localhost:*");
+      list.push("http://127.0.0.1:*");
+    }
+
+    return Array.from(new Set(list.filter(Boolean)));
+  }, [bootstrapOrigin]);
 
   const fail = useCallback(
-    (nextStatus: Status) => {
-      clearTimer();
-      if (!mountedRef.current) return;
-      console.error("[Turnstile] Failing with status:", nextStatus);
-      setStatus(nextStatus);
-      onTokenRef.current(""); // emit empty => parent gate closes (fail-closed)
+    (message: unknown) => {
+      const safe =
+        cleanText(message, 180) || "Turnstile verification failed";
+
+      setError(safe);
+      setReady(false);
+      onError?.(safe);
     },
-    [clearTimer]
+    [onError]
   );
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      clearTimer();
-      onTokenRef.current(""); // unmount clears any in-flight token so a torn-down screen
-    };                           // never leaves a stale token in the parent (replay guard)
-  }, [clearTimer]);
+  const reset = useCallback(() => {
+    consumedRef.current = false;
+    setError(null);
+    setReady(false);
+
+    const next = makeNonce();
+    nonceRef.current = next;
+    setNonce(next);
+  }, []);
 
   useEffect(() => {
-    clearTimer();
-    onTokenRef.current(""); // fresh challenge => drop the previous (spent) token
-    if (!SITE_KEY) {
-      console.error("[Turnstile] EXPO_PUBLIC_TURNSTILE_SITEKEY missing!");
-      setStatus("error");
+    consumedRef.current = false;
+    setError(null);
+    setReady(false);
+  }, [src]);
+
+  const onShouldStartLoadWithRequest = useCallback(
+    (event: any): boolean => {
+      const url =
+        typeof event?.url === "string"
+          ? event.url
+          : typeof event?.nativeEvent?.url === "string"
+          ? event.nativeEvent.url
+          : "";
+
+      if (!url) return false;
+
+      // Keep internal schemes inside the WebView.
+      // Do not send these to Linking.openURL(); that causes the iOS warning.
+      if (url.startsWith("about:") || url.startsWith("blob:")) {
+        return true;
+      }
+
+      return isTrustedExternalUrl(url);
+    },
+    [isTrustedExternalUrl]
+  );
+
+  const onOpenWindow = useCallback((event: any) => {
+    const url = event?.nativeEvent?.url;
+
+    if (typeof url !== "string" || !url) return;
+
+    // Never externalize internal WebView frames.
+    if (url.startsWith("about:") || url.startsWith("blob:")) {
       return;
     }
-    setStatus("loading");
-    timerRef.current = setTimeout(() => {
-      console.error(`[Turnstile] Timed out after ${Math.round(TIMEOUT_MS / 1000)}s`);
-      fail("error");
-    }, TIMEOUT_MS);
-    return clearTimer;
-  }, [nonce, clearTimer, fail]);
 
-  const handleMessage = useCallback(
-    (event: WebViewMessageEvent) => {
+    // Mobile Turnstile bridge does not need popups.
+    // Ignore all window.open requests to prevent external URL handling.
+  }, []);
+
+  const injectedJavaScriptBeforeContentLoaded = useMemo(
+    () => `
+(function () {
+  try {
+    window.open = function () {
+      return null;
+    };
+  } catch (e) {}
+})();
+true;
+`,
+    []
+  );
+
+  const onMessage = useCallback(
+    (event: any) => {
       try {
-        // SECURITY (origin gate, defense-in-depth over the nonce): reject messages whose
-        // originating document is not a trusted host BEFORE reading the token. If a build
-        // omits nativeEvent.url we cannot determine origin, so we FALL THROUGH to the nonce
-        // check (still adequate: the nonce is a per-mount secret only the bootstrap page
-        // holds). A malformed/foreign url is rejected outright.
-        const rawUrl = event.nativeEvent?.url;
-        if (
-          typeof rawUrl === "string" &&
-          rawUrl.length > 0 &&
-          !isTrustedMessageOrigin(rawUrl)
-        ) {
-          console.warn("[Turnstile] Ignoring message from untrusted origin");
+        const raw = event?.nativeEvent?.data;
+
+        if (!raw || typeof raw !== "string") return;
+
+        let msg: any;
+
+        try {
+          msg = JSON.parse(raw);
+        } catch {
           return;
         }
 
-        const msg = JSON.parse(event.nativeEvent.data);
-        // NOTE: never log `msg` or `msg.token` — the token is a single-use credential and
-        // console output can surface in dev builds / logcat / Sentry breadcrumbs.
-        console.log("[Turnstile] message kind=", typeof msg?.kind === "string" ? msg.kind : "?");
+        if (!msg || typeof msg !== "object") return;
 
-        if (msg.channel !== "mayamilan-turnstile" || msg.nonce !== nonce) {
-          console.warn("[Turnstile] Ignoring message with wrong channel/nonce");
+        const msgType = cleanText(msg.type, 80);
+        const msgNonce = cleanText(msg.nonce, 128);
+
+        if (msgType === "turnstile-ready") {
+          if (msgNonce !== nonceRef.current) return;
+
+          setReady(true);
+          setError(null);
           return;
         }
 
-        clearTimer();
-        if (msg.kind === "error") {
-          console.error("[Turnstile] Widget error"); // token intentionally not logged
-          fail("error");
-        } else if (msg.kind === "expired") {
-          fail("expired");
-        } else if (msg.kind === "ok") {
-          if (!isUsableToken(msg.token)) {
-            fail("error"); // shape/length guard: never emit a junk/oversized "token"
+        if (msgType === "turnstile-error") {
+          if (msgNonce && msgNonce !== nonceRef.current) return;
+
+          const code =
+            typeof msg.code === "string" || typeof msg.code === "number"
+              ? String(msg.code)
+              : "";
+
+          const base =
+            typeof msg.error === "string"
+              ? msg.error
+              : "Turnstile verification failed";
+
+          fail(code ? `${base} (${code})` : base);
+          return;
+        }
+
+        if (msgType === "turnstile-token") {
+          if (consumedRef.current) return;
+
+          const token =
+            typeof msg.token === "string" ? msg.token.trim() : "";
+
+          const origin =
+            typeof msg.origin === "string"
+              ? msg.origin
+              : typeof msg.pageOrigin === "string"
+              ? msg.pageOrigin
+              : "";
+
+          if (!token || token.length > TOKEN_MAX) {
+            fail("Invalid Turnstile token");
             return;
           }
-          console.log("[Turnstile] ✅ SUCCESS! Token received");
-          setStatus("ready");
-          onTokenRef.current(msg.token);
+
+          if (!nonceRef.current || msgNonce !== nonceRef.current) {
+            fail("Turnstile nonce mismatch");
+            return;
+          }
+
+          if (bootstrapOrigin && origin !== bootstrapOrigin) {
+            fail("Turnstile origin mismatch");
+            return;
+          }
+
+          consumedRef.current = true;
+          setError(null);
+          setReady(true);
+          onToken(token);
+          return;
         }
-      } catch (e) {
-        console.warn("[Turnstile] Parse error:", e);
-      }
-    },
-    [nonce, clearTimer, fail]
-  );
-
-  // URL-hash fallback. SECURITY: a token is trusted ONLY when it is set on the bootstrap
-  // document's own hash (origin === TRUSTED_BOOTSTRAP_ORIGIN). The previous code trusted
-  // `url.includes("#turnstile-ok-")` from ANY origin, which — combined with a permissive
-  // load gate — let a hostile top-level navigation forge acceptance. We also parse the hash
-  // precisely (startsWith+slice, not a substring split that also matches the marker inside a
-  // path/query), guard decodeURIComponent, cap the token, and stop logging the url (it can
-  // carry the token in the hash).
-  const onNavigationStateChange = useCallback(
-    (navState: any) => {
-      const url = navState?.url;
-      if (typeof url !== "string" || !url) return;
-
-      const origin = originOf(url);
-      if (origin !== TRUSTED_BOOTSTRAP_ORIGIN) return; // foreign/!bootstrap => ignore entirely
-
-      let hash = "";
-      try {
-        hash = new URL(url).hash;
       } catch {
-        return;
-      }
-
-      if (hash.startsWith("#turnstile-ok-")) {
-        const raw = hash.slice("#turnstile-ok-".length);
-        if (!raw) return;
-        let token = raw;
-        try {
-          token = decodeURIComponent(raw);
-        } catch {
-          fail("error"); // malformed percent-encoding => fail closed, never throw in nav handler
-          return;
-        }
-        if (!isUsableToken(token)) {
-          fail("error");
-          return;
-        }
-        clearTimer();
-        setStatus("ready");
-        onTokenRef.current(token);
-      } else if (hash.startsWith("#turnstile-error-")) {
-        fail("error");
-      } else if (hash.startsWith("#turnstile-expired")) {
-        fail("expired");
+        fail("Turnstile message error");
       }
     },
-    [clearTimer, fail]
+    [bootstrapOrigin, fail, onToken]
   );
 
-  const retry = useCallback(() => {
-    clearTimer();
-    onTokenRef.current("");
-    setStatus("loading");
-    setNonce(createNonce()); // new nonce => key={nonce} remounts the WebView = fresh challenge
-  }, [clearTimer]);
+  if (!SITEKEY) {
+    return (
+      <View style={[st.box, { height }]}>
+        <Text style={st.errTitle}>Turnstile not configured</Text>
+        <Text style={st.errBody}>
+          EXPO_PUBLIC_TURNSTILE_SITEKEY is missing.
+        </Text>
+      </View>
+    );
+  }
+
+  if (!bootstrapOrigin || !bootstrapHost || !src) {
+    return (
+      <View style={[st.box, { height }]}>
+        <Text style={st.errTitle}>Turnstile bootstrap invalid</Text>
+        <Text style={st.errBody}>
+          EXPO_PUBLIC_TURNSTILE_BOOTSTRAP_URL must be a valid HTTPS URL.
+        </Text>
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.box}>
-      {SITE_KEY ? (
-        <WebView
-          ref={webViewRef}
-          key={nonce}
-          source={{ uri: createChallengeUrl(SITE_KEY, nonce) }}
-          originWhitelist={[
-            "https://mayamilan.vercel.app",
-            "https://challenges.cloudflare.com",
-            "https://*.challenges.cloudflare.com",
-            "https://*.cloudflare.com",
-          ]}
-          javaScriptEnabled
-          domStorageEnabled
-          thirdPartyCookiesEnabled
-          sharedCookiesEnabled
-          allowsInlineMediaPlayback
-          scrollEnabled={false}
-          bounces={false}
-          style={styles.web}
-          onShouldStartLoadWithRequest={(request) => {
-            // Load-layer guard: block non-http(s) schemes (javascript:, data:, file:) which are
-            // pure injection surface and never used by the widget. We deliberately keep http(s)
-            // permissive so the Cloudflare challenge (which loads from multiple cf hosts) is not
-            // broken — the TOKEN trust boundary is enforced at the parse layer (origin+nonce in
-            // handleMessage, origin in the hash fallback), NOT here. A hostile http(s) nav may
-            // load, but its hash is rejected (origin gate) and it cannot forge a nonce, so the
-            // worst case is a failed challenge => timeout => fail("error") => Retry (fail-closed).
-            const u = request?.url;
-            if (typeof u !== "string" || !/^https?:/i.test(u)) return false;
-            return true;
-          }}
-          onMessage={handleMessage}
-          onNavigationStateChange={onNavigationStateChange}
-          onError={(e) => {
-            console.error("[Turnstile] WebView error:", e.nativeEvent?.code ?? "unknown");
-            fail("error");
-          }}
-          onHttpError={(e) => {
-            console.error(
-              "[Turnstile] HTTP error:",
-              e.nativeEvent?.statusCode ?? 0
-            );
-            if ((e.nativeEvent?.statusCode ?? 0) >= 400) fail("error");
-          }}
-          onLoadEnd={() => console.log("[Turnstile] Page load completed")}
-          onContentProcessDidTerminate={() => {
-            console.error("[Turnstile] Content process terminated");
-            fail("error");
-          }}
-        />
-      ) : null}
+    <View style={[st.box, { height }]}>
+      <WV
+        key={src}
+        ref={webRef}
+        source={{ uri: src }}
+        javaScriptEnabled
+        domStorageEnabled
+        cookiesEnabled
+        thirdPartyCookiesEnabled={Platform.OS === "android"}
+        mixedContentMode="never"
+        originWhitelist={originWhitelist}
+        onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+        onOpenWindow={onOpenWindow}
+        onMessage={onMessage}
+        injectedJavaScriptBeforeContentLoaded={
+          injectedJavaScriptBeforeContentLoaded
+        }
+        startInLoadingState
+        renderLoading={() => (
+          <View style={st.loading}>
+            <ActivityIndicator color="#7c3aed" />
+            <Text style={st.loadingText}>Loading verification…</Text>
+          </View>
+        )}
+        onError={() => {
+          fail("WebView failed to load Turnstile");
+        }}
+        onHttpError={() => {
+          fail("Turnstile bootstrap returned HTTP error");
+        }}
+        style={st.web}
+      />
 
-      {status === "loading" && (
-        <View pointerEvents="none" style={styles.overlay}>
-          <ActivityIndicator color={colors.iconTint} />
-          <Text style={styles.loading}>Verifying security…</Text>
+      {!!error && (
+        <View style={st.errorOverlay}>
+          <Text style={st.errTitle}>Verification failed</Text>
+          <Text style={st.errBody}>{error}</Text>
+
+          <TouchableOpacity style={st.retryBtn} onPress={reset}>
+            <Text style={st.retryText}>Retry</Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      {(status === "error" || status === "expired") && (
-        <View pointerEvents="box-none" style={styles.overlay}>
-          <Text style={styles.errText}>
-            {!SITE_KEY
-              ? "Security check not configured."
-              : status === "expired"
-              ? "Security check expired."
-              : "Security check unavailable."}
-          </Text>
-          <Pressable
-            onPress={retry}
-            accessibilityRole="button"
-            style={styles.retryBtn}
-          >
-            <Text style={styles.retryText}>Retry</Text>
-          </Pressable>
+      {!ready && !error && (
+        <View pointerEvents="none" style={st.hint}>
+          <Text style={st.hintText}>Waiting for Cloudflare Turnstile…</Text>
         </View>
       )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+export default TurnstileBox;
+
+const st = StyleSheet.create({
   box: {
-    height: 120,
-    borderRadius: radius.chip,
+    width: "100%",
+    borderRadius: 16,
     overflow: "hidden",
+    backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: colors.inputBorder,
-    backgroundColor: colors.inputFill,
-    marginBottom: 18,
-    position: "relative",
+    borderColor: "#e5e7eb",
   },
-  web: { flex: 1, backgroundColor: "transparent" },
-  overlay: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    right: 0,
-    bottom: 0,
+  web: {
+    flex: 1,
+    backgroundColor: "transparent",
+  },
+  loading: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    backgroundColor: colors.inputFill,
-    zIndex: 2,
-    paddingHorizontal: 12,
+    backgroundColor: "#ffffff",
   },
-  loading: { color: colors.subtext, fontSize: 13 },
-  errText: { color: colors.danger, fontSize: 13, textAlign: "center" },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 13,
+    color: "#64748b",
+    fontWeight: "600",
+  },
+  errorOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderTopWidth: 1,
+    borderTopColor: "#e5e7eb",
+  },
+  errTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#b91c1c",
+    marginBottom: 4,
+  },
+  errBody: {
+    fontSize: 13,
+    color: "#0f172a",
+    lineHeight: 18,
+  },
   retryBtn: {
+    marginTop: 10,
+    alignSelf: "flex-start",
     paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: colors.iconTint,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "#7c3aed",
   },
-  retryText: { color: "#fff", fontSize: 12, fontWeight: "700" },
+  retryText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 13,
+  },
+  hint: {
+    position: "absolute",
+    left: 12,
+    bottom: 10,
+  },
+  hintText: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: "600",
+  },
 });
